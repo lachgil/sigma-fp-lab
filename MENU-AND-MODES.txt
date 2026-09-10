@@ -1,0 +1,82 @@
+Menu and mode isolation, 2026-09-10
+
+WHAT WAS BUILT AND VERIFIED OFFLINE
+- src/rowpatch_gated.S: the FieldAngle canvas hook with three gates -- ARMED
+  flag, the 1936x1090 row check, and the live selected sensor mode == 117.
+- emulate_hook.py (Unicorn): proves the hook rewrites geometry ONLY for
+  armed + 1936x1090 + mode 117, and is a byte-for-byte no-op for every other
+  mode, for UHD rows, and when disarmed. All five cases pass.
+- build_gated_autorun.py: emits builds/opengate-gated/AutoRun.txt (32768 bytes),
+  verified against the exact fp 5.02 MAIN (stock words at all patch sites, cave
+  empty). Its payload round-trips back to the assembled hook; data patches and
+  hook branch are identical to the working file; adds only the ARMED flag.
+
+WHY THIS IS THE FIX FOR "OTHER MODES BREAK"
+Evidence from the extracted MAIN:
+- Picker slot 7 (FHD/29.97 CinemaDNG) is the only slot changed 106->117;
+  the other 25 slots are untouched. Self-isolating.
+- Mode-117 VMAX and the four RWZM cells live in per-preset tables; nothing else
+  reads those specific cells. Self-isolating.
+- The ORIGINAL geometry hook gates only on 1936x1090. It is a live BL hook, so
+  any other mode/live-view/transitional path that builds a 1936x1090 FieldAngle
+  row was rewritten to 3032x2012 against a buffer still sized 1936x1090. That is
+  the reported purple-lines + small-top-right-image + white corruption.
+The gated hook adds the live-mode requirement, so it cannot fire for anything
+but the actual open-gate take. This is a source-grounded fix, verified in
+emulation; the one remaining hardware assumption is below.
+
+ONE HARDWARE CONFIRMATION BEFORE RELYING ON IT
+Over the USB shell, during an open-gate take, read (do not write) 0xC343B590 and
+confirm it holds 117 at the moment the canvas row is built. open-gate.md records
+a real take reading 117 back there; only the timing relative to the hook is
+unverified. Worst case if it lags: open gate does not engage (a no-op), never
+corruption, and a battery pull resets RAM. If it lags, switch GATE_MODE_ADDR in
+rowpatch_gated.S to the CINE/format state the gyro code already reads.
+
+THE MENU: HONEST STATUS
+A fully custom, navigable on-camera overlay menu (our code owning D-pad/button
+presses) is BLOCKED on an unsolved reverse-engineering problem: the firmware's
+`key` command only INJECTS events (handler 0xC03F5DC0, "Not invoked"); no button
+INTERCEPTION/consumption hook has been found, and no key-event ABI is documented.
+A persistent OSD overlay is also only researched (DrawingObserver via
+FUN_c0528300), not implemented. Building a navigable overlay now would mean
+inventing untested input asm for hardware I cannot test -- exactly what causes
+freezes. So it is a named milestone, not a claimed feature.
+
+WHAT WORKS AS A "MENU" WITHOUT SOLVING INPUT (proven primitives only)
+1. Native-menu-driven arming: the user selects the recording preset in SIGMA's
+   own menu (which they already must do for open gate); the controller reads that
+   live state and arms the matching profile. No custom input needed. This is
+   what the mode-gate already does for mode 117.
+2. Card config file: a small text file on the SD card selects which experimental
+   profile is armed at boot. The loader already reads files from the card
+   (same proven F_OPEN/F_READ path as VSHL.BIN), so this needs no new mechanism.
+3. OSD status: the proven display text + display osd present sequence shows which
+   profile armed at boot, like the existing progress bar. ~24 chars, no spaces.
+These give selectable modes with on-screen confirmation today; the interactive
+overlay is added later, once input interception is reverse-engineered on hardware.
+
+ADDING FURTHER MODES (the framework, and what each needs)
+Each mode is a profile of: {native preset slot to repurpose, sensor mode id,
+optional VMAX, optional scaling cells, canvas geometry fields for the gated
+hook}. The hook is keyed to the sensor mode id, so every profile is self-gated
+and cannot touch other modes -- the same isolation proven for 117. Adding one is
+therefore data plus a rebuild, NOT new architecture.
+
+Candidates already cross-checked against firmware geometry (analysis/sensor_modes.json):
+- M117 3032x2012 RAW12: the current path, canvas pipeline exercised by the author.
+- M130 3968x2640 RAW12 (crop): ~471 MB/s at 30 fps. Needs canvas + buffer check.
+- M56  2016x1344 RAW12 ~120 fps table: 3:2 high-frame-rate candidate.
+- M3/M121 6064x4042 RAW12 ~30/25 fps: ~0.9-1.1 GB/s. Throughput-bound.
+Per-mode hardware validation REQUIRED before enabling any of these: confirm the
+producer/stride/buffer accept the canvas, DNG covers the expected Bayer area,
+sustained write rate holds, live view and playback behave, and nothing else
+regresses. A firmware table entry and a matching gated hook are necessary, not
+sufficient. Do not ship a mode as "working" on table geometry alone.
+
+FILES
+src/rowpatch_gated.S            the isolation hook
+emulate_hook.py                 offline gate verification (Unicorn)
+build_gated_autorun.py          firmware-verified AutoRun generator
+builds/opengate-gated/AutoRun.txt   the loadable, isolation-safe artifact
+builds/rowpatch_gated.bin       assembled payload

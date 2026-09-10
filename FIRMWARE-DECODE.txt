@@ -1,0 +1,190 @@
+SIGMA fp Ver.5.02 firmware decode — 2026-09-10
+Six parallel subsystem analyses over the firmware map (analysis/fw.sqlite) +
+capstone on the hash-verified MAIN. Addresses are load-address (base 0xC0000000).
+CONFIRMED = string+xref+disasm grounded. INFERRED = mechanism reasoning.
+
+TOOLING NOTE (important): fwmap.py arefs/xref only capture full-word literal
+pointers; MANY refs are movw/movt pairs and are invisible to it. To xref a
+descriptive string, scan movw/movt with capstone, not arefs. Also the DB's
+plain 'addr' rendering mis-printed some decimals; query with hex.
+
+================================================================================
+1. UNIFIED GEOMETRY MANAGER  (the key to green + darkness + playback)
+================================================================================
+One RAM singleton at 0xC375D840 feeds BOTH record and display.
+Accessors: 0xC0436590 (get-singleton) / 0xC0436FE8 / 0xC04371F0 / 0xC04376E0 /
+0xC0437060 / 0xC04375C8 / 0xC0437668. Container builder 0xC04370E8.
+Per-stage geometry sub-blocks in one container:
+   rec      @ container+0x00
+   liveview @ container+0x58   <-- the DISPLAY/preview + HDMI path reads this
+   main     @ container+0xB0
+   sub      @ container+0x108
+Block field layout (CONFIRMED via geometry logger 0xC031D988 + validator
+0xC0435588): +0x00 size_h, +0x04 size_v, +0x20 raw_bit, +0x48 rwzm_h,
++0x4c rwzm_v, +0x50 hbin, +0x54 vbin.
+
+Display/HDMI output geometry (XC_MovSigYuvOutParam) is produced in MovSigProcess
+(0xC0428AE0+) reading the liveview block, published via XC_Subject
+<XC_MovSigYuvOutParam&> (0xC0BCDC30) to observers XC_MovSigObserverDisp
+(0xC0BCDD84) / LastDisp (0xC0BCDDB8) -> LCD (XC_DisplayLcd 0xC0B54FFC, JDI panel)
++ HDMI (XC_DisplayHdmi 0xC0729B48, SetHdmiOutputSize 0xC0BBE6E0). The YUV buffer
+is filled by the YuvResize scaler task (~0xC03CB090). LiveView geometry is keyed
+by XC_LiveViewConfigurator (0xC0BD0300 / W71c1 0xC0BE63AC) + XC_LiveViewFieldAngleTable
+(0xC0BCF724).
+
+================================================================================
+2. LIVE-VIEW GREEN  (cosmetic; display-side)
+================================================================================
+CAUSE: the RWZM resize cells (0xC0BD9A34/0xC0BE1684/0xC0BD9EFC/0xC0BE1B4C) are
+SHARED between record and preview. Open gate forces them to unity (0x400) for the
+wide record; that simultaneously changes the preview path. The liveview block
+size_h/size_v remain the stock ~16:9 preview geometry, so YuvResize writes a
+region that no longer matches the preview buffer stride/height -> unwritten YUV
+(Y=0,Cb=Cr=0) renders GREEN. The record hook (0xC043A19C) does not fire in
+standby, so it cannot correct the preview. (mechanism CONFIRMED structurally;
+exact stale field INFERRED.)
+FIX DIRECTION: make the liveview block (0xC375D840 +0x58) size_h/size_v and its
+rwzm consistent with the open-gate wide frame, gated to open gate, AND ensure the
+preview/HDMI YUV buffer is allocated for that geometry. Needs on-hardware read of
+the singleton + the liveview block, then a gated patch. NOT a static-table fix.
+
+================================================================================
+3. DARKNESS  (concrete compensation candidate)
+================================================================================
+The AE 'gain allowance' path (UpdateGainAllowance 0xC0286798, unity 0x10000 in
+16.16) is exposure METERING only — NOT the raw pixel scaler. Not the cause.
+The RWZM cells are ISP resize coefficients (Q10; 1024=1.0; stock 0x640=1.5625
+downscale, patched 0x400=unity), and the resize is NON-NORMALIZING (summing):
+stock modes gain brightness from the 3032->1936 summed downscale; open-gate
+unity loses it. MAGNITUDE ~0.64x/-0.65 stop (one axis) up to ~0.41x/-1.29 stop
+(both). (INFERRED, hardware-consistent.)
+Builder 0xC0439D18 copies ~50 table[profile] fields into the record object.
+Field map (obj offset -> table base -> value[profile 122]):
+  +0x60 rwzm1_h 0xC0BD984C=0x640   +0x64 rwzm1_v 0xC0BE149C=0x640
+  +0xd0 rwzm2_h 0xC0BD9D14=0x640   +0xd4 rwzm2_v 0xC0BE1964=0x640  (the 4 patch cells)
+  +0xd8/+0xdc outW 0xC0BDA1DC/0xC0BE314C=1936
+  +0xe0/+0xe4 outH 0xC0BDA6A4/0xC0BE3614=1090
+  +0xf4 srcW 0xC0BDCCE4=3032   +0xf8 srcH 0xC0BDD1AC=1708
+  +0xfc/+0x100 FLOAT scalar 0xC0BD852C/0xC0BD89F4 = 2.0f (half-width/binned incl.
+      profile 122) vs 1.0f (full-width) <-- LEADING compensation knob
+FIX DIRECTION: the +0xfc/+0x100 per-profile float is a digital scale co-located
+with resize params; test bumping profile 122's value to compensate the lost
+summed gain. Exact factor + direction REQUIRE a frame-level measurement
+(record a fixed scene open-gate vs stock, compare median level).
+
+================================================================================
+4. PLAYBACK (open-gate clips)  (same root as green)
+================================================================================
+CinemaDNG playback: src/library/CinemaDngPlay (code ~0xC2DFxxxx), shell handlers
+0xC0405050/78/A0 -> request poster 0xC05BF2C0; render/resize in recMgr/play
+XC_PlayDng* (src 0xC0BAAF2C, YuvResize 0xC0BA4298, seq-vtable 0xC0BA3CAC).
+CAUSE (INFERRED; subsystem CONFIRMED): the develop/resize path derives geometry/
+develop profile from the CinemaDNG FORMAT-SLOT the open-gate test parasitizes
+(FHD 29.97 = 1936x1090 row in the ONLY CinemaDNG frame-size table 0xC096F580
+{3856x2170,1936x1090,6064x4042,3968x2640}) instead of the DNG's real 3032x2012
+tags -> stride/aspect + gain mismatch, same class as the green.
+FIX DIRECTION: make playback read the actual DNG geometry, or add a 3032x2012
+entry the playback path honors. Cosmetic (files decode fine on a computer).
+
+================================================================================
+5. HIGH FRAME RATE  (storage-throughput gated; SSD makes it reachable)
+================================================================================
+Frame RATE is NOT capped by the tables; it is enforced dynamically by the
+
+CINEMADNG PICKER SLOT MAP (table A 0xC0BE5810, 26 slots x0x10, mode id at +0x08;
+tables B 0xC0BE59B0 / C 0xC0BE5B50 mirror it). Confirmed from MAIN + sensor_modes:
+  0-3   6064x3412  @29.97/25/24/23.976   (6K)
+  4-10  3032x1708  @59.94/50/48/29.97/25/24/23.976   (3K->1080; slot7=M106 is the
+        one open gate repurposes to M117 3032x2012)
+  11    M58  3032x1708 @119.88 (931 MB/s)   <-- HIGH-FPS 3K already in picker
+  12    M89  3032x1708 @100.00 (777)        <-- HIGH-FPS 3K already in picker
+  13-16 4176x2174  @29.97/25/24/23.976   (4K)
+  17-23 2088x1174  @59.94/50/48/29.97/25/24/23.976   (2K->1080)
+  24    M103 2088x1174 @119.88 (441)        <-- HIGH-FPS 2K already in picker
+  25    M118 2088x1174 @100.00 (368)        <-- HIGH-FPS 2K already in picker
+KEY IMPLICATION: 100/120fps CinemaDNG modes EXIST in the picker (slots 11,12,24,25).
+High-fps is therefore partly native/dormant, not new silicon work. Next step is a
+HARDWARE check of what the camera MENU exposes vs what is a dormant picker slot;
+if slot 11 (3K@120) or 24 (2K@120) is not menu-selectable, enabling it may be a
+menu-table edit (which framerates the FHD/2K CinemaDNG menu offers) rather than a
+picker mode-id swap. A HIGHER-res 120 (e.g. 4K120) is NOT in the table and would
+need a new mode. Clean path: unlike open gate, these output standard 1080/2K
+rasters, so display/green/darkness should NOT occur (geometry matches the preset).
+recorder: eMOVREC_STOP_OVERFLOW 0xC0B9F0C6 (write queue can't drain),
+eMOVREC_STOP_OVERTIME 0xC0B9F0AE, eMOVREC_STOP_FAT 0xC0B9F0DE (4GB). Buffers from
+MemoryPool ('not enough memory for buffer allocation' 0xC0604E38). No video
+RAM-burst path exists (would be new firmware). USER FACT: records to a FAST
+USB-C SSD (~350-420 MB/s), so open gate's 274 MB/s leaves headroom.
+Enable = same picker(mode id)+VMAX patch as open gate; NO geometry hook needed if
+the repurposed slot's native raster already matches the target sensor raster.
+Patch cells per slot S: picker 0xC0BE5810/0xC0BE59B0/0xC0BE5B50 + S*0x10 + 8;
+VMAX in timing table 0xC0B59500 + rec*0x20 + 0x08.
+SHORTLIST (packed MB/s = W*H*12/8*fps):
+  Tier1 SD-safe 60p: M105/M88 2088x1174@59.94=220; M8/M139 2016x1344@59.94=243
+  Tier2 true 120p (SSD): M134 2016x1136@119.88=411 (BEST FIRST); M103/M132
+     2088x1174@119.88=440; M56 2016x1344@119.88=487; M12 2016x672@239.76=487
+  Tier3 >500 MB/s (RAM-burst only): M58 931; M11 964; M117-native 914; M10 1102
+FIRST EXPERIMENT: repurpose a slot to M134, record to SSD, watch 0xC0B9F0C6.
+IMX410 flyer's 2020x96@1628fps is Sony numbering, NOT a SIGMA logical mode —
+1080p240/1000fps-class needs new register/receiver integration, not data patching.
+
+================================================================================
+6. MENU + KEY INPUT  (on-camera toggle is feasible)
+================================================================================
+0xC0BBB5E8 is the USB/DEBUG CONSOLE command table (name,arg,handler triplets;
+SetMovRecSize handler 0xC03FDAB0) — NOT the native GUI menu. The 'key' inject
+handler 0xC03F5DC0 is injection-only.
+Physical key path: KeyPressedMonitoring thread (run/process virtuals 0xC02DDCD8/
+0xC02DD6A8, thread base 0xC0726FB8) -> HybridKeyEventObserver (virtuals
+0xC0269B50 update / 0xC0265800). The inject handler and the monitor run-loop both
+call a shared key-post funnel 0xC02DBAF0/0xC02DBBE8 (100 callers = too generic to
+hook). The per-key CHOKE POINT is the observer update virtual 0xC0269B50.
+VERDICT: a real on-camera button-combo toggle IS feasible by hooking the
+HybridKeyEventObserver update (0xC0269B50) to detect a chord and flip the
+open-gate patch-set (toggle_opengate.py already does the flip over the shell).
+Native menu-entry integration additionally needs the MenuItem vtable (partly
+located; more tracing needed).
+
+================================================================================
+7. LOADING + FLASH
+================================================================================
+Boot: media -> XC_ShellScriptAutoRun (0xC0BABBCC, code ~0xC03DA3F8) ->
+FUN_c03da758 opens/reads \\AutoRun.txt -> each line to the firmware shell.
+RAM-only, battery-pull recoverable.
+FASTER LOAD (already proven on the gyro base card): a 272-byte ARM stub at
+0xC072DE64 + `memmgr bufmem get 0 1048576` + one hook word reads a compiled
+\\VSHL.BIN, replacing hundreds of per-word `mem set` lines. Use this for larger
+payloads (HFR/menu/AF); build_gated_autorun.py currently emits per-word mem set.
+FLASH VERDICT: fwup (XC_FwupMediaCorePureNand) validates CRC32/checksum ONLY —
+NO crypto signature anywhere in the image (RSA/SHA/AES/ECDSA/PKCS/HMAC all
+absent). So custom firmware is technically forgeable, BUT brick risk is high, no
+recovery bootloader is present in MAIN, and the reversible RAM path already does
+everything. RECOMMEND: do NOT flash; stay RAM.
+
+================================================================================
+8. AUTOFOCUS  (research only; manual lens blocks testing)
+================================================================================
+AF architecture (from source-path/class strings): AfMgr; mount focus variants
+LmountFocusL (native L-mount motor), LmountFocusMc (MC-21 adapter EF/SA),
+LmountFocusNone (manual / no motor = current lens). Modes: SAF (single contrast
+AF) + CAF (continuous). PdCaf (phase-detect) drive/defocus code present
+(CalcPdCafDriveDir 0xC027EE0C, '[Defocus Per Pls]' 0xC0336DE9) but the fp ships
+49-pt CONTRAST AF; PdCaf availability on fp is dormant/uncertain (per prior
+a7III comparison, AF-model vtable slot returns 0). Focus METRIC (contrast)
+computation is in the ISP stats path and is analyzable/readable even with a
+manual lens; DRIVING a lens needs LmountFocusL/Mc and an AF lens.
+PATH: with an AF lens, a custom AF = read contrast metric per region + drive
+LmountFocus; with the manual lens, only metric computation is studyable now.
+
+================================================================================
+INTEGRATED INSIGHT
+================================================================================
+Green + darkness + playback are ONE family: open gate changes SHARED geometry/
+RWZM (record path) but the display and playback consumers read their own blocks/
+format-slot that still describe the stock frame, and the RWZM summing also sets
+brightness. A coherent open-gate implementation must update the liveview (and
+playback) geometry blocks and add a brightness compensation, all gated to open
+gate, not just the record path. The record isolation (r5==175 hook) is done;
+the remaining polish is teaching the display/playback/brightness consumers about
+the wide frame. High-fps and the on-camera toggle are independent and tractable
+(picker+VMAX; hook the key observer 0xC0269B50).

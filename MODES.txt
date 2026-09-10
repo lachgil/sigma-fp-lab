@@ -1,0 +1,56 @@
+Sensor mode investigation, 2026-09-10
+Source: https://ijigen.github.io/fpSup/ and pinned fpSup index.html/analyzer.
+
+Directly checked all 70 website rows against the user's extracted fp 5.02
+MAIN: IDs agree across register, geometry and timing tables; raster dimensions,
+RAW bit-depth enum and metadata class match; frame-rate and readout calculations
+match using upstream's 72 MHz timing interpretation. This verifies the table
+values, not actual sustained recording. Upstream's CSV has 24 distinct register
+vectors. No conclusion about ChatGPT authorship is possible from these facts.
+Machine-readable local extraction: analysis/sensor_modes.json.
+
+Candidate shortlist (sensor raster, not promised finished clip dimensions):
+- M117: 3032x2012 RAW12; stock table 99.9001 fps. Existing RAM test changes
+  VMAX 2184 to 7280 for 29.97003 fps; calculated readout remains 9.222 ms.
+  Packed pixels at 29.97 require about 274.2 MB/s before overhead. Best first
+  target: make the existing 3:2 path reliable, correct and controllable.
+- M130: 3968x2640 RAW12, firmware crop group, table 39.3095 fps, 16.317 ms
+  calculated readout. At a hypothetical 30 fps, about 471.4 MB/s before
+  overhead. Interesting cropped ~4K 3:2 candidate; 30 fps operation untested.
+- M56: 2016x1344 RAW12, table 119.8801 fps, sampling metadata 3x2,
+  calculated readout 6.160 ms. About 487.2 MB/s packed at that table rate.
+  Potential 3:2 slow-motion research, not proof of full-detail readout.
+- M58: 3032x1708 RAW12, table 119.8801 fps, sampling metadata 2x2,
+  7.828 ms calculated readout. About 931.2 MB/s packed; high throughput risk.
+- M12: 2016x672 RAW12, table 239.7602 fps, sampling metadata 3x3,
+  3.080 ms calculated readout. About 487.2 MB/s packed. Very short raster,
+  not 1080p240. Sensor geometry/FOV cannot be inferred from 'full' alone.
+- M3/M121: 6064x4042 RAW12 at table 29.9736/24.9997 fps, 24.982 ms
+  calculated readout. About 1102.0/919.1 MB/s packed. Real ~6K table entries,
+  but sustained recording, buffers, transport and thermals are unproven.
+- M10: 6064x2022 RAW12 at table 59.9251 fps, 12.497 ms calculated readout,
+  about 1102.1 MB/s packed. Wide raster, not full-height 6K60 open gate.
+
+All data rates are width*height*bits/8*fps in decimal MB/s. They exclude
+headers, padding, intermediate ISP formats, buffering and storage protocol
+cost. Sensor rate is not necessarily file rate; no compression benefit assumed.
+A fast SSD alone does not fix sensor receiver, ISP, buffer or USB bottlenecks.
+
+Important website limitations:
+- It labels 'full/crop' as firmware metadata, not proven sensor-area coverage.
+- Listed fps are timing-table VMAX defaults, not fixed formats or guaranteed
+  limits. Adjusting the UI estimate does not program the camera.
+- Logical modes can reuse the same register payload with different timing.
+- The FHD 29.97 selector uses representative M107 and says runtime mode ID is
+  needed. Newer sensor-lab notes establish M106 for FHD29.97 CinemaDNG; local
+  stock picker words at C0BE5888/C0BE5A28/C0BE5BC8 are all 106. Do not treat
+  the site's representative camera-to-mode mapping as authoritative.
+- RAW14 sensor entries do not establish a working RAW14 CinemaDNG recorder.
+- The Sony/PDAF comparison explicitly does not prove fp has the necessary
+  physical phase-detect mask. Finding dormant code does not unlock hardware.
+
+Recommendation: extend one verified path at a time. Stabilize M117 and its
+actual Bayer coverage/crop, then integrate gyro with effective geometry, then
+research M130 or M56 depending on priority. Native menu descriptors and key
+handling need separate reverse engineering; selecting a mode ID is not enough
+without matching producer dimensions, stride, buffers, processing and recorder.

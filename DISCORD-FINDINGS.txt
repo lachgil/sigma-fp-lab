@@ -1,0 +1,87 @@
+New user and Discord evidence, 2026-09-10
+
+Provenance: user says their open-gate AutoRun was released on Discord minutes
+before this conversation, ahead of GitHub documentation. Treat their actual
+file and hardware observations as the baseline, not website status wording.
+Previously observed byte equality with the cloned opengate artifact is a local
+comparison, not a claim about when or where the author's release first appeared.
+
+USER-CONFIRMED
+- Open gate works using the original AutoRun in FHD / CinemaDNG / 29.97p.
+  The user's '29.98' is understood as that preset; all sample DNG tags say
+  30000/1001. Do not propose a 29.98 sensor clock.
+- Every other mode breaks: purple lines, small image toward top-right, white
+  remainder. A working special-purpose test is not a usable general camera
+  firmware. Normal-mode preservation is a first-priority requirement.
+- Stutter remains in footage exported from Resolve, not just camera preview.
+- Author explains full-area 6064x4042 readout reduced 2x2 to 3032x2012,
+  then existing DNG pipeline crops to 3008x2000. This agrees with sample tags.
+  Exact sensor binning/downsampling mechanics should not be inferred from the
+  marketing term 'oversampling' alone; the sensor raster is not a 6K recording.
+
+SOURCE-LEVEL ISOLATION ISSUE
+opengate/rowpatch_v4.S:40-48 checks only 1936x1090. It does not test the full
+codec/frame-rate/bit-depth/preset. AutoRun also unconditionally changes eight
+mode timing/picker/scaling words at boot. There is no coordinated off/restore
+transition for choosing another recording mode. This is insufficient isolation,
+but source alone does not prove which mismatch causes each observed artifact.
+A dimensions-only guard cannot protect every shared path. Address ownership,
+actual mode identity, geometry rebuild and stock restoration must be coherent.
+No replacement AutoRun was generated or deployed as a fix.
+
+DNG TIMING CHECK, EXECUTED OFFLINE
+42 files inspected across Downloads/fpOpenGate and fpOpenGate (2).
+All: FrameRate=(30000,1001), raster3032x2012, default crop3008x2000 at12,6.
+TimeCodes tag 51043 is present. Decoded HH:MM:SS:FF label progression matches
+filename numbers across the supplied span. This corrects treating all
+CinemaDNG as having no timecode. These labels are not independent sensor
+exposure timestamps and cannot prove capture cadence or gyro synchronization.
+39-frame folder: no repeated complete encoded-pixel payloads. Its sparse file
+numbers do not establish camera frame drops; these may be selected downloads.
+No export found in Downloads root or the two sample folders.
+Raw inspection record: analysis/dng_metadata.json.
+Required next evidence for stutter: complete short contiguous DNG clip plus
+matching Resolve export, timeline rate and export rate. Separate capture
+irregularity from conform/retiming or export cadence before changing VMAX.
+
+HIGH-SPEED CLAIM, PRIMARY SOURCE CHECKED
+Sony IMX410CQK flyer explicitly lists readout mode16: 2020x96, RAW12,
+1628.22fps. The Sony readout-mode numbering is NOT SIGMA logical mode IDs.
+https://www.sony-semicon.com/files/62/pdf/p-13_IMX410CQK_Flyer.pdf
+The fp's 70 extracted logical entries have a minimum height672 and maximum
+table fps239.76024. They do not contain the 96-row/1628fps configuration.
+Unlocking it would need new register/receiver/buffer/recording integration.
+The fp sensor variant's support also needs verification; the flyer is not a
+camera specification.
+
+At2020x96 RAW12 and1628.22fps, packed raw throughput is473.6166MB/s.
+Two seconds requires947.2333MB of raw storage before padding, descriptors,
+queues and camera working memory. Available safe capture RAM is not known.
+An allocator argument of -1 is not proof all physical RAM is free or usable;
+its actual API semantics and pool limits must be traced. Memory-side cropping
+may reduce stored data but cannot reduce traffic already read from the sensor.
+Programmable sensor-side horizontal cropping is not established here.
+VMAX tuning changes frame period within valid sensor timing constraints; it
+does not allow arbitrary fps or eliminate line-readout limits.
+
+COMPRESSION CLAIM
+Upstream identifies a fixed-function lossless JPEG engine at0x300D0000 used
+for stills. That establishes a hardware engine, not necessarily a separate
+physical chip. projects/raw-sup.md:37-78 explicitly leaves sustained throughput
+unmeasured; ~300Mpixel/s is an estimate, not verified500MB/s performance.
+Compression ratio depends on scene/noise and encoding throughput still matters.
+Do not promise compressed high-speed video or size a RAM burst using an assumed
+constant lossless ratio.
+
+SAFETY AND AUTHOR CONTEXT
+Author reports a service SD-to-RAM execution mechanism, AI-assisted decompilation
+and a gyro writer based on audio-recording architecture. That is author
+provenance, not evidence all generated explanations are correct.
+Why SIGMA shipped the service entrypoint is unknown: call it a service mechanism,
+not a proven developer mistake or intended public extension API.
+Author reports no known bricking cases, no ROM writes in fpSup-Gyro, and removal
+of the battery for10seconds as an effective full reset. Preserve the qualifiers:
+this is not zero-risk proof and cannot be generalized to arbitrary future code.
+Remove the boot payload before rebooting to stock; warm off/on can preserve RAM.
+Manual-lens gyro logs reportedly work with zero lens metadata; select/calibrate
+a matching Gyroflow lens profile. Do not treat a zero profile as calibrated.

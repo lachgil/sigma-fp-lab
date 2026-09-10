@@ -1,0 +1,13 @@
+# NEVER publish proprietary firmware or anything derived from its bytes
+/inputs/
+/analysis/
+/reference/
+/builds/
+/captures/
+/host/
+/.venv/
+*.bin
+*.sqlite
+*.BIN
+__pycache__/
+*.pyc

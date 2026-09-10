@@ -1,0 +1,151 @@
+SIGMA fp lab, prepared 2026-09-10
+
+STATUS
+Offline research workspace, not a camera-ready combined firmware. No camera,
+USB daemon, SD card, flash, calibration data or Downloads originals modified.
+Target is SIGMA fp firmware 5.02, not fp L. Installed camera version is not
+established by the name or contents of a downloaded update.
+
+USER HARDWARE RESULT, 2026-09-10
+lgeeh confirms open gate WORKS on their camera using the originally supplied
+AutoRun. Test footage seems a little laggy; the source of that lag is unknown.
+This supersedes treating open-gate operation as merely hypothetical. Preserve
+this exact AutoRun as the working baseline. No resend is needed. Future work
+should distinguish camera preview lag, recorded cadence/dropped frames, and
+computer DNG playback performance before changing sensor timing. Upstream
+caveats below describe published research, not a denial of this working result.
+
+DECISION
+Develop a card-loaded RAM extension first. A proper on-camera menu does not
+require a flash replacement. An independent overlay is the initial research
+direction, not a delivered substitute for eventual native SIGMA menu entries.
+Native menu integration remains a goal requiring recovered descriptors,
+callbacks and lifecycle. Replacement flash firmware remains unproven: an
+extractable update and valid additive checksum do not establish that a modified
+update will be accepted, boot, or recover. No repacker or flash tool provided.
+
+INPUTS AND REPRODUCTION
+See manifest.json for exact source paths, SHA-256 hashes, pinned clone commits,
+commands and results. Firmware is private; do not distribute it.
+
+  python inspect_firmware.py inputs/FP__V502.bin --out analysis/MAIN_c0000000.bin
+
+This exact-input-only LZSS inspection extracts the first 49,482,954 decoded
+bytes of the primary body. The complete output SHA-256 matches fpSup's known
+MAIN reference. This is NOT a fully mapped, general-purpose DFI extractor;
+trailing data and all update segments need further study before repacking.
+The primary container section's additive byte checksum also matches its header.
+Nine open-gate stock words and its zero-filled cave were verified offline.
+
+  python reference/fpSup/opengate/build_test_autorun.py --firmware analysis/MAIN_c0000000.bin --out builds/opengate/AutoRun.txt --fragment builds/opengate/open_gate_patch.fragment.txt --manifest builds/opengate/MANIFEST.txt
+
+That command ran successfully. The result exactly matches the user's original
+32,768-byte AutoRun and the upstream open-gate artifact.
+
+  python reference/fpSup/gyro/build_base_card.py --edition gcsv --version v1.11b --out builds/gyro
+
+That command also ran successfully with installed Python and Clang ARMv7
+assembly support. VSHL.BIN matches packaged v1.11b, but AutoRun executable
+commands differ because the current source loader has changed. The version
+argument is only a label. builds/gyro is NOT the verified v1.11b release and
+has NOT been run on hardware. Keep matched boot-file sets together.
+One upstream invalid-docstring-escape SyntaxWarning occurred, not a build error.
+The packaged baseline remains reference/fpSup/gyro/release/fp-gyro-sup-v1.11b.zip.
+
+OPEN GATE
+Original AutoRun hash:
+032e2562e86d12db3085bac14b3ceab0abd71dc13e018e5d7542e145679ea790
+Both downloaded AutoRun files have identical bytes.
+
+Upstream calls this a TEST for CINE / CinemaDNG / 12-bit / FHD / 29.97p.
+It selects sensor mode 117, adjusts VMAX and live/record scaling, then hooks
+0xC043A19C to change the producer/DNG envelope to 3032x2012. It does not add a
+menu. Hook code is [0xC072F800,0xC072F8E8); telemetry [0xC072FA00,0xC072FA10).
+Its predicate checks a dimension pair, not all advertised preset conditions.
+There is no runtime firmware-version guard. Build-time checks are not enough
+when someone inserts the card into a different camera or firmware version.
+
+Upstream reports flickering live view and broken in-camera playback. Full
+useful Bayer coverage is still an explicit upstream test question, not proven
+by changing TIFF width/height. Six local DNGs (first/middle/last by filename in
+each of Downloads/fpOpenGate and fpOpenGate (2)) have 3032x2012, 12-bit,
+uncompressed metadata, default crop 3008x2000 at (12,6), and size 9,229,824.
+Only metadata was inspected; image content, frame continuity, timing and
+association of these files with the user's own camera were not established.
+
+USB getfile/putfile/inject/callfn helpers use the same cave as this open-gate
+payload. Do not use them while its hook is active. Upstream permits only idle,
+pre-record direct mem get, and requires USB disconnected during recording.
+For future hardware work, agree the exact operation first; none was done here.
+Use a cold boot with battery removed for clean recovery, not merely the power
+switch, which can preserve RAM. Remove boot files before returning to stock.
+RAM-only does not make arbitrary code or sensor-register writes risk-free.
+
+GYRO AND COMBINATION
+Current gyro uses build_base_card.py, not the legacy makecard.py/gyro README
+workflow. AutoRun allocates a USER pool; VSHL carries stage2, cave stubs and a
+pool-relative writer. Current source bootstraps via echo handler 0xC0BAC2F8.
+Producer hooks cover accelerometer, record start/stop and CINE mode changes.
+Upstream v1.11b produces GCSV plus lens JSON for CinemaDNG, not MOV; SSD is
+listed untested for this edition. Per-take synchronization remains required.
+
+Do not concatenate the two AutoRuns. Use one loader, one allocation/state map,
+and explicit hook ownership. Current producer code does not directly overlap
+open-gate code, but this does not prove compatibility or spare bandwidth.
+Critical semantic conflict: gyro/gcsv_json.S derives lens-profile dimensions
+from the FHD menu setting plus borders, while open gate changes the downstream
+frame geometry. A naive merge would likely report 1936x1090 for 3032x2012 frames.
+Correct effective dimensions, crop, sensor timing and rolling-shutter metadata
+must be shared between features. Validate actual gyro synchronization too.
+
+DEVELOPMENT ORDER, NOT IMPLEMENTED
+1. Keep exact model/version and expected-original-word checks; map loader,
+   code, data, allocation and warm-reset ownership. Add a fail-closed loader
+   before general deployment, including input length/range validation.
+2. Reverse-engineer the native menu construction and physical key-event path.
+   Prove persistent status rendering and an input handler without feature
+   patches first. OSD text exists; DrawingObserver is researched but not yet a
+   verified API. Key injection is not proof of key interception.
+3. Expose Gyro Logging and experimental Open Gate through one controller.
+   Maintain requested versus actually applied state. Enforce idle-only changes
+   in the backend, not just disabled-looking menu labels. Persist preferences
+   on the card, not camera calibration/NVRAM. Preserve ordinary key events.
+4. Integrate feature state, effective geometry and safe restoration. Rebuild
+   relevant mode/profile objects when changing the mode; copying UI setting
+   bytes is not sufficient. Preserve stock operation with features disabled.
+5. Hardware acceptance: supported firmware check, cold/warm boots, repeated
+   start/stop, mode transitions, disable/restore, DNG Bayer coverage and crop,
+   real cadence/readout, playback/live view, gyro sync, storage load and SD/SSD.
+   Tests on real hardware remain required before a camera-ready release.
+6. Reconsider flash persistence only after mapping the full updater/integrity
+   chain and proving an independent recovery path. No assumption of signature
+   absence or safe modified-image acceptance has been made.
+
+MAGIC LANTERN COMPARISON
+ML loads autoexec.bin from a card and runs alongside Canon firmware. Its
+installer commonly changes a persistent Canon boot flag; card boot markers,
+RAM patches and card-stored configuration are separate mechanisms. Do not
+apply Canon boot flags or loaders to SIGMA. ML's main menu is its own overlay,
+not new entries inserted into Canon's menu tree. Useful ideas: declarative
+entries, event forwarding, expected-original patch checks and saved originals.
+Its Canon-specific cache/MMU/GUI code and qemu-eos camera models do not supply
+a SIGMA port or emulator. Card loading can still indirectly affect persistent
+settings, so it is not a guarantee against lasting damage.
+
+LICENSING
+No explicit fpSup license grant was found in the inspected revision. Clarify
+permission before distributing reused code. Magic Lantern has GPL licensing
+and component-specific notices; learning its architecture is different from
+copying it. Its license does not cover SIGMA firmware. Keep inputs and analysis
+images private. .gitignore excludes them, builds and cloned references.
+
+PRIMARY REFERENCES
+https://github.com/ijigen/fpSup/tree/main/gyro/release
+https://github.com/ijigen/fpSup/tree/main/opengate
+https://github.com/ijigen/fpSup/blob/main/projects/ui-sup.md
+https://github.com/ijigen/fpSup/blob/main/projects/open-gate.md
+https://github.com/ijigen/fpSup/blob/main/gyro/gcsv_json.S
+https://github.com/reticulatedpines/magiclantern_simplified
+ML source: developer_guide/03_00_architecture.md, src/installer.c, src/gui.c,
+src/menu.c, src/menu.h, src/config.c, src/patch.c, src/reboot.c.
+Use the local pinned revisions from manifest.json when reproducing research.

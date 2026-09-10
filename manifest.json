@@ -1,0 +1,105 @@
+{
+  "purpose": "Offline SIGMA fp research only; no camera deployment",
+  "inputs": [
+    {
+      "source": "/home/lgeeh/Downloads/FP__V502.bin",
+      "copy": "inputs/FP__V502.bin",
+      "bytes": 25692160,
+      "sha256": "c9fa76f32f523bb2dc9a3fbda39418c31573cab6a1aa5c56d28c371862066ed8"
+    },
+    {
+      "source": "/home/lgeeh/Downloads/AutoRun (1).txt",
+      "copy": "inputs/AutoRun (1).txt",
+      "bytes": 32768,
+      "sha256": "032e2562e86d12db3085bac14b3ceab0abd71dc13e018e5d7542e145679ea790"
+    }
+  ],
+  "references": [
+    {
+      "path": "reference/fpSup",
+      "commit": "26befa62ed0df95bfd22661eb98b53d3f962c9f0",
+      "url": "https://github.com/ijigen/fpSup.git"
+    },
+    {
+      "path": "reference/magic-lantern",
+      "commit": "d7e3407b8f69ddde30516e298d4e077daa16df0c",
+      "url": "https://github.com/reticulatedpines/magiclantern_simplified.git"
+    }
+  ],
+  "analysis": {
+    "main_image": "analysis/MAIN_c0000000.bin",
+    "bytes": 49482954,
+    "sha256": "92a8ee993f6c3d66c251e88d45a2ccd5135c6cf7342717784321c2ed506e2fb4",
+    "method": "LZSS (4096-byte zero-filled ring, start 4078, LSB-first literal flags) of primary body 0x300:0x175e500; first 49482954 decoded bytes exactly match upstream opengate reference hash. Not a general firmware segment extractor.",
+    "primary_section_byte_sum": 2768501654,
+    "primary_header_sum": 2768501654,
+    "stock_patch_words_matched": 9,
+    "open_gate_cave_zero": true
+  },
+  "builds": {
+    "opengate": {
+      "command": "python reference/fpSup/opengate/build_test_autorun.py --firmware analysis/MAIN_c0000000.bin --out builds/opengate/AutoRun.txt --fragment builds/opengate/open_gate_patch.fragment.txt --manifest builds/opengate/MANIFEST.txt",
+      "matches_user_autorun": true
+    },
+    "gyro": {
+      "command": "python reference/fpSup/gyro/build_base_card.py --edition gcsv --version v1.11b --out builds/gyro",
+      "warning": "Upstream Python SyntaxWarning for invalid docstring escape in ring_task_deploy.py; build exit 0.",
+      "archive_comparison": {
+        "AutoRun.txt": {
+          "matches": false,
+          "sha256": "d2c208580ced1bf74e272ad6e021c3d96d5744477ce0fd2d768cf0e172810367"
+        },
+        "VSHL.BIN": {
+          "matches": true,
+          "sha256": "0028bf5f0f5c1c5bad6a3e036637a07e926175e21743c3c9f6b2d1678f9d7946"
+        }
+      },
+      "autorun_commands_match_release": false,
+      "status": "OFFLINE CURRENT-SOURCE BUILD ONLY. v1.11b is a label, not release equivalence; executable AutoRun differs. Not camera-tested."
+    }
+  },
+  "inspection_smoke": {
+    "exact_input": "passed; full output hash plus nine stock words and cave verified",
+    "unsupported_input": "/dev/null rejected before output creation"
+  },
+  "sensor_site": {
+    "url": "https://ijigen.github.io/fpSup/",
+    "verified_rows": 70,
+    "verified_fields": [
+      "mode ID across three tables",
+      "width",
+      "height",
+      "bit depth",
+      "metadata class",
+      "table fps calculation",
+      "readout calculation"
+    ],
+    "clock_interpretation": "72 MHz following upstream analyzer; not independently hardware measured",
+    "csv_distinct_register_vectors": 24,
+    "stock_fhd2997_picker_values": [
+      106,
+      106,
+      106
+    ],
+    "output": "analysis/sensor_modes.json"
+  },
+  "latest_hardware_report": {
+    "source": "user and supplied Discord conversation, 2026-09-10",
+    "open_gate": "works in FHD/CinemaDNG/29.97p",
+    "other_modes": "user reports purple lines and small top-right image with white remainder",
+    "stutter": "persists in Resolve export; cause unresolved",
+    "camera_fix_deployed": false
+  },
+  "dng_timing_inspection": {
+    "files": 42,
+    "frame_rate": [
+      30000,
+      1001
+    ],
+    "timecode_tags_present": true,
+    "timecode_labels_match_filename_progression": true,
+    "subset_pixel_payload_duplicates": [],
+    "limitation": "Sparse downloaded excerpts and timecode labels do not prove sensor cadence; no corresponding export available in inspected Downloads locations",
+    "details": "analysis/dng_metadata.json"
+  }
+}
