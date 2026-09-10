@@ -65,3 +65,15 @@ Green is fully localized and a hook approach is identified, but implementing a
 correct, freeze-safe display hook requires the camera (read lv-geom object layout
 live in open gate, place the hook, observe). It is the hardest item and remains a
 hardware-iteration task. Cosmetic (recorded files are unaffected).
+
+## HARDWARE NEGATIVE RESULT (2026-09-11)
+Poking the geometry-manager live-view blocks 0xC375E190 / 0xC375E308 (the 1620x911
+"lv render" pairs reached via manager 0xC375D840 +0xc) to dramatic values (800x800,
+held across recompute cycles) produced **NO visible change** on the LCD in open gate.
+=> These RAM blocks are NOT the visible display/green source. The manager+0xc object
+(0xC0428B18 accessor 0xC04376E0) is therefore not the effective target either.
+The visible green is driven further downstream — likely the ISP/YUV display-scaler
+config (YuvResize task ~0xC03CB090) or MMIO display-controller registers, not a plain
+RAM geometry struct. NEXT: trace YuvResize + the display-controller (XC_DisplayLcd
+0xC0B54FFC / XC_DisplayHdmi 0xC0729B48) register writes, offline (no camera needed).
+Do NOT re-test the 0xC375Exxx geometry blocks — confirmed inert for the display.
