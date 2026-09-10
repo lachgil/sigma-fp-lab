@@ -64,3 +64,8 @@ away/back to re-latch, record to SSD.
    hook, iterate.
 3. Darkness: `dark-on`, record fixed scene, measure vs stock, tune the float.
 4. Menu: bring up the key-hook (confirm the key ABI live), then the OSD menu.
+
+## Update 2026-09-11 (hardware)
+- High-fps M58 CONFIRMED engaged: selected-mode register 0xC343B590 read 0x3A (58) during the take.
+- It auto-stops after ~2-3s = eMOVREC_STOP_OVERFLOW (data rate > sustained storage) => running at 120 (2x data of 60p). Needs a fast SSD for longer takes, or a lower-data-rate mode. Short bursts work.
+- fpSup PR opened: https://github.com/ijigen/fpSup/pull/2 (mode-isolation gated hook).
