@@ -92,10 +92,57 @@ the CinemaDNG monitor actually consults before changing anything.
 - Nothing about whether the highlight monitor's thresholds reflect the raw
   clipping point in the unlocked modes, which is the actual complaint.
 
+## What the property path does with a value (offline)
+
+Each property function is the same three steps, and the only thing that differs
+between settings is a **vtable slot offset**:
+
+| setting | slot | commit fn |
+|---|---|---|
+| `SetToneControlMode` | `+0x1F8` | `0xC00649D0` |
+| `SetZebraHighlightLevel` | `+0x298` | `0xC0064580` |
+| `SetZebraExpRange` | `+0x2A4` | `0xC0064580` |
+
+    ldr r0,[r4] / ldr r3,[r0,#4] / add r3,#<slot> / ldr r3,[r3] / blx r3
+    mov r2,#0xFFFF ; mov r1,<value> ; bl <commit>
+
+Both commit functions are byte-identical in shape: a re-entrancy guard at
+`obj+0x10`, a vtable call at `[obj+0xC]+0x1C`, then `0xC00913F8` with
+`r3 = 0x80000002`. **Neither contains a numeric clamp** in its prologue -- the
+value is carried through untouched.
+
+That is the interesting part for a highlight monitor: the **menu** restricts
+which values you can pick, but this path may not. If so, zebra level and range
+can be set to values the UI never offers, which is a one-command experiment
+rather than a patch. Unproven -- a validator may live behind the vtable call at
+`[obj+0xC]+0x1C`, and the consumer may clamp instead.
+
+## The DNG-dev menu is NOT the recording tone curve
+
+`MenuDngDev*` is the **in-camera DNG development** feature -- the same
+neighbourhood holds `MenuDngDevExposureCompensationHandler`,
+`WhiteBalanceHandler`, `WbColorTempHandler`, `ImageQualityHandler`,
+`ImageSizeHandler`, `AspectRatioHandler`, `ColorModeHandler`,
+`ColorSpaceHandler`. These are class-name registry entries (name pointer plus a
+type id), so they describe the develop-a-DNG-in-camera UI, not what happens
+while recording.
+
+Which matters for the goal: **CinemaDNG is raw, so no tone curve is baked into
+the recording at all.** A "built-in tone curve set to linear" therefore acts on
+the **monitor** (and MOV), which is precisely why it would help highlight
+judgement -- you cannot see clipping through a display contrast curve. So the
+target is the monitor/display curve or `SetToneControlMode`, not the DNG-dev
+path, and the two should not be confused while bisecting.
+
 ## Suggested order
 
 1. Read the current values of the eleven settings above with `menu <Setter>` on
    a live camera, so there is a baseline to return to.
 2. Disassemble `0xC005E7A0` (zebra level) and `0xC005E968` (range) for their
    clamp, to learn whether out-of-menu values are accepted or rejected.
-3. Only then write, one setting at a time, checking the screen each time.
+3. Try an out-of-menu value for `SetZebraHighlightLevel` and read it back: the
+   commit path shows no clamp, so this is the cheapest test of the whole idea.
+4. Only then write more, one setting at a time, checking the screen each time.
+5. For the tone curve, establish first whether the change is to the monitor
+   path or `SetToneControlMode` -- asking whoever did it is faster than
+   bisecting, since CinemaDNG itself carries no curve.
