@@ -359,11 +359,20 @@ each framerate. So one mode id appears in several cells:
 Open gate works patching only M106's last three, so which cells are live is not
 uniform, and both 24p rows share a raster, so the recording cannot disambiguate.
 
-`M130 AUTO` stops guessing: it calls `F_MODE_NOW` (0xC032C720) for the live mode
-id, scans 0xC0BE5700..0xC0BE5D00 for every word equal to it, rewrites them all
-to 130 and stores each address so they can be restored, takes VMAX from that
-mode's own timing entry (valid verbatim only while the line period is M130's
-445, else it refuses) and the selector from the probe. Preset first, then AUTO.
+So every option now rewrites **all** of them: `repoint(from_id, to_id)` scans
+0xC0BE5700..0xC0BE5D00 and rewrites every word equal to `from_id`, returning the
+count. Reversing scans for the new id and writes the old one back, which is
+unambiguous because any two options that could produce the same id share a group
+bit and cannot be on together.
 
-`SEL` now reads `SEL=xx MODE=yy`: the probed selector and the live mode id, so
-"did the swap take" is answerable on the camera without a shell.
+Counts on 5.02: M106 (29.97) 4 cells, M109 (23.976) **5**, M27 (59.94) 4,
+M102 (4K) 4. Earlier builds rewrote three of each, which is why 29.97 worked and
+23.976 did not.
+
+`0xC032C720` is NOT the live sensor mode. Measured on hardware: it returns 8 with
+the preset at 29.97 AND at 23.976. An option that asked it for the mode id was
+built and then removed -- it correctly refused rather than act on the value, but
+the premise was wrong.
+
+`SEL` reads `SEL=xx CELLS=nn`: the probed selector and how many cells the last
+change rewrote, so "did the swap find anything" is answerable without a shell.

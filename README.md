@@ -47,9 +47,9 @@ this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
 - Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
-  M130 30P, M130 FAST, M130 24P, M130 AUTO, M98 60P, M6 4K, Gyro, Gyro-Gate,
-  SEL. UP toggles; Stock switches all off. SEL is read-only and shows the
-  probed selector plus the live sensor mode id.
+  M130 30P, M130 FAST, M130 24P, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP
+  toggles; Stock switches all off. SEL is read-only: `SEL=xx CELLS=nn`, the
+  probed selector and how many cells the last change rewrote.
 - **None of these modes is reachable from the stock UI**: no picker cell in the
   image names M117, M98, M130 or M6. M58 *does* have its own cells, so FHD
   119.88 is already a stock preset and the old "High FPS" option was removed
@@ -93,20 +93,19 @@ crop at 1:1 (13.44 ms), UHD/M7 is full-width 1:1 (21.09 ms).
   cell (selector 176, measured), timing entry 4116 -> 6748, **377 MB/s**. Also
   worth trying on any of them: 10-bit takes 29.97 down to 392 MB/s and 8-bit to
   314, since file depth follows the menu setting.
-- **M130 AUTO is the one to use.** Hardcoding picker cells failed twice: a mode
-  id lives in several places (the 0xC0BE5700 region is `{group, format id, mode,
-  descriptor}` records at 0x10 stride, plus three parallel tables above it), and
-  the two 24p rows carry the same 3032x1708 raster, so a recording cannot say
-  which one a preset used. Both times the canvas applied while the sensor mode
-  did not, which records the picture in the top-left corner of an oversized
-  frame with garbage in the rest -- a useful signature to recognise.
-  AUTO hardcodes nothing: **select the preset first**, then turn AUTO on. It
-  asks the firmware which mode is live, rewrites every cell holding that id
-  (remembering each address to restore), takes the frame length from that mode's
-  own timing entry and the selector from the probe. So it follows whatever
-  framerate is selected. It refuses -- `AUTO REFUSED, SEE SEL` -- if no selector
-  has been probed yet, or if the stock mode's line period is not M130's 445,
-  because then the rate would have to be recomputed rather than transferred.
+- **Mode swaps rewrite EVERY cell naming that mode, found by scanning.**
+  Hardcoding addresses failed twice on hardware: a mode id appears both in the
+  `0xC0BE5700` records (`{group, format id, mode, descriptor}`, 0x10 stride) and
+  in each of the three parallel tables above them, and which of those a given
+  framerate reads is not uniform -- open gate works rewriting three of M106's
+  four cells, while FHD 23.976 has **five** M109 cells and rewriting three left
+  the sensor on its stock mode. The signature of that failure is specific and
+  worth recognising: the canvas applies, the mode does not, and the clip is the
+  stock raster in the top-left corner of an oversized frame with garbage in the
+  rest. `SEL` reports the count, so a swap that found nothing is visible.
+  (An earlier attempt asked the firmware for the live mode via `0xC032C720`;
+  that returns 8 at every framerate, so it is not the sensor mode id and the
+  option built on it was removed rather than left to act on a wrong value.)
 - **M130 FAST** is the HMAX experiment: the same M130 canvas with its line
   period cut 445 -> 330, which is what rolling shutter is made of (16.32 ms ->
   12.10 ms, better than stock 4K), VMAX 4116 -> 7278 to hold 29.97. Every 12-bit
