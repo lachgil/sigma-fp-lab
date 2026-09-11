@@ -7,6 +7,8 @@ camera extension, or a supported release. No SIGMA firmware image is included.**
 ## Current status
 
 Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
+**Want to just test a card? See [`autoruns/`](autoruns/)** for ready-to-run files
+(open gate, open gate + green fix, FHD120, 2K120) with install instructions.
 
 - **Open-gate isolation:** selector-gated record hook, with limited earlier
   hardware observations and current-source ARM emulation.

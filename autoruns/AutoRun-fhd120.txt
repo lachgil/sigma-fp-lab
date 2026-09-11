@@ -1,0 +1,21 @@
+# ============================================================
+# fpSup-highfps: FHD 59.94 slot -> M58 (table 3032x1708@119.88; output unverified)
+# fp Ver.5.02 only. RAM-only (data picker patch); power-cycle to revert.
+# EXPERIMENTAL: recorded fps/geometry and sustained throughput unverified.
+# Boot alone, select the repurposed preset and switch away/back to re-latch.
+# This build contains no USB shell. Preserve original card files separately.
+# ============================================================
+display monitor 0 1
+mem set 0xC0BB1208 0xFFFFF8B2
+display osd 1 0x00000000
+display text fpHFRtest
+display osd 1
+
+# picker slot 4: mode 27 -> 58 (3 tables)
+mem set 0xC0BE5858 0x0000003A
+mem set 0xC0BE59F8 0x0000003A
+mem set 0xC0BE5B98 0x0000003A
+
+display osd 1 0x00000000
+display text fpHFR!
+display osd 1

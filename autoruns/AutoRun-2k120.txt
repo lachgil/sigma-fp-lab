@@ -1,0 +1,21 @@
+# ============================================================
+# fpSup-highfps: 2K 59.94 slot -> M103 (table 2088x1174@119.88; output unverified)
+# fp Ver.5.02 only. RAM-only (data picker patch); power-cycle to revert.
+# EXPERIMENTAL: recorded fps/geometry and sustained throughput unverified.
+# Boot alone, select the repurposed preset and switch away/back to re-latch.
+# This build contains no USB shell. Preserve original card files separately.
+# ============================================================
+display monitor 0 1
+mem set 0xC0BB1208 0xFFFFF8B2
+display osd 1 0x00000000
+display text fpHFRtest
+display osd 1
+
+# picker slot 17: mode 88 -> 103 (3 tables)
+mem set 0xC0BE5928 0x00000067
+mem set 0xC0BE5AC8 0x00000067
+mem set 0xC0BE5C68 0x00000067
+
+display osd 1 0x00000000
+display text fpHFR!
+display osd 1
