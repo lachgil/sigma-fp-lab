@@ -354,10 +354,15 @@ show_sel:
     ldr r1, [r0, #CELLS_N]
     add r2, r4, #9
     bl puthex
-    mov r0, #0x82                  @ L: cells that still name M130 right now.
-    bl tally                       @ After a re-latch, 00 means the camera put
-    mov r1, r0                     @ its own value back over ours; a nonzero
-    add r2, r4, #14                @ count means ours survived and was ignored.
+    LDA r0, ST                     @ L: cells naming the ACTIVE option's mode.
+    ldr r0, [r0, #M130_TGT]        @ Which id that is depends on the option --
+    cmp r0, #0                     @ M130 installs 130, M10 installs 10 -- so
+    movne r1, r0                   @ read it from the target table rather than
+    ldrne r0, [r1]                 @ assuming, which reported a false 00.
+    moveq r0, #0x82
+    bl tally
+    mov r1, r0
+    add r2, r4, #14
     bl puthex
     pop {r4, lr}
 paint:

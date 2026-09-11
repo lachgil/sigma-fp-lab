@@ -417,6 +417,12 @@ assert cells(tuple(a for a in SCAN if FWWORD(a) in (0x6D, 0x71))) == (10,) * 5
 assert c.get(M10_VMAX) == 0x00081A5C, hex(c.get(M10_VMAX))
 assert c.get(M10_VMAX) >> 16 == 0x0008, 'high half of the timing word kept'
 assert c.geom(0) == FULL10 and cells(zoom_cells(176)) == (0x400,) * 4
+# The SEL readout must tally the id THIS option installs (10), not 130: it
+# reported a false 00 for M10 on hardware because the id was hardcoded.
+c.select(10)
+line = c.press(0x14)
+assert line.endswith('L=05'), line
+c.select(5)
 assert c.get(0xC0B59A88) == 0x04201014, 'M130 timing untouched'
 assert c.press(0x14) == '>M10 WIDE   OFF'
 assert c.get(M10_VMAX) == 0x00080A8C, 'M10 timing restored'
