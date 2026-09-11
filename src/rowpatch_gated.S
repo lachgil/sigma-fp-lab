@@ -3,7 +3,9 @@
 .text
 
 /*
- * Mode-gated 3032x2012 canvas hook -- isolation-safe successor to rowpatch_v4.
+ * Experimental selector-gated 3032x2012 canvas hook, based on fpSup rowpatch_v4.
+ * Upstream: https://github.com/ijigen/fpSup/blob/main/opengate/rowpatch_v4.S
+ * No new license grant is implied for the upstream-derived code.
  *
  * WHY THIS EXISTS
  * ---------------
@@ -20,8 +22,9 @@
  *   unlike 0xC343B590, which only becomes 117 mid-take and made the hook never
  *   fire (that was the bug that broke open gate).
  *
- * So: rewrite only when armed AND the row is 1936x1090 AND r5 == 175. Every
- * other framerate/mode falls through as a no-op and records exactly as stock.
+ * Rewrite only when armed AND the row is 1936x1090 AND r5 == 175.
+ * Other selector/row combinations fall through. That predicate does not prove
+ * correct stock recording for every mode, format, or transition.
  *
  * ABI (unchanged from v4):
  *   r4 = FieldAngle object, r4+0x5C = geometry row, r5 = selector.

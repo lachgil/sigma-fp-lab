@@ -113,3 +113,24 @@ All three must be CODE (loaded blob), not pokes. Delivery = the compiled-blob
 loader (FP3K proves the pattern: stub@0xC0732100 loads \*.BIN into 0xC072DE64,
 sum-zero checksum, installs trampoline hooks). Hardware bring-up still required to
 confirm the `0xC375EB68/ED3C` field offsets on THIS unit before arming.
+
+## Independent offline verification (session-2 review, Main)
+Disassembled the display accessor and decoded the build_greenfix handler against
+the hash-verified MAIN, no camera:
+- 0xC0437E98 stock = `push {r4,r5,lr}; mov r5,r0; mov r4,r1; cmp r4,#4; ...;
+  add r2,r5,r4,lsl#3; ldr r2,[r2]; mov r0,r2; pop`. It is an INDEXED accessor:
+  returns `*(container + index*8)`. The hook handles index 0 only and tail-calls
+  the stock accessor at the 0xC0437E9C trampoline for everything else.
+- The handler at 0xC072E430 gates on: index 0, ARMED (0xC072FA10)==1, container
+  == 0xC375EB68 or 0xC375ED3C, then an FNV-1a (offset 0x811C9DC5, prime 0x01000193)
+  hash of the object head (44 bytes at *(container)) matching a per-object constant
+  (0xAED11366 for EB68's 0xC375E934 head, 0xE0255ED6 for ED3C's 0xC2F21494 head).
+  On a mismatch it returns the original object unchanged. So on a camera whose
+  object head differs, the fix is a safe no-op, not a corruption. Confirm the head
+  fingerprint on THIS unit (read *(0xC375EB68)/*(0xC375ED3C) and the 44 bytes)
+  before assuming the standby fix engages.
+- This corroborates the dev's standby fix and its "confirm on THIS unit" caveat,
+  and matches the record-monitor split above: standby uses 0xC0437E98; the record
+  monitor uses 0xC04376E0 with a 16:9 buffer allocated at record start.
+- inspect_preview.py (offline) derives the same record-monitor sub-object address
+  0xC375E4DC = live_object(0xC375E480)+0x5C that the dev read live.

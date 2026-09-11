@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""Build a persistent high-fps CinemaDNG RAW AutoRun by repurposing a CinemaDNG
-picker slot to a high-frame-rate sensor mode (data-only picker patch).
+"""Build an experimental picker-only AutoRun targeting high-rate sensor modes.
 
-The fp exposes 100/120fps only in MOV; the sensor modes exist for RAW too but
-are not offered in the CinemaDNG menu. This repoints a menu-reachable slot's
-sensor-mode id to a high-fps mode with a MATCHING raster, so it records clean
-FHD/2K at high fps (no geometry hook, no green/darkness). Data-only (picker
-cells) -> no code/cache concerns; RAM-only, reverts on power-off.
+The user reports 100/120fps exposed in MOV but not in CinemaDNG. These patches
+select table-derived high-rate modes through other picker slots. M58 was read
+back after a take, but neither recorded cadence nor downstream geometry has
+been established. Matching sensor rasters alone do not prove clean output.
 
-PROVISIONAL: user recorded M58 (slot 4) with no green, but the recorded
-frame-rate/continuity is unverified (check the .DNG FrameRate tag + frame count).
-3K@120 downscales to 1936x1090 = ~389 MB/s -> needs a fast SSD.
+No green-preview fix, USB shell or runtime firmware guard is included.
+Use only on fp 5.02. RAM-only; remove AutoRun and power-cycle to revert.
+Cold-boot this card alone, not layered over an open-gate session.
 
-  build_highfps_autorun.py            # default: slot4 (FHD59.94) -> M58 FHD120
+  build_highfps_autorun.py [fhd120|2k120]
 """
 import hashlib
 import struct
@@ -27,8 +25,8 @@ TABLES = (0xC0BE5810, 0xC0BE59B0, 0xC0BE5B50)
 
 # (slot, stock_mode, new_mode, label)
 PROFILES = {
-    "fhd120": (4, 27, 58, "FHD 59.94 slot -> M58 3032x1708@119.88 (->1080, ~389MB/s SSD)"),
-    "2k120":  (17, 88, 103, "2K 59.94 slot -> M103 2088x1174@119.88 (~441MB/s SSD)"),
+    "fhd120": (4, 27, 58, "FHD 59.94 slot -> M58 (table 3032x1708@119.88; output unverified)"),
+    "2k120":  (17, 88, 103, "2K 59.94 slot -> M103 (table 2088x1174@119.88; output unverified)"),
 }
 
 
@@ -50,8 +48,9 @@ def build(profile="fhd120", out="builds/highfps/AutoRun.txt"):
         "# ============================================================",
         f"# fpSup-highfps: {label}",
         "# fp Ver.5.02 only. RAM-only (data picker patch); power-cycle to revert.",
-        "# Select the repurposed preset in the CinemaDNG menu; switch away/back",
-        "# to re-latch, then record to a FAST SSD.",
+        "# EXPERIMENTAL: recorded fps/geometry and sustained throughput unverified.",
+        "# Boot alone, select the repurposed preset and switch away/back to re-latch.",
+        "# This build contains no USB shell. Preserve original card files separately.",
         "# ============================================================",
         "display monitor 0 1",
         "mem set 0xC0BB1208 0xFFFFF8B2",

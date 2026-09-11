@@ -8,9 +8,14 @@ FHD/25, for a UHD row, and when disarmed.
 """
 from pathlib import Path
 import struct
+import sys
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
-from unicorn.arm_const import (UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_SP,
-                               UC_ARM_REG_LR)
+from unicorn.arm_const import (UC_ARM_REG_R0, UC_ARM_REG_R4, UC_ARM_REG_R5,
+                               UC_ARM_REG_SP, UC_ARM_REG_LR)
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / "reference" / "fpSup" / "fp_usb_shell"))
+from armasm import assemble
 
 CODE = 0xC072F800
 LOG = 0xC072FA00
@@ -19,7 +24,7 @@ FIELDANGLE = 0x45000000
 ROW = FIELDANGLE + 0x5C
 STACK = 0x46000800
 RET = 0xC043A1A0
-blob = Path("builds/rowpatch_gated.bin").read_bytes()
+blob = assemble(HERE / "src" / "rowpatch_gated.S")
 
 
 def run(armed, width, height, r5):
@@ -41,7 +46,11 @@ def run(armed, width, height, r5):
     row = {off: struct.unpack_from("<I", uc.mem_read(ROW + off, 4))[0]
            for off in (0x00, 0x04, 0x24, 0x2C, 0xD8, 0xE0, 0xDC, 0xE4, 0xF4, 0xF8)}
     hits = struct.unpack_from("<I", uc.mem_read(LOG, 4))[0]
-    return row, hits, uc.reg_read(UC_ARM_REG_R4)
+    abi_ok = (uc.reg_read(UC_ARM_REG_R0) == FIELDANGLE
+              and uc.reg_read(UC_ARM_REG_R4) == FIELDANGLE
+              and uc.reg_read(UC_ARM_REG_R5) == r5
+              and uc.reg_read(UC_ARM_REG_SP) == STACK)
+    return row, hits, abi_ok
 
 
 REWRITTEN = {0x00: 3032, 0x04: 2012, 0x24: 3008, 0x2C: 2000,
@@ -61,12 +70,13 @@ cases = [
     ("armed + FHD row + r5=180 (FHD/25)    -> no-op",   (1, 1936, 1090, 180), untouched(1936, 1090), 0),
     ("armed + UHD row + r5=175             -> no-op",   (1, 3856, 2170, 175), untouched(3856, 2170), 0),
     ("DISARMED + FHD row + r5=175          -> no-op",   (0, 1936, 1090, 175), untouched(1936, 1090), 0),
+    ("armed + wrong height + r5=175       -> no-op",   (1, 1936, 1080, 175), untouched(1936, 1080), 0),
 ]
 
 ok = True
 for label, args, expect_row, expect_hits in cases:
-    row, hits, r0 = run(*args)
-    passed = row == expect_row and hits == expect_hits and r0 == FIELDANGLE
+    row, hits, abi_ok = run(*args)
+    passed = row == expect_row and hits == expect_hits and abi_ok
     ok &= passed
     print(f"[{'PASS' if passed else 'FAIL'}] {label}  (hits={hits})")
     if not passed:

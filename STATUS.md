@@ -16,17 +16,25 @@ on-camera bring-up)**.
 Load: copy to card root as `AutoRun.txt`, cold boot, select the preset, switch
 away/back to re-latch, record to SSD.
 
-## LIVE TOOLS (when camera on the shell)
-- `toggle_opengate.py on|off|status` — flip open gate live (proven).
-- `toggle_opengate.py dark-on|dark-off` — EXPERIMENTAL darkness compensation
-  (profile-122 digital gain 0xC0BD8714 → 4.883f). Verify brightness vs stock.
+## LIVE TOOLS (camera on the class-ff shell; idle only, never during record)
+- `toggle_opengate.py on|off|status` — data-only flip of an ALREADY cold-boot-
+  installed gated payload. It verifies the payload digest, hook and patch cells,
+  aborts on any failed write/readback, disarms before table edits, and never
+  reports enabled after a partial transition. It does NOT install code. No
+  recording-idle interlock exists; a failed transition needs a cold-boot recovery.
+- `toggle_opengate.py dark-on|dark-off` — EXPERIMENTAL one-cell gain
+  (profile-122 0xC0BD8714 -> 4.8828125f). Unverified brightness; `off` restores it.
+- `inspect_preview.py <capture> --base <addr>` — offline capture traversal:
+  reports the node selector, the record-monitor sub-object (O+0x5C) and descriptor
+  extents, with missing-range errors. No camera needed.
 - `snapshot.py`, `memread.py`, `regiondiff.py`, `sigma_test.py` (sigma-ptpy).
+  Host multi-hop reads can race; outputs are not atomic captures.
 
 ## DESIGNED — needs on-camera bring-up (docs)
-- **Green** (`GREEN-HOOK.md`): cause fully traced (display uses live-view geom
-  obj via MovSigProcess accessor 0xC04376E0; recomputed per frame → needs a code
-  hook, not a poke). Hook point identified; must be placed + verified live
-  (wrong preview geometry can freeze). Cosmetic (files are fine).
+- **Green** (`GREEN-HOOK.md`, `FIRMWARE-DECODE.txt` §2): SUPERSEDED by the
+  session-2 update below. Record-time monitor only (live view + files fine).
+  Standby canvas fix = accessor 0xC0437E98 (FP3K-verified, build_greenfix);
+  record-monitor needs a record-start buffer hook, not the per-frame 0xC04376E0.
 - **Darkness** (`PLAYBACK-DARKNESS.md`): the +0xfc per-profile digital-gain float
   is the knob; proposed cell 0xC0BD8714=0x409C4000. Needs a frame measurement to
   set the exact factor. Wired into `toggle_opengate.py dark-on`.
@@ -35,9 +43,11 @@ away/back to re-latch, record to SSD.
   more live tracing).
 - **Stage-3 sideload** (`SIDELOAD.md`): SD-loaded VSHL.BIN extension carrying all
   features + a resident menu/controller, built on fpSup's existing loader.
-- **On-camera menu + buttons** (`MENU-UI.md` + `src/menu_keyhook.S`, assembles):
-  key handler 0xC0265800, interception via descriptor swap at 0xC091EA38, OSD
-  renderer, controller FSM, feature-toggle map. Needs live input-ABI bring-up.
+- **On-camera menu + buttons** (`MENU-UI.md`): candidate handler 0xC0265800
+  (0xC0269B50 is a destructor, not the callback). The earlier `src/menu_keyhook.S`
+  draft was WITHDRAWN in review (placeholder addresses, no idle interlock, live
+  instruction rewrite without cache maintenance). Design retained in MENU-UI.md;
+  real key ABI, renderer lifecycle and idle gate still need on-camera bring-up.
 - **Autofocus** (`AUTOFOCUS.md`): contrast metric readable at 0xC32914xx
   (manual-lens-safe); lens drive via 0xC033FDA0. BLOCKED by manual lens
   (LmountFocusNone::update 0xC0342238 is a no-op stub = no motor). PdCaf is dead
@@ -135,3 +145,25 @@ AND every 3K/2K CinemaDNG preset), `3,x`=heavier(11). The current "UHD" = **M7
    per-frame `0xC04376E0` accessor; the monitor buffer is 16:9-allocated.
 3. Shell workflow: `fpshd --socket /tmp/fpshd.sock` (sudo) + `host/fpsh mem get/set`
    for live poke/observe. Records auto-stop ~20s (storage overflow) — enough to test.
+
+## Update 2026-09-11 (session-2 evidence review — Main)
+Read the session-2 work, verified it offline, and corrected overclaims without
+touching the mode-unlock or green findings, which hold up.
+- Independently disassembled the green accessor 0xC0437E98 (indexed:
+  `*(obj+idx*8)`) and decoded build_greenfix's handler: a gated accessor-return
+  substitution with an FNV-1a fingerprint over the object's 44-byte head, so a
+  unit whose object differs passes through safely. Confirm the fingerprint on
+  THIS camera before trusting the standby fix. inspect_preview.py now derives the
+  same record-monitor sub-object (0xC375E4DC) the dev found live.
+- Hardened `toggle_opengate.py`: aborts on any failed write, verifies the
+  installed payload/hook/cells, disarms before table edits, arms only after
+  success, no live instruction replacement. Added `tests/` (7 passing regressions).
+- `emulate_hook.py` now assembles the current source and checks the returned R0
+  plus preserved R4/R5/SP (it previously validated R4 under the name r0).
+- Builders relabelled honestly: the record hook gates on ARMED + 1936x1090 +
+  r5==175 (not a mode-id check); HFR output cadence/geometry remain unverified.
+- Withdrew the non-deployable `src/menu_keyhook.S`; corrected the SIDELOAD key
+  hook from the destructor 0xC0269B50 to candidate handler 0xC0265800.
+- Reframed darkness/playback notes as unverified experiments/hypotheses.
+- Caveat unchanged: M58 selection is not a measured 120fps; a short auto-stop is
+  consistent with overflow but was not captured as a stop reason. No flashing.

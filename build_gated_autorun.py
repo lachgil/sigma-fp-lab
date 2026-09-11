@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""Build a mode-gated open-gate AutoRun that cannot corrupt other modes.
+"""Build an experimental selector-gated open-gate AutoRun for fp 5.02.
 
-Same self-isolating data patches as fpSup's open-gate test (picker slot 7,
-mode-117 VMAX, four FHD/29.97 CinemaDNG RWZM cells), but the live FieldAngle
-canvas hook is replaced with src/rowpatch_gated.S, which additionally requires
-the live selected sensor mode to be 117 before it rewrites geometry. In any
-other mode the hook is a no-op, so stock recording is preserved.
+Uses fpSup's slot-7 picker, mode-117 VMAX and four profile-122 RWZM patches.
+The canvas hook additionally requires ARMED, a 1936x1090 row and selector
+r5==175. r5==180 (observed FHD/25) passes through. This is not a check of the
+selected sensor-mode register and does not establish safety for every mode.
 
-Firmware-specific: verifies the exact fp 5.02 MAIN, the stock words at every
-patch site, and that the whole cave it occupies is empty, before emitting.
-
-HARDWARE STEP STILL REQUIRED (documented in src/rowpatch_gated.S): confirm that
-0xC343B590 reads 117 at hook time during an open-gate take. Worst case if it
-lags is that open gate does not engage (a no-op) -- not corruption -- and a
-battery pull resets everything. Nothing is written to ROM.
+Build-time checks verify the exact MAIN, stock patch words and empty cave.
+The generated AutoRun has no runtime firmware-version guard. Use only on fp
+5.02, with USB disconnected during cold boot as required by fpSup. This is
+not a green-preview fix; recording correctness still needs hardware testing.
 """
 from __future__ import annotations
 
@@ -73,8 +69,8 @@ def gated_section(blob: bytes) -> str:
     lines = [
         "# --- MODE-GATED 3032x2012 open gate @29.97 -------------------------",
         "# fp Ver.5.02 ONLY. Cold-boot RAM patches; remove AutoRun.txt and",
-        "# power-cycle (battery out) to return to stock. Hook no-ops unless the",
-        "# live selected sensor mode is 117, so other modes are unaffected.",
+        "# power-cycle (battery out) to return to stock. Canvas rewrite requires",
+        "# ARMED, a 1936x1090 row and selector r5==175 (not a mode-id check).",
         "",
     ]
     for address, stock, value, comment in og.DATA_PATCHES:
