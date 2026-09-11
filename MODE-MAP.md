@@ -110,3 +110,13 @@ M9      2016x672   3.0  1.4   59.9   3.08  12   121    3,3,3,6 dormant geom-hook
 M131   1984x1320 1.503  2.6   78.2   8.16  12   308        2x2 dormant geom-hook
 M146   1984x1320 1.503  2.6   18.0   8.16  12    71        2x2 dormant geom-hook
 ```
+
+## Field notes from Bei (main dev), 2026-09-11
+Hands-on comparison of the two 3032x2012 3:2 open-gate-class modes:
+- **M98** (3032x2012 @77, 12-bit, 2x2): rolling shutter ~12 ms; shadow noise about
+  the same as UHD (M7). The balanced pick if you can accept ~12 ms RS.
+- **M117** (3032x2012 @100, 12-bit, 2x2): rolling shutter ~9 ms (its main win);
+  shadow noise noticeably worse than M98/UHD. Choose it when low rolling shutter
+  matters more than shadow cleanliness.
+Both are 2x2 (soft) vs the full-readout modes above; this is a RS-vs-noise
+trade within the 3:2 family, not a sharpness win over full-readout UHD.

@@ -134,3 +134,14 @@ the hash-verified MAIN, no camera:
   monitor uses 0xC04376E0 with a 16:9 buffer allocated at record start.
 - inspect_preview.py (offline) derives the same record-monitor sub-object address
   0xC375E4DC = live_object(0xC375E480)+0x5C that the dev read live.
+
+## FP3K blob obtained — port fidelity confirmed (2026-09-11)
+The actual FP3KMENU.BIN (FP3K 0.3.5) loader was decoded offline. Its green handler
+at blob address 0xC0731790 is byte-faithful to build_greenfix's handler: same
+objects 0xC375EB68/0xC375ED3C, sub-object 0xC375E934, same FNV-1a gate
+(offset 0x811C9DC5, prime 0x01000193) and per-object fingerprints (0xAED11366 /
+0xE0255ED6), and the same 3:2 descriptor return. The ONE difference: FP3K reads
+its armed flag from its own state block 0xC0732000+0x10; our build_greenfix reads
+0xC072FA10 (the open-gate ARMED flag) so it engages with open gate. FP3K is a raw
+sum-zero-checksummed code image loaded to 0xC072DE64; see SIDELOAD.md for the full
+loader decode. FP3KMENU.BIN is third-party and is NOT redistributed in this repo.
