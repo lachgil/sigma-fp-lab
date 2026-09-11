@@ -357,6 +357,18 @@ assert c.get(ST + 52) == len(q24), 'the count SEL reports'
 assert c.press(0x14) == '>M130       OFF'
 assert cells(q24) == tuple(FWWORD(a) for a in q24), 'all restored'
 c.assert_stock()
+# A stray M130 cell from an earlier toggle must be adopted, not skipped: on
+# hardware that showed up as C=04 with L=05 and left a cell naming M130.
+c = Camera()
+c.put(0xC072FA30, 176)
+stray = q24[0]
+c.put(stray, 0x82)
+c.select(3)
+assert c.press(0x14) == '>M130       ON'
+assert c.get(ST + 52) == len(q24), 'the stray is counted, not skipped'
+assert c.press(0x14) == '>M130       OFF'
+assert c.get(stray) in (0x6D, 0x71), 'the stray got a stock id back'
+assert all(c.get(a) != 0x82 for a in SCAN), 'nothing still names M130'
 print('PASS: every cell of the selected rate is repointed and restored')
 
 # Every independent live/busy signal must block a change without touching hooks.

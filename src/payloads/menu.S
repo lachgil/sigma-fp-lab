@@ -680,6 +680,11 @@ m98a_done:
  *   the table can serve, take the frame length from the row that matched, and
  *   record each (address, old id) pair so it can be put back exactly.
  *
+ * A cell already holding M130 is adopted rather than skipped, and recorded
+ * against this rate's first stock id. Skipping it leaked: measured on hardware
+ * as C=04 with L=05, one cell left naming M130 after a revert -- which means
+ * something copies values between these cells behind us.
+ *
  * r0 = which frame-length column (4 = line period 445, 8 = 330).
  * Returns r0 = 1 applied, 0 refused with nothing changed. */
 m130_apply:
@@ -704,6 +709,9 @@ m130_apply:
     LDA     r4, 0xC0BE5700
     LDA     r5, 0xC0BE5D00
 3:  ldr     r2, [r4]
+    cmp     r2, #0x82
+    moveq   r2, r0                 @ a stray left by an earlier toggle: adopt it
+    beq     4f                     @ so the revert puts a stock id back
     cmp     r2, r0
     beq     4f
     cmp     r2, r1
