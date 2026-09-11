@@ -40,26 +40,45 @@ this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
 - Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
-  High FPS, M98 60P, Gyro, Gyro-Gate. UP toggles; Stock switches all off.
-- Gyro-Gate toggles Open Gate and Gyro together. Gyro is otherwise orthogonal.
-- Open Gate/Gyro-Gate: FHD 29.97 CinemaDNG, 3032x2012 from M117 (2x2, 9.22 ms).
-  High FPS: FHD 59.94 cell M27 to M58 (3032x1708 @119.88), not a new recorder.
-- **M98 30P** puts the same 3032x2012 canvas on M98 instead of M117 at the
-  already measured 29.97 selector (hmax 445, 12.44 ms readout), so the two can
-  be compared directly. **M98 60P** puts 3032x2012 on the FHD 59.94 cell:
-  open-gate geometry at double the rate, about 548 MB/s, so expect SSD-only
-  short bursts before an overflow stop. Both are untested experiments.
-- M98 60P needs the FieldAngle selector for FHD/59.94, which is not derivable
-  from the image (175/180 are interleaved per-format indices). Until it is
-  measured the option **refuses** and draws `M98 60P NEEDS SEL=xx` with the
-  value the hook's probe last saw for an FHD row. To measure it: boot this card
-  with everything Stock, record ~2 s of FHD/59.94 CinemaDNG (nothing is
-  repointed, so it records normally), select M98 60P, press UP, read the two
-  hex digits, then rebuild with `--og60-sel 0x<value>`.
-- Conflicting options switch each other off instead of fighting over a cell:
-  Open Gate vs M98 30P (29.97 cell), High FPS vs M98 60P (59.94 cell), and
-  M98 30P vs M98 60P (one shared timing entry).
-- After changing Open Gate/High FPS, switch recording preset away and back
+  M130 30P, M98 60P, M6 4K, Gyro, Gyro-Gate. UP toggles; Stock switches all off.
+- **None of these modes is reachable from the stock UI**: no picker cell in the
+  image names M117, M98, M130 or M6. M58 *does* have its own cells, so FHD
+  119.88 is already a stock preset and the old "High FPS" option was removed
+  rather than shipped as a duplicate that also mis-times the 60p preset.
+- Frame rate is `72 MHz / (HMAX * VMAX)` and rolling shutter is
+  `HMAX * lines / 72 MHz`, verified against all 70 modes (max error 0.15 fps).
+  The timing table is `0xC0B59500 + n*0x20`: mode id at +0, HMAX low16 at +4,
+  VMAX low16 at +8. Only the low half is written; the high half differs per mode
+  (4 on binned entries, 1056 on M130, 952 on M6) and is preserved. Detuning
+  VMAX is what makes an otherwise throughput-impossible mode recordable.
+
+| option | sensor mode | readout | canvas | rate | notes |
+|---|---|---|---|---|---|
+| Open Gate | M117 2x2 | 9.22 ms | 3032x2012 | 274 MB/s | works; card is fine |
+| M98 30P | M98 2x2 | 12.44 ms | 3032x2012 | 274 MB/s | comparison against M117, more skew |
+| **M130 30P** | **M130 FULL** | 16.3 ms | **3968x2640** | **471 MB/s** | no binning: the real image gain, SSD |
+| M98 60P | M98 2x2 | 12.44 ms | 3032x2012 | 548 MB/s | open-gate framing at 60p, short bursts |
+| M6 4K | M6 FULL 14-bit | 27.5 ms | 4176x2174 | 476 MB/s | picker-only; looked identical to stock 4K |
+
+- **M130 30P** is the one with a genuine quality gain: full 1:1 readout, bigger
+  than 4K, 3:2. Its crop margin is unknown (the 12/6 measured on M117's binned
+  DNGs does not carry over to a 1:1 window), so no margin is claimed -- check
+  `DefaultCropOrigin`/`DefaultCropSize` on the first clip.
+- **M6 4K** was tested live 2026-09-11 and looked identical to stock 4K: the
+  CinemaDNG file depth follows the menu's 8/10/12 setting, so M6's extra two
+  bits are quantised away. Kept because it is a three-word swap and the only
+  path to 14-bit if that recorder limit is ever lifted.
+- The FHD/59.94 selector is **173**, measured on hardware: the hook's probe read
+  175 with the preset at FHD/29.97 and 173 at FHD/59.94, which is a
+  framerate-tracking cross-check rather than one reading. It is the default;
+  `--og60-sel 0` puts the option back to refusing, and any unmeasured framerate
+  draws `NEEDS SEL=xx` with the probe value instead of guessing.
+- Conflicting options hand the cell over instead of stacking: Open Gate, M98 30P
+  and M130 30P share the FHD 29.97 cell; M98 30P and M98 60P share M98's single
+  timing entry. M6 (4K cell) and M98 60P (59.94 cell) are independent, and the
+  canvas is published per selector slot so a 3968x2640 mode at 29.97 can run
+  beside a 3032x2012 one at 59.94.
+- After changing any mode option, switch the recording preset away and back
   before recording, including after returning to Stock.
 - Gyro uses the working example's GCSV writer and lens JSON beside CinemaDNG
   clips. No sidecar folder setup is needed. It does not add MOV gyro support.

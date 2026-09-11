@@ -46,11 +46,11 @@ def parse_vbin(raw):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT / 'builds/combined-menu')
-    parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=0,
-                        help='measured FieldAngle selector for FHD/59.94 '
-                             'CinemaDNG; 0 leaves the M98 60P option refusing, '
-                             'because rewriting geometry for a guessed selector '
-                             'corrupts whatever mode really uses it')
+    parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
+                        help='FieldAngle selector for FHD/59.94 CinemaDNG. '
+                             'Default 173, measured on hardware 2026-09-11: the '
+                             'probe read 175 at FHD/29.97 and 173 at FHD/59.94. '
+                             'Pass 0 to leave the M98 60P option refusing.')
     args = parser.parse_args()
     if not 0 <= args.og60_sel <= 0xFFFF:
         raise SystemExit('--og60-sel must be a 16-bit selector value')

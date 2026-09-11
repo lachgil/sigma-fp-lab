@@ -35,8 +35,11 @@
  * value for a framerate can be read after recording it once with nothing
  * repointed. The probe only ever writes to its own two words.
  *
+ * The canvas itself is data too (GEOM, one set per selector slot), so a second
+ * repointed framerate can carry a different raster than the first.
+ *
  * Rewrite only when armed AND the row is 1936x1090 AND r5 matches an enabled
- * selector. Other selector/row combinations fall through. That predicate does
+ * selector AND that slot has a published canvas. Other selector/row combinations fall through. That predicate does
  * not prove correct stock recording for every mode, format, or transition.
  *
  * ABI (unchanged from v4):
@@ -50,16 +53,11 @@
 .equ ARMED,          0xC072FA10     /* controller flag: nonzero = a feature is on */
 .equ SELS,           0xC072FA20     /* [0] 29.97 slot, [4] 59.94 slot; 0 = off   */
 .equ PROBE,          0xC072FA30     /* [0] last FHD-row selector, [4] how many   */
+.equ GEOM,           0xC072FA40     /* per-slot canvas: base w/h then active w/h  */
 
 .macro LDA reg, value
     movw    \reg, #:lower16:\value
     movt    \reg, #:upper16:\value
-.endm
-
-.macro PUT off, val
-    movw    r3, #\val
-    movw    r0, #\off
-    str     r3, [r1, r0]
 .endm
 
 .global entry
@@ -102,36 +100,48 @@ entry:
     cmp     r3, #0
     beq     1f
     cmp     r5, r3
-    beq     2f
+    bne     1f
+    LDA     r2, GEOM
+    b       2f
 1:  ldr     r3, [r2, #4]
     cmp     r3, #0
     beq     out
     cmp     r5, r3
     bne     out
+    LDA     r2, (GEOM + 0x10)
 
-2:  /* Preserve the first pre-overwrite producer fields for diagnosis. */
-    ldr     r0, [ip]
+2:  /* The canvas belongs to the matched slot: one repointed framerate can be
+     * 3032x2012 while another is 3968x2640, so the geometry is per slot and a
+     * zero width means the controller has not published one. */
+    ldr     r0, [r2]
     cmp     r0, #0
+    beq     out
+
+    /* Preserve the first pre-overwrite producer fields for diagnosis. */
+    ldr     r3, [ip]
+    cmp     r3, #0
     bne     patch
     str     r5, [ip, #4]
-    movw    r0, #0x0D8
-    ldr     r3, [r1, r0]
+    ldr     r3, [r1, #0x0D8]
     str     r3, [ip, #8]
-    movw    r0, #0x0E0
-    ldr     r3, [r1, r0]
+    ldr     r3, [r1, #0x0E0]
     str     r3, [ip, #12]
 
 patch:
-    PUT     0x000, 3032       /* base */
-    PUT     0x004, 2012
-    PUT     0x024, 3008       /* active; yields crop origin (12,6) */
-    PUT     0x02C, 2000
-    PUT     0x0D8, 3032       /* producer-side width/height pair */
-    PUT     0x0E0, 2012
-    PUT     0x0DC, 3032       /* size-getter override */
-    PUT     0x0E4, 2012
-    PUT     0x0F4, 3032       /* input */
-    PUT     0x0F8, 2012
+    ldr     r0, [r2]                  /* base width  */
+    ldr     r3, [r2, #4]              /* base height */
+    str     r0, [r1]
+    str     r3, [r1, #4]
+    str     r0, [r1, #0x0D8]          /* producer-side pair      */
+    str     r3, [r1, #0x0E0]
+    str     r0, [r1, #0x0DC]          /* size-getter override    */
+    str     r3, [r1, #0x0E4]
+    str     r0, [r1, #0x0F4]          /* input                   */
+    str     r3, [r1, #0x0F8]
+    ldr     r0, [r2, #8]              /* active; yields the crop */
+    ldr     r3, [r2, #12]
+    str     r0, [r1, #0x024]
+    str     r3, [r1, #0x02C]
 
     ldr     r3, [ip]
     add     r3, r3, #1

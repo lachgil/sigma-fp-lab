@@ -24,6 +24,7 @@ LOG = 0xC072FA00
 ARMED = 0xC072FA10
 SELS = 0xC072FA20
 PROBE = 0xC072FA30
+GEOM = 0xC072FA40
 FIELDANGLE = 0x45000000
 ROW = FIELDANGLE + 0x5C
 STACK = 0x46000800
@@ -31,7 +32,8 @@ RET = 0xC043A1A0
 blob = assemble(HERE / "src" / "rowpatch_gated.S")
 
 
-def run(armed, width, height, r5, sels=(175, 0)):
+def run(armed, width, height, r5, sels=(175, 0), geom=(3032, 2012, 3008, 2000),
+        geom1=(3032, 2012, 3008, 2000)):
     uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
     for base, size in [(0xC0720000, 0x20000), (0x45000000, 0x1000),
                        (0x46000000, 0x1000), (0xC0400000, 0x1000)]:
@@ -40,6 +42,7 @@ def run(armed, width, height, r5, sels=(175, 0)):
     uc.mem_write(ARMED, struct.pack("<I", armed))
     uc.mem_write(SELS, struct.pack("<II", *sels))
     uc.mem_write(PROBE, b"\0" * 8)
+    uc.mem_write(GEOM, struct.pack("<4I", *geom) + struct.pack("<4I", *geom1))
     uc.mem_write(LOG, b"\0" * 16)
     uc.mem_write(ROW, struct.pack("<I", width) + struct.pack("<I", height))
     for off in (0x24, 0x2C, 0xD8, 0xDC, 0xE0, 0xE4, 0xF4, 0xF8):
@@ -95,6 +98,14 @@ cases = [
      (1, 1936, 1090, 175), {"sels": (175, 163)}, REWRITTEN, 1, (175, 1)),
     ("armed + FHD row + r5=180, both set     -> no-op",
      (1, 1936, 1090, 180), {"sels": (175, 163)}, untouched(1936, 1090), 0, (180, 1)),
+    # The canvas is data: a matched selector with no published canvas must not
+    # rewrite, and a second slot can carry a different raster than the first.
+    ("armed + match + canvas unpublished     -> no-op",
+     (1, 1936, 1090, 175), {"geom": (0, 0, 0, 0)}, untouched(1936, 1090), 0, (175, 1)),
+    ("armed + slot1 match + 3968x2640 canvas -> REWRITE at that raster",
+     (1, 1936, 1090, 163), {"sels": (0, 163), "geom1": (3968, 2640, 3968, 2640)},
+     {0x00: 3968, 0x04: 2640, 0x24: 3968, 0x2C: 2640, 0xD8: 3968, 0xE0: 2640,
+      0xDC: 3968, 0xE4: 2640, 0xF4: 3968, 0xF8: 2640}, 1, (163, 1)),
 ]
 
 ok = True

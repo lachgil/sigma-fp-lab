@@ -203,3 +203,63 @@ not take cells another still needs -- the failure the emulator now pins.
 Unverified beyond emulation: whether M98 images acceptably, whether the
 59.94 path needs its own RWZM/profile cells (only the profile-122 pair is
 known), and whether either M98 rate sustains to storage.
+
+## HMAX/VMAX timing model and detuning (2026-09-11, offline)
+
+The timing table is `0xC0B59500 + n*0x20`, keyed by **mode id at +0** (so a mode
+is found by scanning, not indexing): **HMAX = low16 at +4**, **VMAX = low16 at
++8**, then H-total at +0x0C and V-total at +0x10. Checked against the
+independently extracted mode table for **all 70 modes, zero mismatches**.
+
+    fps = 72 MHz / (HMAX * VMAX)        max error 0.15 fps across 70 modes
+    RS  = HMAX * lines / 72 MHz
+
+Only the low half is ever written. The high half differs per mode -- 4 on the
+binned entries, 0x420 (1056) on M130, 0x3B8 (952) on M6 -- and is preserved.
+
+So **HMAX is the rolling-shutter knob and VMAX the frame-rate knob**. HMAX does
+not buy throughput: lowering it raises the fps ceiling, which raises demand,
+and storage is already the binding constraint. Proof that both are the same
+lever: M98 at HMAX 330 needs VMAX 7278 for 29.97, and M117 open gate at 29.97
+uses 7280 -- the same silicon converging on the same timing.
+
+The useful direction is the opposite one, and it is what open gate already does
+(M117 99.9 -> 29.97): **detune a dormant full-readout mode until its rate fits
+storage.** Cells and computed values:
+
+| mode | raster | native | detuned | VMAX | MB/s | RS |
+|---|---|---|---|---|---|---|
+| M130 | 3968x2640 FULL | 39.3 fps / 618 MB/s | 29.97 | 5399 | 471 | 16.3 ms |
+| M130 | " | " | 24 | 6742 | 377 | 16.3 ms |
+| M6 | 4176x2174 FULL 14-bit | 29.97 fps | native | 2636 | 476 | 27.5 ms |
+| M3 | 6064x4042 FULL 6K | 30 fps / 1102 MB/s | 15 | 10787 | 551 | 25.0 ms |
+| M10 | 6064x2022 FULL | 59.9 fps / 1102 MB/s | 24 | 6742 | 441 | 12.5 ms |
+
+Timing cells: M117 `0xC0B59A28`, M98 `0xC0B59548`, M130 `0xC0B59A88`,
+M6 `0xC0B595A8`, M27 `0xC0B596E8`, M58 `0xC0B59828`, M106 `0xC0B59768`.
+
+## Which modes are actually stock (2026-09-11, offline)
+
+Scanning the picker region `0xC0BE5700..0xC0BE5D00` for valid mode ids gives the
+set the stock UI can reach: 0, 7, 27, 58, 88, 89, 101..103, 106..110, 115, 116,
+118, 123..126, 131..136, 139..152, 218..221.
+
+- **M117, M98, M130, M6, M3, M10, M97 appear in NO picker cell** -- unreachable
+  in stock, which is what makes repointing them worth anything.
+- **M58 has its own cells** (`0xC0BE58C8/5A68/5C08`), so FHD 119.88 with M58 is
+  already a stock preset. The "High FPS" menu option was therefore duplicating
+  a stock capability while also running 120 fps sensor timing under the 59.94
+  preset, and it was removed rather than kept.
+
+4K cell (M102 stock): `0xC0BE58E8/5A88/5C28`. 29.97 cell (M106):
+`0xC0BE5888/5A28/5BC8`. 59.94 cell (M27): `0xC0BE5858/59F8/5B98`.
+
+## Per-slot canvas (2026-09-11)
+
+The hook's geometry is now data at `GEOM` 0xC072FA40, one 4-word set per
+selector slot (base w/h then active w/h), so two repointed framerates can carry
+different rasters. A matched selector with an unpublished canvas rewrites
+nothing. M130's active area is published equal to its base: the 12/6 crop margin
+measured on M117's binned DNGs does not transfer to a 1:1 window, so no margin
+is claimed and the first clip's `DefaultCropOrigin`/`DefaultCropSize` is the
+check. The emulator pins the unpublished-canvas and second-raster cases.

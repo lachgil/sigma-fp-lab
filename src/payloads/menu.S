@@ -4,15 +4,18 @@
 #include "../../reference/fpSup/gyro/ring_task.inc.S"
 #include "../../reference/fpSup/gyro/imu_stream.inc.S"
 /* fpLAB: RIGHT selects, UP toggles. Stock clears every feature.
- * Options: Stock, Open Gate (M117@29.97), M98 30P, High FPS (M58@59.94),
- * M98 60P, Gyro, Gyro-Gate (linked Open Gate + gyro).
- * Repointing the same picker cell or the same timing cell twice would fight
- * itself, so conflicting options switch each other off rather than stack:
- *   Open Gate <-> M98 30P   (FHD 29.97 picker cell)
- *   High FPS  <-> M98 60P   (FHD 59.94 picker cell)
- *   M98 30P   <-> M98 60P   (M98 shares one timing entry)
- * ST: cursor, og, hfps, gyro, gyro_ready, init_status, m98a, m98b,
- *     saved_level; +0x40 is the composed "needs selector" line.
+ * Options: Stock, Open Gate (M117), M98 30P, M130 30P, M98 60P, M6 4K,
+ * Gyro, Gyro-Gate (linked Open Gate + gyro).
+ * None of the repointed modes is reachable from the stock UI: no picker cell in
+ * the image names M117, M98, M130 or M6. (M58 does have its own cells, so FHD
+ * 119.88 is already a stock preset and no longer has an option here.)
+ * Repointing one picker cell or one timing entry twice would fight itself, so
+ * conflicting options switch each other off rather than stack:
+ *   Open Gate <-> M98 30P <-> M130 30P   (FHD 29.97 picker cell)
+ *   M98 30P   <-> M98 60P               (M98 has one timing entry)
+ * M6 owns the 4K cell and M98 60P the 59.94 cell, so those are independent.
+ * ST: cursor, og, m130, gyro, gyro_ready, init_status, m98a, m98b,
+ *     saved_level, m6; +0x40 is the composed "needs selector" line.
  * Code lives in the allocated pool, not the gyro caves. */
 .equ ST, 0xC072FB00
 .equ KEY_ORIG, 0xC0265800
@@ -21,12 +24,17 @@
 .equ ARMED, 0xC072FA10
 .equ SELS, 0xC072FA20
 .equ PROBE, 0xC072FA30
+.equ GEOM, 0xC072FA40
 .equ SEL_2997, 175              /* measured on hardware: FHD/29.97 CinemaDNG */
 #ifndef OG60_SEL
-#define OG60_SEL 0              /* FHD/59.94 selector: unmeasured, so disabled */
+/* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at
+ * FHD/29.97 and AD (173) at FHD/59.94, which is the framerate-tracking
+ * cross-check, not a single reading. */
+#define OG60_SEL 173
 #endif
 .equ SEL_5994, OG60_SEL
-.equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094 */
+.equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
+.equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
 .macro LDA reg, val
     movw \reg, #:lower16:\val
     movt \reg, #:upper16:\val
@@ -49,12 +57,19 @@
     LDA     r4, \c
     str     r5, [r4]
 .endm
+/* Only the low half of a timing word is HMAX/VMAX; the high half differs per
+ * mode (4 on the binned entries, 1056 on M130, 952 on M6) and is preserved. */
+.macro VMAX cell, value
+    LDA     r5, \value
+    LDA     r4, \cell
+    str     r5, [r4]
+.endm
 .global boot
 boot:
     push {r4, r5, r6, r7, r8, lr}
     LDA r6, ST
     mov r0, #0
-    mov r1, #9
+    mov r1, #10
     mov r2, r6
 1:  str r0, [r2], #4
     subs r1, r1, #1
@@ -92,9 +107,9 @@ boot_disable:
     LDA r0, 0xC043A19C
     LDA r1, (0xEB000000 | (((0xC072F800-0xC043A19C-8)>>2)&0xFFFFFF))
     str r1, [r0]
-    LDA r2, 0xC072FA00             @ telemetry, armed flag, selectors, probe
+    LDA r2, 0xC072FA00             @ telemetry, armed, selectors, probe, canvas
     mov r0, #0
-    mov r1, #14
+    mov r1, #24
 4:  str r0, [r2], #4
     subs r1, r1, #1
     bne 4b
@@ -126,7 +141,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #7
+    cmp r0, #8
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -142,76 +157,92 @@ do_up:
     cmp r0, #2
     beq up_m98a
     cmp r0, #3
-    beq up_hfps
+    beq up_m130
     cmp r0, #4
     beq up_m98b
+    cmp r0, #5
+    beq up_m6
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #5
+    cmp r0, #6
     beq up_gyro
-    ldr r0, [r6, #24]              @ Gyro-Gate owns the 29.97 cell, so M98 30P
-    cmp r0, #0                     @ cannot stay on beside it
-    beq 1f
-    bl toggle_m98a
-1:  ldr r0, [r6, #4]
+    mov r0, #4                     @ Gyro-Gate owns the 29.97 cell
+    bl free_2997
+    ldr r0, [r6, #4]
     ldr r1, [r6, #12]
     and r5, r0, r1
     eor r5, r5, #1                 @ linked toggle, not two independent flips
     cmp r0, r5
-    beq 2f
+    beq 1f
     bl toggle_og
-2:  ldr r0, [r6, #12]
+1:  ldr r0, [r6, #12]
     cmp r0, r5
     beq redraw
     bl toggle_gyro
     b redraw
-stock:
+
+/* Release whoever currently holds the FHD 29.97 picker cell, EXCEPT the option
+ * in r0 (its state offset), which is about to toggle itself -- releasing that
+ * one too would undo the press. */
+free_2997:
+    push {r4, r5, r6, r7, lr}
+    LDA r6, ST
+    mov r7, r0
     ldr r0, [r6, #4]
     cmp r0, #0
+    beq 1f
+    cmp r7, #4
     beq 1f
     bl toggle_og
 1:  ldr r0, [r6, #24]
     cmp r0, #0
     beq 2f
+    cmp r7, #24
+    beq 2f
     bl toggle_m98a
 2:  ldr r0, [r6, #8]
     cmp r0, #0
     beq 3f
-    bl toggle_hfps
-3:  ldr r0, [r6, #28]
+    cmp r7, #8
+    beq 3f
+    bl toggle_m130
+3:  pop {r4, r5, r6, r7, pc}
+
+stock:
+    mov r0, #0                     @ release every holder
+    bl free_2997
+    ldr r0, [r6, #28]
     cmp r0, #0
-    beq 4f
+    beq 1f
     bl toggle_m98b
-4:  ldr r0, [r6, #12]
+1:  ldr r0, [r6, #36]
+    cmp r0, #0
+    beq 2f
+    bl toggle_m6
+2:  ldr r0, [r6, #12]
     cmp r0, #0
     beq redraw
     bl toggle_gyro
     b redraw
 up_og:
-    ldr r0, [r6, #24]
-    cmp r0, #0
-    beq 1f
-    bl toggle_m98a
-1:  bl toggle_og
+    mov r0, #4
+    bl free_2997
+    bl toggle_og
     b redraw
 up_m98a:
-    ldr r0, [r6, #4]
+    mov r0, #24
+    bl free_2997
+    ldr r0, [r6, #28]              @ M98 has one timing entry, so 60P must go
     cmp r0, #0
     beq 1f
-    bl toggle_og
-1:  ldr r0, [r6, #28]
-    cmp r0, #0
-    beq 2f
     bl toggle_m98b
-2:  bl toggle_m98a
+1:  bl toggle_m98a
     b redraw
-up_hfps:
-    ldr r0, [r6, #28]
-    cmp r0, #0
-    beq 1f
-    bl toggle_m98b
-1:  bl toggle_hfps
+up_m130:
+    mov r0, #8
+    bl free_2997
+    bl toggle_m130
     b redraw
 up_m98b:
     movw r0, #:lower16:SEL_5994
@@ -221,11 +252,10 @@ up_m98b:
     cmp r0, #0
     beq 1f
     bl toggle_m98a
-1:  ldr r0, [r6, #8]
-    cmp r0, #0
-    beq 2f
-    bl toggle_hfps
-2:  bl toggle_m98b
+1:  bl toggle_m98b
+    b redraw
+up_m6:
+    bl toggle_m6
     b redraw
 up_gyro:
     bl toggle_gyro
@@ -233,22 +263,23 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #6
+    cmp r0, #7
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
     ldr r1, [r6, r1]
     b state_text
 state_stock:
-    ldr r1, [r6, #4]
-    ldr r2, [r6, #8]
-    orr r1, r1, r2
-    ldr r2, [r6, #12]
-    orr r1, r1, r2
-    ldr r2, [r6, #24]
-    orr r1, r1, r2
-    ldr r2, [r6, #28]
-    orrs r1, r1, r2
+    PTR r2, state_offsets
+    mov r3, #7
+    mov r1, #0
+1:  ldr r0, [r2, r3, lsl #2]
+    ldr r0, [r6, r0]
+    orr r1, r1, r0
+    subs r3, r3, #1
+    bne 1b
+    ldr r0, [r6, #12]
+    orrs r1, r1, r0
     moveq r1, #1
     movne r1, #0
     b state_text
@@ -267,9 +298,9 @@ show_busy:
 show_unavailable:
     PTR r4, unavailable_label
     b paint
-/* The FHD/59.94 selector cannot be derived from the image, so show what the
- * probe last saw for a 1936x1090 row: record that framerate once with nothing
- * repointed and the number to build with is on the screen. */
+/* A framerate whose selector has not been measured shows what the probe last
+ * saw for a 1936x1090 row: record that framerate once with nothing repointed
+ * and the number to build with is on the screen. */
 show_need_sel:
     PTR r0, need_sel_label
     add r4, r6, #0x40
@@ -388,17 +419,21 @@ safe_ret:
 s_one: .asciz "1"
 .balign 4
 
-/* The cells every repointed framerate shares: the RWZM unity pair and the
- * hook's master flag. Recomputed from all three flags, because turning one
- * feature off must not take the cells another still needs. */
+
+/* The cells and words every repointed framerate shares. Recomputed from all
+ * the flags, because turning one feature off must not take state another still
+ * needs -- and the canvas is per selector slot, so a 3968x2640 mode at 29.97
+ * can run beside a 3032x2012 one at 59.94. */
 apply_shared:
-    push    {r4, r5, r6, lr}
+    push    {r4, r5, r6, r7, lr}
     LDA     r6, ST
     ldr     r0, [r6, #4]
     ldr     r1, [r6, #24]
-    orr     r0, r0, r1
+    orr     r7, r0, r1             @ 29.97 slot: Open Gate or M98 30P
+    ldr     r1, [r6, #8]
+    orr     r0, r7, r1             @ ...or M130 30P
     ldr     r1, [r6, #28]
-    orrs    r0, r0, r1
+    orrs    r0, r0, r1             @ ...or the 59.94 slot
     movne   r5, #0x400
     moveq   r5, #0x640
     LDA     r4, 0xC0BD9A34
@@ -413,7 +448,60 @@ apply_shared:
     moveq   r5, #0
     LDA     r4, ARMED
     str     r5, [r4]
-    pop     {r4, r5, r6, pc}
+    /* Slot 0, at the measured 29.97 selector. */
+    LDA     r4, SELS
+    LDA     r5, GEOM
+    cmp     r7, #0
+    bne     shared_2997_binned
+    ldr     r0, [r6, #8]
+    cmp     r0, #0
+    bne     shared_2997_full
+    mov     r0, #0                 @ nobody holds it: publish no canvas
+    str     r0, [r4]
+    mov     r1, #0
+    mov     r2, #0
+    mov     r3, #0
+    stmia   r5, {r0, r1, r2, r3}
+    b       shared_5994
+shared_2997_binned:
+    mov     r0, #SEL_2997
+    str     r0, [r4]
+    movw    r0, #3032
+    movw    r1, #2012
+    movw    r2, #3008
+    movw    r3, #2000
+    stmia   r5, {r0, r1, r2, r3}
+    b       shared_5994
+shared_2997_full:
+    mov     r0, #SEL_2997
+    str     r0, [r4]
+    movw    r0, #3968
+    movw    r1, #2640
+    /* M130 is a 1:1 window, not a binned raster, so the 12/6 crop margin
+     * measured on M117's DNGs does not carry over and no margin is claimed.
+     * Check DefaultCropOrigin/Size on the first clip. */
+    mov     r2, r0
+    mov     r3, r1
+    stmia   r5, {r0, r1, r2, r3}
+shared_5994:
+    ldr     r0, [r6, #28]
+    cmp     r0, #0
+    movne   r1, #SEL_5994
+    moveq   r1, #0
+    str     r1, [r4, #4]
+    movw    r0, #3032
+    movw    r1, #2012
+    movw    r2, #3008
+    movw    r3, #2000
+    ldr     r7, [r6, #28]
+    cmp     r7, #0
+    moveq   r0, #0
+    moveq   r1, #0
+    moveq   r2, #0
+    moveq   r3, #0
+    add     r5, r5, #0x10
+    stmia   r5, {r0, r1, r2, r3}
+    pop     {r4, r5, r6, r7, pc}
 
 /* Open Gate: M106 -> M117 in the FHD 29.97 cell, and M117's own timing entry
  * slowed from 99.9 fps to 29.97 so the recorder gets the rate it asked for. */
@@ -426,27 +514,19 @@ toggle_og:
     cmp     r0, #0
     beq     og_off
     PICK    0x75, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
-    LDA     r5, 0x00041C70
-    LDA     r4, 0xC0B59A28
-    str     r5, [r4]
-    mov     r5, #SEL_2997
-    b       og_sel
+    VMAX    0xC0B59A28, 0x00041C70
+    b       og_done
 og_off:
     PICK    0x6A, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
-    LDA     r5, 0x00040888
-    LDA     r4, 0xC0B59A28
-    str     r5, [r4]
-    mov     r5, #0
-og_sel:
-    LDA     r4, SELS
-    str     r5, [r4]
+    VMAX    0xC0B59A28, 0x00040888
+og_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
 
 /* M98 30P: the same 3032x2012 canvas as Open Gate from a different sensor mode
  * (hmax 445, 12.44 ms readout instead of M117's 330 / 9.22 ms), at the already
- * measured 29.97 selector. Timing entry 2094 -> 5398 gives 29.97 fps.
- * Whether M98 images as well as M117 is the point of the comparison. */
+ * measured 29.97 selector. Timing entry 2094 -> 5398 gives 29.97 fps. A
+ * comparison against M117, not an upgrade: same 2x2 binning, more skew. */
 toggle_m98a:
     push    {r4, r5, r6, lr}
     LDA     r6, ST
@@ -456,27 +536,40 @@ toggle_m98a:
     cmp     r0, #0
     beq     m98a_off
     PICK    0x62, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
-    LDA     r5, 0x00041516
-    LDA     r4, M98_VMAX
-    str     r5, [r4]
-    mov     r5, #SEL_2997
-    b       m98a_sel
+    VMAX    M98_VMAX, 0x00041516
+    b       m98a_done
 m98a_off:
     PICK    0x6A, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
-    LDA     r5, 0x0004082E
-    LDA     r4, M98_VMAX
-    str     r5, [r4]
-    mov     r5, #0
-m98a_sel:
-    LDA     r4, SELS
-    str     r5, [r4]
+    VMAX    M98_VMAX, 0x0004082E
+m98a_done:
+    bl      apply_shared
+    pop     {r4, r5, r6, pc}
+
+/* M130 30P: 3968x2640 FULL readout -- no binning at all -- in the FHD 29.97
+ * cell. Timing entry 4116 -> 5399 turns its native 39.3 fps into 29.97, which
+ * is about 471 MB/s: SSD territory, above a card. This is the option with a
+ * real image gain, because every other repointed mode here is still 2x2. */
+toggle_m130:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #8]
+    eor     r0, r0, #1
+    str     r0, [r6, #8]
+    cmp     r0, #0
+    beq     m130_off
+    PICK    0x82, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
+    VMAX    M130_VMAX, 0x04201517
+    b       m130_done
+m130_off:
+    PICK    0x6A, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
+    VMAX    M130_VMAX, 0x04201014
+m130_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
 
 /* M98 60P: 3032x2012 in the FHD 59.94 cell -- open-gate geometry at double the
- * rate. Timing entry 2094 -> 2698 is 59.94 fps at M98's hmax, which is about
- * 548 MB/s: above any card and near the SSD ceiling, so expect short bursts.
- * Needs the FHD/59.94 selector; SEL_5994 = 0 makes the option refuse. */
+ * rate. Timing entry 2094 -> 2698 is 59.94 fps at M98's hmax, about 548 MB/s:
+ * above any card and near the SSD ceiling, so expect short bursts. */
 toggle_m98b:
     push    {r4, r5, r6, lr}
     LDA     r6, ST
@@ -486,45 +579,41 @@ toggle_m98b:
     cmp     r0, #0
     beq     m98b_off
     PICK    0x62, 0xC0BE5858, 0xC0BE59F8, 0xC0BE5B98
-    LDA     r5, 0x00040A8A
-    LDA     r4, M98_VMAX
-    str     r5, [r4]
-    movw    r5, #:lower16:SEL_5994
-    b       m98b_sel
+    VMAX    M98_VMAX, 0x00040A8A
+    b       m98b_done
 m98b_off:
     PICK    0x1B, 0xC0BE5858, 0xC0BE59F8, 0xC0BE5B98
-    LDA     r5, 0x0004082E
-    LDA     r4, M98_VMAX
-    str     r5, [r4]
-    mov     r5, #0
-m98b_sel:
-    LDA     r4, SELS
-    str     r5, [r4, #4]
+    VMAX    M98_VMAX, 0x0004082E
+m98b_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
 
-/* High FPS: M27 -> M58 in the FHD 59.94 cell. Same raster as the cell it
- * replaces, so no geometry hook and no timing rewrite. */
-toggle_hfps:
+/* M6 4K: M102 -> M6 in the 4K cell. Same 4176x2174 raster and same 29.97, so
+ * no geometry hook and no timing rewrite -- a picker-only swap to a 14-bit
+ * FULL readout mode. Tested live on this camera 2026-09-11 and it looked
+ * identical to stock 4K: the CinemaDNG file depth follows the menu's 8/10/12
+ * setting, so M6's extra two bits are quantised away. Kept because it is three
+ * words and the only path to 14-bit if that recorder limit is ever lifted. */
+toggle_m6:
     push    {r4, r5, r6, lr}
     LDA     r6, ST
-    ldr     r0, [r6, #8]
+    ldr     r0, [r6, #36]
     eor     r0, r0, #1
-    str     r0, [r6, #8]
+    str     r0, [r6, #36]
     cmp     r0, #0
-    movne   r5, #0x3A
-    moveq   r5, #0x1B
-    LDA     r4, 0xC0BE5858
+    movne   r5, #0x06
+    moveq   r5, #0x66
+    LDA     r4, 0xC0BE58E8
     str     r5, [r4]
-    LDA     r4, 0xC0BE59F8
+    LDA     r4, 0xC0BE5A88
     str     r5, [r4]
-    LDA     r4, 0xC0BE5B98
+    LDA     r4, 0xC0BE5C28
     str     r5, [r4]
     pop     {r4, r5, r6, pc}
 
 .balign 4
 state_offsets:
-    .word 0, 4, 24, 8, 28, 12, 0
+    .word 0, 4, 24, 8, 28, 36, 12, 0
 gyro_hooks_table:
     .word ACCEL_SITE, 0xE3A02000, ARM_ACCEL
     .word START_SITE, 0xE5DB25CE, ARM_START
@@ -548,11 +637,13 @@ guard_table:
     .word 0xC091EA38, KEY_ORIG
     .word 0xC043A19C, 0xE1A00004
     .word 0xC0BE5888, 0x6A, 0xC0BE5A28, 0x6A, 0xC0BE5BC8, 0x6A
-    .word 0xC0B59A28, 0x40888
+    .word 0xC0BE5858, 0x1B, 0xC0BE59F8, 0x1B, 0xC0BE5B98, 0x1B
+    .word 0xC0BE58E8, 0x66, 0xC0BE5A88, 0x66, 0xC0BE5C28, 0x66
+    .word 0xC0B59A28, 0x00040888
     .word M98_VMAX, 0x0004082E
+    .word M130_VMAX, 0x04201014
     .word 0xC0BD9A34, 0x640, 0xC0BE1684, 0x640
     .word 0xC0BD9EFC, 0x640, 0xC0BE1B4C, 0x640
-    .word 0xC0BE5858, 0x1B, 0xC0BE59F8, 0x1B, 0xC0BE5B98, 0x1B
 .equ GUARD_COUNT, (. - guard_table) / 8
 labels:
     .asciz ">STOCK      OFF        "
@@ -567,13 +658,17 @@ labels:
     .space 8
     .asciz ">M98 30P    ON         "
     .space 8
-    .asciz ">HIGH FPS   OFF        "
+    .asciz ">M130 30P   OFF        "
     .space 8
-    .asciz ">HIGH FPS   ON         "
+    .asciz ">M130 30P   ON         "
     .space 8
     .asciz ">M98 60P    OFF        "
     .space 8
     .asciz ">M98 60P    ON         "
+    .space 8
+    .asciz ">M6 4K      OFF        "
+    .space 8
+    .asciz ">M6 4K      ON         "
     .space 8
     .asciz ">GYRO       OFF        "
     .space 8
