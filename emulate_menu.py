@@ -162,7 +162,8 @@ class Camera:
 OG_CELLS = (0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8)      # FHD 29.97 picker cell
 HF_CELLS = (0xC0BE5858, 0xC0BE59F8, 0xC0BE5B98)      # FHD 59.94 picker cell
 K4_CELLS = (0xC0BE58E8, 0xC0BE5A88, 0xC0BE5C28)      # 4K picker cell
-Q24_CELLS = (0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8)     # FHD 23.976 picker cell
+Q24_CELLS = (0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8)     # FHD 23.976 (M109)
+Q24B_CELLS = (0xC0BE58A8, 0xC0BE5A48, 0xC0BE5BE8)    # FHD 24.00  (M218)
 M130_VMAX = 0xC0B59A88
 M130_HMAX = 0xC0B59A84
 GEOM = 0xC072FA40
@@ -254,7 +255,10 @@ c.put(0xC072FA30, 0)
 c.select(5)
 assert c.press(0x14) == '>M130 24P   ON'
 assert c.features() == (0, 0, 0, 0, 0, 0, 0, 1)
-assert cells(Q24_CELLS) == (0x82,) * 3 and c.get(M130_VMAX) == 0x04201A5C
+# Both 24p rows must be repointed: the first build guessed one and the camera
+# used the other, which recorded 3032x1708 of picture inside a 3968x2640 frame.
+assert cells(Q24_CELLS) == (0x82,) * 3 and cells(Q24B_CELLS) == (0x82,) * 3
+assert c.get(M130_VMAX) == 0x04201A5C
 assert cells(OG_CELLS) == (0x6A,) * 3, '24P must not touch the 29.97 cell'
 assert c.get(0xC072FA28) == 176 and c.get(0xC072FA20) == 0
 assert c.geom(2) == FULL130 and c.geom(0) == (0, 0, 0, 0)
@@ -267,6 +271,7 @@ c.select(3); c.press(0x14)
 c.select(5); c.press(0x14)
 assert c.features() == (0, 0, 0, 0, 0, 0, 0, 1)
 assert cells(OG_CELLS) == (0x6A,) * 3 and c.get(M130_VMAX) == 0x04201A5C
+assert cells(Q24_CELLS) == (0x82,) * 3 and cells(Q24B_CELLS) == (0x82,) * 3
 c.select(1); c.press(0x14)
 assert c.features() == (1, 0, 0, 0, 0, 0, 0, 1)
 assert (c.get(0xC072FA20), c.get(0xC072FA28)) == (175, 176)

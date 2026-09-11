@@ -666,11 +666,19 @@ m130f_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
 
-/* M130 24P: the full-readout 3968x2640 canvas in the FHD 23.976 cell instead of
- * the 29.97 one. Timing entry 4116 -> 6748 gives 23.976 fps, which is 377 MB/s
+/* M130 24P: the full-readout 3968x2640 canvas in the FHD 24p cell instead of the
+ * 29.97 one. Timing entry 4116 -> 6748 gives 23.976 fps, which is 377 MB/s
  * against 471 at 29.97 -- the point being that 471 only sustained about five
  * seconds on hardware before the recorder stopped, and rolling shutter is not
- * what limits that; data rate is. Same 16.32 ms readout as M130 30P. */
+ * what limits that; data rate is. Same 16.32 ms readout as M130 30P.
+ *
+ * TWO cells, because the first attempt repointed the wrong one. There are two
+ * 24-ish framerate rows -- M109 at 23.976 and M218 at 24.00 -- and both have
+ * the same 3032x1708 raster, so a recording made with the canvas applied but
+ * the mode unchanged cannot say which one the preset used: the frame showed
+ * 3032x1708 of picture in the top-left of a 3968x2640 buffer and garbage in the
+ * rest. Repointing both rows removes the guess; they are separate cells and
+ * Stock restores each to its own stock mode id. */
 toggle_m130q:
     push    {r4, r5, r6, lr}
     LDA     r6, ST
@@ -679,11 +687,13 @@ toggle_m130q:
     str     r0, [r6, #44]
     cmp     r0, #0
     beq     m130q_off
-    PICK    0x82, 0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8
+    PICK    0x82, 0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8   @ M109, 23.976
+    PICK    0x82, 0xC0BE58A8, 0xC0BE5A48, 0xC0BE5BE8   @ M218, 24.00
     VMAX    M130_VMAX, 0x04201A5C
     b       m130q_done
 m130q_off:
     PICK    0x6D, 0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8
+    PICK    0xDA, 0xC0BE58A8, 0xC0BE5A48, 0xC0BE5BE8
     VMAX    M130_VMAX, 0x04201014
 m130q_done:
     bl      apply_shared
@@ -776,6 +786,7 @@ guard_table:
     .word M130_VMAX, 0x04201014
     .word M130_HMAX, 0x01BD01BD
     .word 0xC0BE58B8, 0x6D, 0xC0BE5A58, 0x6D, 0xC0BE5BF8, 0x6D
+    .word 0xC0BE58A8, 0xDA, 0xC0BE5A48, 0xDA, 0xC0BE5BE8, 0xDA
     .word 0xC0BD9A34, 0x640, 0xC0BE1684, 0x640
     .word 0xC0BD9EFC, 0x640, 0xC0BE1B4C, 0x640
 .equ GUARD_COUNT, (. - guard_table) / 8
