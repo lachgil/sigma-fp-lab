@@ -263,3 +263,41 @@ nothing. M130's active area is published equal to its base: the 12/6 crop margin
 measured on M117's binned DNGs does not transfer to a 1:1 window, so no margin
 is claimed and the first clip's `DefaultCropOrigin`/`DefaultCropSize` is the
 check. The emulator pins the unpublished-canvas and second-raster cases.
+
+## Field of view, and what open gate actually is (2026-09-11)
+
+Open gate is the **full sensor area at half resolution**: 3032x2012 is exactly
+6064x4042 halved in each axis, so M117/M98 read 100% x 100% of the sensor 2x2
+binned. M130 is the opposite: 1:1 with no binning, but 3968/6064 = 65% of the
+width and 2640/4042 = 65% of the height, a **1.53x crop**. Same 3:2 aspect,
+very different framing, and neither dominates the other.
+
+| mode | output | FOV | crop | readout | MP | RS |
+|---|---|---|---|---|---|---|
+| M3 | 6064x4042 | 100% x 100% | 1.00x | FULL 1:1 | 24.5 | 24.98 ms |
+| M117 | 3032x2012 | 100% x 100% | 1.00x | 2x2 | 6.1 | 9.22 ms |
+| M130 | 3968x2640 | 65% x 65% | 1.53x | FULL 1:1 | 10.5 | 16.32 ms |
+| M102 (stock 4K) | 4176x2174 | 69% x 54% | 1.45x | FULL 1:1 | 9.1 | 13.44 ms |
+| M7 (stock UHD) | 6064x3412 | 100% x 84% | 1.00x | FULL 1:1 | 20.7 | 21.09 ms |
+
+So "open gate at full resolution" is **M3**, 24.5 MP of the whole sensor, and
+detuning is the only way it fits storage: 12 fps = 441 MB/s, 15 fps = 551 MB/s,
+24 fps = 882 MB/s (36.8 MB/frame). It needs the geometry hook retargeted to
+6064x4042 and the selector for whichever framerate cell it is put in, which is
+what the SEL readout is for.
+
+## HMAX headroom (2026-09-11, offline)
+
+Line periods in the shipped tables are a small fixed set, NOT width-proportional:
+
+    width 2016  hmax {330, 395, 445}
+    width 3032  hmax {330, 360, 445, 450}
+    width 3968  hmax {445, 911(14-bit)}
+    width 6064  hmax {445, 450, 911(14-bit)}
+
+Every 12-bit mode uses 445 whatever its width -- 2016 and 6064 alike -- and 330
+appears only on binned modes up to 3032 wide. So the line period is not limited
+by width in this range, which is what makes `M130 FAST` (M130 at HMAX 330, RS
+16.32 -> 12.10 ms, VMAX 4116 -> 7278 to hold 29.97) a legitimate experiment
+rather than a guess. It is still unobserved at 3968 wide 1:1: if the sensor
+cannot deliver a line that fast the frames tear, and it is RAM only.

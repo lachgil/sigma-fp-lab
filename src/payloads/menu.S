@@ -4,18 +4,19 @@
 #include "../../reference/fpSup/gyro/ring_task.inc.S"
 #include "../../reference/fpSup/gyro/imu_stream.inc.S"
 /* fpLAB: RIGHT selects, UP toggles. Stock clears every feature.
- * Options: Stock, Open Gate (M117), M98 30P, M130 30P, M98 60P, M6 4K,
- * Gyro, Gyro-Gate (linked Open Gate + gyro).
+ * Options: Stock, Open Gate (M117), M98 30P, M130 30P, M130 FAST, M98 60P,
+ * M6 4K, Gyro, Gyro-Gate (linked Open Gate + gyro), and a read-only SEL line
+ * showing the selector the hook's probe last saw.
  * None of the repointed modes is reachable from the stock UI: no picker cell in
  * the image names M117, M98, M130 or M6. (M58 does have its own cells, so FHD
  * 119.88 is already a stock preset and no longer has an option here.)
  * Repointing one picker cell or one timing entry twice would fight itself, so
  * conflicting options switch each other off rather than stack:
- *   Open Gate <-> M98 30P <-> M130 30P   (FHD 29.97 picker cell)
+ *   Open Gate <-> M98 30P <-> M130 30P <-> M130 FAST   (FHD 29.97 cell)
  *   M98 30P   <-> M98 60P               (M98 has one timing entry)
  * M6 owns the 4K cell and M98 60P the 59.94 cell, so those are independent.
  * ST: cursor, og, m130, gyro, gyro_ready, init_status, m98a, m98b,
- *     saved_level, m6; +0x40 is the composed "needs selector" line.
+ *     saved_level, m6, m130f; +0x40 is the composed readout line.
  * Code lives in the allocated pool, not the gyro caves. */
 .equ ST, 0xC072FB00
 .equ KEY_ORIG, 0xC0265800
@@ -35,6 +36,7 @@
 .equ SEL_5994, OG60_SEL
 .equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
+.equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
 .macro LDA reg, val
     movw \reg, #:lower16:\val
     movt \reg, #:upper16:\val
@@ -69,7 +71,7 @@ boot:
     push {r4, r5, r6, r7, r8, lr}
     LDA r6, ST
     mov r0, #0
-    mov r1, #10
+    mov r1, #11
     mov r2, r6
 1:  str r0, [r2], #4
     subs r1, r1, #1
@@ -141,7 +143,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #8
+    cmp r0, #10
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -159,13 +161,17 @@ do_up:
     cmp r0, #3
     beq up_m130
     cmp r0, #4
-    beq up_m98b
+    beq up_m130f
     cmp r0, #5
+    beq up_m98b
+    cmp r0, #6
     beq up_m6
+    cmp r0, #9
+    beq show_sel                   @ read-only readout
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #6
+    cmp r0, #7
     beq up_gyro
     mov r0, #4                     @ Gyro-Gate owns the 29.97 cell
     bl free_2997
@@ -207,7 +213,13 @@ free_2997:
     cmp r7, #8
     beq 3f
     bl toggle_m130
-3:  pop {r4, r5, r6, r7, pc}
+3:  ldr r0, [r6, #40]
+    cmp r0, #0
+    beq 4f
+    cmp r7, #40
+    beq 4f
+    bl toggle_m130f
+4:  pop {r4, r5, r6, r7, pc}
 
 stock:
     mov r0, #0                     @ release every holder
@@ -244,6 +256,11 @@ up_m130:
     bl free_2997
     bl toggle_m130
     b redraw
+up_m130f:
+    mov r0, #40
+    bl free_2997
+    bl toggle_m130f
+    b redraw
 up_m98b:
     movw r0, #:lower16:SEL_5994
     cmp r0, #0
@@ -263,7 +280,9 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #7
+    cmp r0, #9
+    beq show_sel
+    cmp r0, #8
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
@@ -271,7 +290,7 @@ redraw:
     b state_text
 state_stock:
     PTR r2, state_offsets
-    mov r3, #7
+    mov r3, #9
     mov r1, #0
 1:  ldr r0, [r2, r3, lsl #2]
     ldr r0, [r6, r0]
@@ -303,26 +322,16 @@ show_unavailable:
  * and the number to build with is on the screen. */
 show_need_sel:
     PTR r0, need_sel_label
-    add r4, r6, #0x40
-    mov r2, r4
-    mov r3, #6
-1:  ldr r1, [r0], #4
-    str r1, [r2], #4
-    subs r3, r3, #1
-    bne 1b
-    LDA r0, PROBE
-    ldr r0, [r0]
-    lsr r1, r0, #4
-    and r1, r1, #0xF
-    cmp r1, #10
-    addlo r1, r1, #48
-    addhs r1, r1, #55
-    strb r1, [r4, #18]
-    and r1, r0, #0xF
-    cmp r1, #10
-    addlo r1, r1, #48
-    addhs r1, r1, #55
-    strb r1, [r4, #19]
+    mov r1, #18
+    bl compose
+    b paint
+/* Read-only: whatever selector the probe last saw for an FHD row. Switch the
+ * preset to a framerate, read the two hex digits, and that is the number a new
+ * option for that framerate has to be built with. */
+show_sel:
+    PTR r0, sel_label
+    mov r1, #10
+    bl compose
 paint:
     bl draw
     mov r0, #1
@@ -420,6 +429,34 @@ s_one: .asciz "1"
 .balign 4
 
 
+/* Compose a readout line at ST+0x40 from a 24-byte template in r0, patching the
+ * probe's last selector in as two hex digits at offset r1. Returns r4 = line. */
+compose:
+    push    {r5, r6, lr}
+    LDA     r6, ST
+    add     r4, r6, #0x40
+    mov     r2, r4
+    mov     r3, #6
+1:  ldr     r5, [r0], #4
+    str     r5, [r2], #4
+    subs    r3, r3, #1
+    bne     1b
+    add     r2, r4, r1
+    LDA     r0, PROBE
+    ldr     r0, [r0]
+    lsr     r1, r0, #4
+    and     r1, r1, #0xF
+    cmp     r1, #10
+    addlo   r1, r1, #48
+    addhs   r1, r1, #55
+    strb    r1, [r2]
+    and     r1, r0, #0xF
+    cmp     r1, #10
+    addlo   r1, r1, #48
+    addhs   r1, r1, #55
+    strb    r1, [r2, #1]
+    pop     {r5, r6, pc}
+
 /* The cells and words every repointed framerate shares. Recomputed from all
  * the flags, because turning one feature off must not take state another still
  * needs -- and the canvas is per selector slot, so a 3968x2640 mode at 29.97
@@ -432,6 +469,8 @@ apply_shared:
     orr     r7, r0, r1             @ 29.97 slot: Open Gate or M98 30P
     ldr     r1, [r6, #8]
     orr     r0, r7, r1             @ ...or M130 30P
+    ldr     r1, [r6, #40]
+    orr     r0, r0, r1             @ ...or M130 FAST
     ldr     r1, [r6, #28]
     orrs    r0, r0, r1             @ ...or the 59.94 slot
     movne   r5, #0x400
@@ -454,7 +493,8 @@ apply_shared:
     cmp     r7, #0
     bne     shared_2997_binned
     ldr     r0, [r6, #8]
-    cmp     r0, #0
+    ldr     r1, [r6, #40]
+    orrs    r0, r0, r1
     bne     shared_2997_full
     mov     r0, #0                 @ nobody holds it: publish no canvas
     str     r0, [r4]
@@ -567,6 +607,34 @@ m130_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
 
+/* M130 FAST: the same full-readout M130 canvas with its LINE PERIOD cut from
+ * 445 to 330, which is what rolling shutter is made of: 16.32 ms -> 12.10 ms,
+ * better than stock 4K's 13.44. VMAX goes 4116 -> 7278 to hold 29.97 at the
+ * shorter line. EXPERIMENTAL: every 12-bit mode in the image uses 445 whatever
+ * its width (2016 and 6064 alike) and 330 appears only on binned modes <=3032
+ * wide, so 330 at 3968 wide 1:1 is unobserved. If the sensor cannot read a line
+ * that fast the frames tear; it is RAM only, so toggling off or a power cycle
+ * undoes it. */
+toggle_m130f:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #40]
+    eor     r0, r0, #1
+    str     r0, [r6, #40]
+    cmp     r0, #0
+    beq     m130f_off
+    PICK    0x82, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
+    VMAX    M130_HMAX, 0x014A014A
+    VMAX    M130_VMAX, 0x04201C6E
+    b       m130f_done
+m130f_off:
+    PICK    0x6A, 0xC0BE5888, 0xC0BE5A28, 0xC0BE5BC8
+    VMAX    M130_HMAX, 0x01BD01BD
+    VMAX    M130_VMAX, 0x04201014
+m130f_done:
+    bl      apply_shared
+    pop     {r4, r5, r6, pc}
+
 /* M98 60P: 3032x2012 in the FHD 59.94 cell -- open-gate geometry at double the
  * rate. Timing entry 2094 -> 2698 is 59.94 fps at M98's hmax, about 548 MB/s:
  * above any card and near the SSD ceiling, so expect short bursts. */
@@ -613,7 +681,7 @@ toggle_m6:
 
 .balign 4
 state_offsets:
-    .word 0, 4, 24, 8, 28, 36, 12, 0
+    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
 gyro_hooks_table:
     .word ACCEL_SITE, 0xE3A02000, ARM_ACCEL
     .word START_SITE, 0xE5DB25CE, ARM_START
@@ -642,6 +710,7 @@ guard_table:
     .word 0xC0B59A28, 0x00040888
     .word M98_VMAX, 0x0004082E
     .word M130_VMAX, 0x04201014
+    .word M130_HMAX, 0x01BD01BD
     .word 0xC0BD9A34, 0x640, 0xC0BE1684, 0x640
     .word 0xC0BD9EFC, 0x640, 0xC0BE1B4C, 0x640
 .equ GUARD_COUNT, (. - guard_table) / 8
@@ -662,6 +731,10 @@ labels:
     .space 8
     .asciz ">M130 30P   ON         "
     .space 8
+    .asciz ">M130 FAST  OFF        "
+    .space 8
+    .asciz ">M130 FAST  ON         "
+    .space 8
     .asciz ">M98 60P    OFF        "
     .space 8
     .asciz ">M98 60P    ON         "
@@ -678,7 +751,12 @@ labels:
     .space 8
     .asciz ">GYRO-GATE  ON         "
     .space 8
+    .asciz ">SEL        OFF        "
+    .space 8
+    .asciz ">SEL        ON         "
+    .space 8
 busy_label: .asciz "STOP RECORDING / WAIT   "
 unavailable_label: .asciz "GYRO INIT FAILED       "
 need_sel_label: .asciz "M98 60P NEEDS SEL=00   "
+sel_label:      .asciz "SEL PROBE=00           "
 .balign 4
