@@ -253,11 +253,19 @@ c.select(10)
 assert c.press(0x0C) is not None
 c.select(10)
 line = c.press(0x14)
-assert line.startswith('SEL=AF CELLS='), line
-assert line.endswith('%02X' % c.get(ST + 52)), 'reports the live repoint count'
+assert line == 'SEL=AF C=%02X L=00' % c.get(ST + 52), line
 c.assert_stock()
 c.put(0xC072FA30, 0x2F)
-assert c.press(0x14).startswith('SEL=2F CELLS=')
+assert c.press(0x14).startswith('SEL=2F C='), 'selector and rewrite count'
+c.assert_stock()
+# L counts cells naming M130 right now: the reading that says whether our write
+# survived a re-latch (00 = the camera put its own value back) or was ignored.
+c.select(3); c.press(0x14)
+c.select(10)
+assert c.press(0x14) == 'SEL=2F C=%02X L=%02X' % (len(OG_CELLS), len(OG_CELLS))
+c.select(3); c.press(0x14)
+c.select(10)
+assert c.press(0x14).endswith('L=00'), 'nothing names M130 once it is off'
 c.assert_stock()
 c.put(0xC072FA30, 0)
 

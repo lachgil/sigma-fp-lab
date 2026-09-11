@@ -337,9 +337,14 @@ show_sel:
     mov r1, #4
     bl compose
     push {r4, lr}
-    LDA r0, ST                     @ and how many cells the last repoint hit
+    LDA r0, ST                     @ C: cells the last change rewrote
     ldr r1, [r0, #CELLS_N]
-    add r2, r4, #13
+    add r2, r4, #9
+    bl puthex
+    mov r0, #0x82                  @ L: cells that still name M130 right now.
+    bl tally                       @ After a re-latch, 00 means the camera put
+    mov r1, r0                     @ its own value back over ours; a nonzero
+    add r2, r4, #14                @ count means ours survived and was ignored.
     bl puthex
     pop {r4, lr}
 paint:
@@ -487,6 +492,21 @@ puthex:
  * So rewrite them all. Reversing scans for the new id and writes the old one
  * back, which is unambiguous because any two options that could produce the
  * same id share a group bit and cannot be on together. */
+/* r0 = a mode id -> r0 = how many cells name it right now. Read-only. */
+tally:
+    push    {r4, r5, r6, lr}
+    LDA     r4, 0xC0BE5700
+    LDA     r5, 0xC0BE5D00
+    mov     r6, #0
+1:  ldr     r1, [r4]
+    cmp     r1, r0
+    addeq   r6, r6, #1
+    add     r4, r4, #4
+    cmp     r4, r5
+    bne     1b
+    mov     r0, r6
+    pop     {r4, r5, r6, pc}
+
 repoint:
     push    {r4, r5, r6, r7, lr}
     LDA     r4, 0xC0BE5700
@@ -893,5 +913,5 @@ labels:
 busy_label: .asciz "STOP RECORDING / WAIT   "
 unavailable_label: .asciz "GYRO INIT FAILED       "
 need_sel_label: .asciz "M98 60P NEEDS SEL=00   "
-sel_label:      .asciz "SEL=00 CELLS=00        "
+sel_label:      .asciz "SEL=00 C=00 L=00       "
 .balign 4
