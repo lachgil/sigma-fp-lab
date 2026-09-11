@@ -122,24 +122,47 @@ directly, bypassing the command dispatcher:
 Text draws at a fixed top-left position; multi-line needs the lower renderer
 0xC0529CB8 with a y offset. A single cycling status line works with 0xC03E4620.
 
-## WORKING resident menu (2026-09-11, hardware) — src/payloads/menu.S
+## Proven two-item prototype (2026-09-11, hardware)
 Single-press RIGHT/UP menu confirmed pleasant on the camera:
 - Trigger keys must be NATIVE-FREE. On this body only RIGHT (0x0C) and UP (0x14)
   are free. RIGHT cycles the item, UP toggles it on/off. (OK/Tone have native
   actions that fight the menu - do not use them.)
 - Draw: 0xC03E4620(fakectx,1,[str]) then composite 0xC03E3D00(fakectx,1,["1"]).
-- **The OSD is multi-buffered:** a single draw only lands in one buffer, so it
-  took ~3 presses to appear. FIX: repaint the text+composite 4x per action
-  (draw_loop). Then it shows on a single press. This was the key polish.
-- State block 0xC072EF00: +0 cursor, +4 og, +8 hfps. Installed live via descriptor
-  swap at 0xC091EA38 -> payload at 0xC072E700; feature cells per toggle_opengate.
-- Persistence: this is loaded live over the shell; it clears on power-cycle. The
-  next step is packing menu.S into a boot VSHL.BIN so it loads from the card.
+- Four text+composite passes per action fixed the observed three-press delay.
+  Multi-buffering was a hypothesis, not a measured cause.
+- Prototype state was 0xC072EF00 and code 0xC072E700. These conflict with the
+  gyro layout and are not used by the combined card.
+- Live prototype descriptor swap was 0xC091EA38 to 0xC072E700.
 
-## NEXT: 5-preset combined boot card (Stock/OpenGate/HighFPS/Gyro/GyroGate)
-Gyro is NOT a cell toggle: the gyro card (Downloads/gyro_og_test) is a 15-section
-VSHL.BIN (entry 0xC072E064) that places gyro code in caves 0xC072E2xx..ECxx, a
-~10.5KB writer at DMA pool +0x44000, and patches 0xC03660E8; entry calls
-pool+0x44000+[+0x18]. So the full menu must be a COMBINED VSHL.BIN carrying gyro +
-open-gate hook + menu, with the menu arming/disarming each feature's hooks. That
-is an offline integration build + one clean test, not a live poke.
+## Combined boot card (2026-09-11, offline verified)
+
+`src/payloads/menu.S` is now the combined controller. Build:
+`.venv/bin/python build_combined_card.py`; execute the packaged ARM:
+`.venv/bin/python emulate_menu.py`. Installation is in README.md.
+
+- `builds/combined-menu/{AutoRun.txt,VSHL.BIN}`: 32 KiB each, 16 VBIN sections.
+  Synchronous upstream echo loader, no USB shell or endpoint patches.
+- Downloaded gyro_og_test gyro sections match the current gcsv source exactly,
+  including the 10552-byte pool writer. The builder pins their aggregate hash.
+- Absolute entry 0xC072F000 dispatches to menu code at pool+0x50000; gyro remains
+  at its original addresses/pool+0x44000. Menu state is 0xC072FB00:
+  cursor/+4 OG/+8 HFR/+12 gyro/+16 gyro-ready/+20 init-status/+32 saved level.
+  Init-status 1 means installed; 2 means a firmware guard refused installation.
+- Row hook 0xC072F800 and armed flag 0xC072FA10 retain selector175 isolation.
+- Gyro initializes once. Between idle takes the menu restores/arms all four
+  gyro instructions, flushes caches and restores/applies orientation behavior.
+  Buffers remain allocated. No pointer-only pretend-disable.
+- Stock clears OG/HFR/gyro; Gyro-Gate converges OG and gyro to the same state,
+  leaving HFR independent. All features start off. RIGHT selects, UP toggles.
+- Checks native recording/file-busy flags and gyro WANT/file/thread/mailbox/
+  block ownership before a change. This is not an atomic RTOS transaction;
+  concurrent start/toggle behavior remains a hardware risk.
+- Firmware guards cover 17 stock words before gyro initialization. All eight
+  sample allocations and the text allocation must exist before gyro is offered.
+- Actual stage2, trampoline, gyro boot and menu machine code passed emulation:
+  selection/toggles, mixed Gyro-Gate, Stock restoration, busy refusal, native
+  passthrough, allocation failures and firmware mismatch. LCD calls preserve
+  eight-byte stack alignment and repeat four times.
+
+Cold-boot display, real GCSV/JSON writes and recordings in this combined card
+are not yet hardware-verified. No camera writes were performed for this build.

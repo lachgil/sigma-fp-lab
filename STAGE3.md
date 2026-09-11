@@ -10,37 +10,33 @@ resident on-camera menu. Uses fpSup's sanctioned loader, the same family FP3K us
   sections, absolute entry), and emits a short AutoRun that reads the file into
   RAM, checks the magic, places the sections, **flushes the instruction cache**
   (`0xC000E91C` — the thing plain `mem set` cannot do), and branches to our entry.
-- `--payload-addr` must be ABOVE the loader: loader lives `0xC072DE64..0xC072E064`,
-  worker/shell state at `0xC072F000+`. Safe payload window: `0xC072E100..0xC072EF00`.
+- Addresses actually used by the shipped card: loader `0xC072DE64`, absolute
+  entry/trampoline `0xC072F000`, menu code at pool+0x50000, menu state
+  `0xC072FB00`, geometry hook `0xC072F800`. Gyro keeps its own cave/pool layout.
 - Card carries TWO files: `AutoRun.txt` + `VSHL.BIN`. Revert = power cycle.
 
-## Step 1 (BUILT): prove load + execute  ->  `autoruns/loader-test/`
-`src/payloads/payload_marker.S` writes `0x510AADED` to `0xC072FA00` and returns.
-Build: `src/payloads/build_loader_test.sh` (VSHL.BIN is git-ignored; regenerate).
-TEST (camera on shell): boot the two files, then
-`./host/fpsh mem get 0xC072FA00,,4` -> expect `D:0x510AADED`.
-That single read proves our BIN loaded, placed, cache-flushed and ran. Do this
-before trusting the loader with hook installs (a bad hook can freeze; a marker
-cannot).
+## Step 1 (DONE): load + execute proven
+A marker payload loaded from `VSHL.BIN` read back on the camera, proving the
+file was placed, cache-flushed and run. The scaffold has been removed now that
+the real card supersedes it.
 
-## Step 2 (NEXT, low risk): key-input logger  ->  unlocks the menu
-The menu is blocked on one unknown: which physical button sends which id to the
-key handler `0xC0265800`. Payload plan (data-only, reversible):
-- entry: save `0xC091EA38` (stock `0xC0265800`), write our `logger` there
-  (descriptor-pointer swap, MENU-UI.md option A — no instruction patch, no cache
-  risk). Return.
-- `logger(this, keyid)`: write `keyid` into a ring at `0xC072FA00`, then tail-call
-  the real `0xC0265800(this, keyid)` so the camera behaves normally.
-LIVE: press each button, `mem get` the ring, build the button->id map. If the
-dispatcher caches the pointer (menu never sees keys), fall back to the inline
-branch at `0xC0265800` (needs a cache flush, which the loader already does).
+## Step 2 (DONE): key map captured live
+Descriptor-pointer swap at `0xC091EA38` (stock `0xC0265800`) is not cached, so a
+resident handler sees every keypress and can tail-call the stock handler. Map:
+UP `0x14`, DOWN `0x18`, LEFT `0x10`, RIGHT `0x0C`, OK `0x1C`, TONE `0x2F`
+(release = press+1). Only RIGHT and UP have no native action, so they are the
+only usable triggers.
 
-## Step 3: resident controller + OSD menu
-With the id map, add to the payload a small priority task (tk_cre_tsk
-`0xC0016A58`) that owns feature state and repaints the OSD, opened by a key
-sequence, applying features (open gate, mode swaps) from menu entries with a
-recording-idle gate. This is the Stage-3 headline. Renderer path and idle gate
-still need live confirmation (MENU-UI.md).
+## Step 3 (BUILT, awaiting hardware): combined boot card
+`build_combined_card.py` emits `builds/combined-menu/{AutoRun.txt,VSHL.BIN}`:
+the verified gyro release sections plus our geometry hook and resident menu,
+with RIGHT selecting and UP toggling Stock / Open Gate / High FPS / Gyro /
+Gyro-Gate. No resident task is used: the key handler owns state and repaints.
+Details and the install procedure are in MENU-UI.md and README.md.
+
+`emulate_menu.py` runs the packaged machine code (real stage2, trampoline, gyro
+boot and menu) through Unicorn. Cold-boot display, real recordings and RTOS
+timing remain unverified on hardware.
 
 ## Reality checks folded in
 - Open gate (M117) is a 2x2 sensor readout; its softness cannot be patched away.

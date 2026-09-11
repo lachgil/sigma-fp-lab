@@ -23,9 +23,42 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   documented and independently verified offline in [GREEN-HOOK.md](GREEN-HOOK.md).
 - **High-fps RAW:** M58 selection observed; recorded 119.88/120fps cadence and
   sustained throughput still unverified. A short auto-stop does not prove overflow.
-- **Menu/Stage3/AF:** research, not implemented. The unsafe placeholder menu
-  assembly was withdrawn rather than shipped as if working.
+- **Menu/Stage3:** combined boot card built in `builds/combined-menu/` using
+  `build_combined_card.py`. RIGHT/UP interaction was proven live; the combined
+  binary passes ARM emulation. Its cold boot and recordings still need hardware.
+  AF remains research.
 - **Darkness/playback:** unverified hypotheses and explicit experiments, not fixes.
+
+## Combined menu card
+
+Build with `.venv/bin/python build_combined_card.py`; exercise the resulting
+binary with `.venv/bin/python emulate_menu.py`.
+
+For **SIGMA fp 5.02 only, not fp L**. Back up the previous card files, then replace
+both `AutoRun.txt` and `VSHL.BIN` at the SD root using a card reader. Do not append
+this AutoRun to another hack. Start with a full power-off and battery removal,
+then boot with USB disconnected. No firmware-update operation is involved.
+
+- Boots with all features disabled. RIGHT cycles Stock, Open Gate, High FPS,
+  Gyro, Gyro-Gate. UP toggles; Stock switches all features off.
+- Gyro-Gate toggles Open Gate and Gyro together. High FPS remains independent.
+- Open Gate/Gyro-Gate: FHD 29.97 CinemaDNG, 3032x2012 with the existing binned
+  sensor mode. High FPS: existing slot4 M27 to M58 swap, not a new recorder.
+- After changing Open Gate/High FPS, switch recording preset away and back
+  before recording, including after returning to Stock.
+- Gyro uses the working example's GCSV writer and lens JSON beside CinemaDNG
+  clips. No sidecar folder setup is needed. It does not add MOV gyro support.
+- Change features only while stopped and storage has finished writing. The
+  menu refuses known recording/writer-busy states; concurrent record-start
+  versus menu-toggle timing is not verified by the emulator.
+- Stock disables the feature hooks but retains the menu and gyro allocations.
+  For an entirely stock boot, remove both files and remove/reinsert the battery.
+- This card intentionally has no USB shell or endpoint patches, preserving the
+  normal USB path. Combined SSD operation still requires a hardware test.
+
+`manifest.json` records section hashes and addresses. Emulator boundaries stand
+in for allocation, cache, mode query and display services; passing does not
+prove LCD persistence, real file writes, RTOS timing or sustained frame rate.
 
 ## Setup for offline work
 
