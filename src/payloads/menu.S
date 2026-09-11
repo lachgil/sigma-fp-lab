@@ -35,6 +35,14 @@
 .equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
 .equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
+/* The firmware's own settings machinery, as its shell handlers use it:
+ * fetch the settings object, then call one property function per setting with
+ * (object, value, 1). Measured over the shell: `menu SetMovBiningSupport 1`
+ * reads back 1, so these are real read/write state rather than capability
+ * bits -- and `SetIsoLowSensitivitySupport` returned OK while staying 0, so
+ * the system validates silently and a write must always be read back. */
+.equ GET_SETTINGS, 0xC0057AE8
+.equ PROP_MOVBIN,  0xC005C188   /* SetMovBiningSupport, vtable slot +0x1A8 */
 .equ SEL_2398, 176              /* measured: FHD/23.976, probe read B0         */
 /* Which resource each option repoints. Two options sharing a bit cannot both
  * be on: one picker cell or one timing entry cannot hold two values. */
@@ -147,7 +155,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #10
+    cmp r0, #11
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -171,6 +179,8 @@ do_up:
     cmp r0, #6
     beq up_m6
     cmp r0, #9
+    beq up_movbin
+    cmp r0, #10
     beq show_sel                   @ read-only readout
     ldr r1, [r6, #16]
     cmp r1, #0
@@ -274,6 +284,9 @@ up_m98b:
     bl release
     bl toggle_m98b
     b redraw
+up_movbin:
+    bl toggle_movbin
+    b redraw
 up_m6:
     mov r0, #GRP_4K
     mov r1, #36
@@ -286,7 +299,7 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #9
+    cmp r0, #10
     beq show_sel
     cmp r0, #8
     beq state_gate
@@ -296,7 +309,7 @@ redraw:
     b state_text
 state_stock:
     PTR r2, state_offsets
-    mov r3, #9
+    mov r3, #10
     mov r1, #0
 1:  ldr r0, [r2, r3, lsl #2]
     ldr r0, [r6, r0]
@@ -510,6 +523,42 @@ set_zoom:
     str     r1, [r6]
     subs    r5, r5, #1
     bne     1b
+    pop     {r4, r5, r6, pc}
+
+/* Call a firmware property setter: r0 = its function, r1 = the value.
+ * This is exactly what the shell's own handler does, minus the argument
+ * parsing. It runs in the key-handler task rather than the shell task; the
+ * commit function guards re-entrancy at object+0x10 and returns early if it is
+ * already inside, which is what makes that safe enough to try. */
+set_prop:
+    push    {r4, r5, r6, lr}
+    mov     r5, r0
+    mov     r6, r1
+    LDA     r4, GET_SETTINGS
+    blx     r4
+    cmp     r0, #0
+    beq     1f                     @ no object: do nothing rather than fault
+    mov     r1, r6
+    mov     r2, #1
+    blx     r5
+1:  pop     {r4, r5, r6, pc}
+
+/* Movie binning. MV_Binning sits in the movie-settings group beside
+ * MV_Resolution, MV_RecordingFormat and MV_FrameRate, and the record path
+ * prints it as [Mov]PixelBinning, so it may be an INPUT to the mode the camera
+ * picks at record start. Setting it live over USB changed nothing in standby --
+ * which proves nothing, because standby runs a monitor mode and the recording
+ * mode is only chosen when recording starts, and USB cannot be attached then.
+ * Hence this: set it from the camera, unplug, record, and compare. */
+toggle_movbin:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #72]
+    eor     r0, r0, #1
+    str     r0, [r6, #72]
+    mov     r1, r0
+    LDA     r0, PROP_MOVBIN
+    bl      set_prop
     pop     {r4, r5, r6, pc}
 
 /* Rewrite every cell naming mode r0 so it names r1; returns the count, which
@@ -999,7 +1048,7 @@ m130_rates:
     .word 180, 0x1948, 0x2217, 0x7d, 0x7f     @ FHD 25,     M125 / M127
     .word 0, 0, 0, 0, 0
 state_offsets:
-    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
+    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 72, 0
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
@@ -1079,6 +1128,10 @@ labels:
     .asciz ">GYRO-GATE  OFF        "
     .space 8
     .asciz ">GYRO-GATE  ON         "
+    .space 8
+    .asciz ">MOV BIN    OFF        "
+    .space 8
+    .asciz ">MOV BIN    ON         "
     .space 8
     .asciz ">SEL        OFF        "
     .space 8

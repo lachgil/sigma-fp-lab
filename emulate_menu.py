@@ -87,6 +87,7 @@ class Camera:
         self.draws = []
         self.composites = 0
         self.native = []
+        self.props = []
         self.uc.hook_add(UC_HOOK_CODE, self.boundary)
         self.sel60 = sel60
         self.run(POOL + 0x8000 + 16 + 8 * len(SECTIONS), r0=POOL + 0x8000)
@@ -99,6 +100,7 @@ class Camera:
 
     def boundary(self, uc, address, size, _):
         known = {0xC001CF78, 0xC001D038, 0xC001D2B8, 0xC000E91C,
+                 0xC0057AE8, 0xC005C188,
                  0xC0058340, 0xC03E4620, 0xC03E3D00, 0xC0265800}
         if address not in known:
             return
@@ -113,6 +115,12 @@ class Camera:
                 self.next_allocation += uc.reg_read(UC_ARM_REG_R1)
         elif address == 0xC0058340:
             value = 1  # CINE
+        elif address == 0xC0057AE8:
+            value = 0x47100000     # the settings object
+        elif address == 0xC005C188:
+            self.props.append((uc.reg_read(UC_ARM_REG_R0),
+                               uc.reg_read(UC_ARM_REG_R1),
+                               uc.reg_read(UC_ARM_REG_R2)))
         elif address == 0xC03E4620:
             assert uc.reg_read(UC_ARM_REG_R1) == 1
             message = self.get(uc.reg_read(UC_ARM_REG_R2))
@@ -151,22 +159,22 @@ class Camera:
         assert not self.draws
 
     def select(self, index):
-        for _ in range(10):
+        for _ in range(12):
             if self.get(ST) == index:
                 return
             self.press(0x0C)
         raise AssertionError('cursor did not reach selection')
 
     def features(self):
-        """og, m130, gyro, m98a, m98b, m6, m130f."""
-        return tuple(self.get(ST + i) for i in (4, 8, 12, 24, 28, 36, 40))
+        """og, m130, gyro, m98a, m98b, m6, m130f, movbin."""
+        return tuple(self.get(ST + i) for i in (4, 8, 12, 24, 28, 36, 40, 72))
 
     def geom(self, slot=0):
         base = GEOM + slot * 0x10
         return tuple(self.get(base + i * 4) for i in range(4))
 
     def assert_stock(self):
-        assert self.features() == (0,) * 7
+        assert self.features() == (0,) * 8
         for at, expected in GUARDS:
             if at not in (0xC091EA38, 0xC043A19C):
                 assert self.get(at) == expected, hex(at)
@@ -209,7 +217,7 @@ def cells(addresses):
 # Each option, one key event, and the exact cells/canvas it is supposed to own.
 c.select(1)
 assert c.press(0x14) == '>OPEN GATE  ON'
-assert c.features() == (1, 0, 0, 0, 0, 0, 0)
+assert c.features() == (1, 0, 0, 0, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x75,) * len(OG_CELLS) and c.get(0xC0B59A28) == 0x00041C70
 assert c.get(0xC072FA20) == 175 and c.get(0xC072FA10) == 1
 assert c.geom(0) == BINNED and cells(UNITY) == (0x400,) * 4
@@ -218,7 +226,7 @@ c.assert_stock()
 
 c.select(2)
 assert c.press(0x14) == '>M98 30P    ON'
-assert c.features() == (0, 0, 0, 1, 0, 0, 0)
+assert c.features() == (0, 0, 0, 1, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x62,) * len(OG_CELLS) and c.get(M98_VMAX) == 0x00041516
 assert c.get(0xC072FA20) == 175 and c.geom(0) == BINNED
 assert c.press(0x14) == '>M98 30P    OFF'
@@ -252,7 +260,7 @@ for probe, ids, vmax, rate in [(175, (0x6A, 0x6F), 0x04201517, 'FHD 29.97'),
     # The raw_zoom scaler for THIS rate's profile must go to unity: leaving it
     # at 0x640 is what recorded a 1.5625x-shrunken frame in the corner.
     assert cells(zoom_cells(probe)) == (0x400,) * 4, rate
-    c.select(9)
+    c.select(10)
     assert c.press(0x14).endswith('L=%02X' % len(live)), 'L tallies the active id'
     c.select(3)
     assert cells(zoom_cells(175 if probe != 175 else 176)) != (0x400,) * 4 \
@@ -285,7 +293,7 @@ print('PASS: FAST holds the rate at line period 330 with no runtime division')
 
 c.select(5)
 assert c.press(0x14) == '>M98 60P    ON'
-assert c.features() == (0, 0, 0, 0, 1, 0, 0)
+assert c.features() == (0, 0, 0, 0, 1, 0, 0, 0)
 assert cells(HF_CELLS) == (0x62,) * len(HF_CELLS) and c.get(M98_VMAX) == 0x00040A8A
 assert c.get(0xC072FA24) == 173 and c.get(0xC072FA20) == 0
 assert c.geom(1) == BINNED and c.geom(0) == (0, 0, 0, 0)
@@ -296,7 +304,7 @@ c.assert_stock()
 # canvas, no timing rewrite.
 c.select(6)
 assert c.press(0x14) == '>M6 4K      ON'
-assert c.features() == (0, 0, 0, 0, 0, 1, 0)
+assert c.features() == (0, 0, 0, 0, 0, 1, 0, 0)
 assert cells(K4_CELLS) == (0x06,) * len(K4_CELLS)
 assert c.get(0xC072FA10) == 0 and c.geom(0) == (0, 0, 0, 0)
 assert cells(zoom_cells(175)) == (0x640,) * 4
@@ -311,7 +319,7 @@ c.assert_stock()
 
 c.select(8)
 assert c.press(0x14) == '>GYRO-GATE  ON'
-assert c.features() == (1, 0, 1, 0, 0, 0, 0)
+assert c.features() == (1, 0, 1, 0, 0, 0, 0, 0)
 assert [c.get(a) for a in HOOKS] == ON and c.geom(0) == BINNED
 assert c.press(0x14) == '>GYRO-GATE  OFF'
 c.assert_stock()
@@ -320,11 +328,11 @@ print('PASS: each option owns exactly its cells, canvas and timing entry')
 # Everything that shares the 29.97 picker cell must hand it over, not stack.
 c.put(0xC072FA30, 175)          # M130 needs a known preset to apply at all
 for first, second, expected, cell, canvas in [
-        (1, 2, (0, 0, 0, 1, 0, 0, 0), 0x62, BINNED),      # Open Gate -> M98 30P
-        (2, 3, (0, 1, 0, 0, 0, 0, 0), 0x82, FULL130),     # M98 30P -> M130
-        (3, 1, (1, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Open Gate
-        (3, 8, (1, 0, 1, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Gyro-Gate
-        (8, 3, (0, 1, 1, 0, 0, 0, 0), 0x82, FULL130)]:    # Gyro-Gate -> M130
+        (1, 2, (0, 0, 0, 1, 0, 0, 0, 0), 0x62, BINNED),      # Open Gate -> M98 30P
+        (2, 3, (0, 1, 0, 0, 0, 0, 0, 0), 0x82, FULL130),     # M98 30P -> M130
+        (3, 1, (1, 0, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Open Gate
+        (3, 8, (1, 0, 1, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Gyro-Gate
+        (8, 3, (0, 1, 1, 0, 0, 0, 0, 0), 0x82, FULL130)]:    # Gyro-Gate -> M130
     c.select(first)
     c.press(0x14)
     c.select(second)
@@ -340,7 +348,7 @@ for first, second, expected, cell, canvas in [
 # M98 has one timing entry, so its two rates cannot both be live.
 c.select(2); c.press(0x14)
 c.select(5); c.press(0x14)
-assert c.features() == (0, 0, 0, 0, 1, 0, 0)
+assert c.features() == (0, 0, 0, 0, 1, 0, 0, 0)
 assert cells(OG_CELLS) == (0x6A,) * len(OG_CELLS) and c.get(M98_VMAX) == 0x00040A8A
 c.select(0); c.press(0x14)
 c.assert_stock()
@@ -351,14 +359,14 @@ print('PASS: shared cell and shared timing entry both hand over cleanly')
 c.select(3); c.press(0x14)
 c.select(5); c.press(0x14)
 c.select(6); c.press(0x14)
-assert c.features() == (0, 1, 0, 0, 1, 1, 0)
+assert c.features() == (0, 1, 0, 0, 1, 1, 0, 0)
 assert (c.get(0xC072FA20), c.get(0xC072FA24)) == (175, 173)
 assert c.geom(0) == FULL130 and c.geom(1) == BINNED
 assert cells(OG_CELLS) == (0x82,) * len(OG_CELLS) and cells(HF_CELLS) == (0x62,) * len(HF_CELLS)
 assert cells(K4_CELLS) == (0x06,) * len(K4_CELLS)
 # Releasing one must not take the shared cells or the other's canvas.
 c.select(3); c.press(0x14)
-assert c.features() == (0, 0, 0, 0, 1, 1, 0)
+assert c.features() == (0, 0, 0, 0, 1, 1, 0, 0)
 assert c.geom(0) == (0, 0, 0, 0) and c.geom(1) == BINNED
 # Each profile owns its own scaler now: releasing the 29.97 one must not take
 # the 59.94 one's unity away, and must put 29.97's back to stock.
@@ -407,13 +415,28 @@ assert c.get(0xC072FA80) == 0, 'the hook must stop holding them once off'
 c.assert_stock()
 print('PASS: every cell of the selected rate is repointed and restored')
 
+# MOV BIN drives a firmware property setter the way the shell's own handler
+# does: fetch the settings object, then call the property function with
+# (object, value, 1). It cannot be observed in standby, so the emulator checks
+# the call itself.
+c = Camera()
+c.select(9)
+assert c.press(0x14) == '>MOV BIN    ON'
+assert c.features()[7] == 1
+assert c.props[-1] == (0x47100000, 1, 1), c.props[-1]
+assert c.press(0x14) == '>MOV BIN    OFF'
+assert c.props[-1] == (0x47100000, 0, 1), 'and back to 0'
+assert c.features()[7] == 0
+c.assert_stock()
+print('PASS: MOV BIN calls the property setter with the settings object')
+
 # Every independent live/busy signal must block a change without touching hooks.
 for label, end, width in [('busy_words', 'busy_bytes', 4), ('busy_bytes', 'guard_table', 1)]:
     for (address,) in struct.iter_unpack('<I', MENU[SYMS[label]:SYMS[end]]):
         c.select(7)
         c.uc.mem_write(address, b'\x01' + b'\0' * (width - 1))
         assert c.press(0x14) == 'STOP RECORDING / WAIT'
-        assert c.features() == (0, 0, 0, 0, 0, 0, 0)
+        assert c.features() == (0, 0, 0, 0, 0, 0, 0, 0)
         assert [c.get(a) for a in HOOKS] == OFF
         c.uc.mem_write(address, b'\0' * width)
 for key in (0x0D, 0x15, 0x1C, 0x2F):
@@ -427,7 +450,7 @@ for failed in (1, 5, 9):
     c.assert_stock()
     c.select(7)
     assert c.press(0x14) == 'GYRO INIT FAILED'
-    assert c.features() == (0, 0, 0, 0, 0, 0, 0)
+    assert c.features() == (0, 0, 0, 0, 0, 0, 0, 0)
 print('PASS: allocation failures do not arm gyro or falsely enable its menu state')
 
 c = Camera(bad_firmware=True)
