@@ -6,6 +6,10 @@ camera extension, or a supported release. No SIGMA firmware image is included.**
 
 ## Current status
 
+**What has actually been tested on the camera, and what it means:
+[RESULTS.md](RESULTS.md)** — the mode-by-mode table, the measured limits, the
+mechanisms with addresses, and the failure signatures.
+
 Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
 **Want to just test a card? See [`autoruns/`](autoruns/)** for ready-to-run files
 (open gate, open gate + green fix, FHD120, 2K120) with install instructions, and
