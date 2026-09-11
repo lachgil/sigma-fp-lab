@@ -145,3 +145,41 @@ its armed flag from its own state block 0xC0732000+0x10; our build_greenfix read
 0xC072FA10 (the open-gate ARMED flag) so it engages with open gate. FP3K is a raw
 sum-zero-checksummed code image loaded to 0xC072DE64; see SIDELOAD.md for the full
 loader decode. FP3KMENU.BIN is third-party and is NOT redistributed in this repo.
+
+## Record-monitor green: the raw_zoom result reframes it (2026-09-11)
+
+The record path's geometry is now solved: `raw_zoom` is per profile (arrays
+indexed by profile, stride 4, profile = selector - 53), and setting unity for
+the selected rate makes an unlocked mode record a full frame. Recorded files are
+correct in every mode. **Only the live view during recording is still wrong**,
+and gyro -- the one feature that changes no geometry -- is unaffected. So the
+monitor path almost certainly has its OWN geometry/scaler that nothing patches,
+which is the same shape of bug as raw_zoom was.
+
+Independent confirmation of the indexing model: the record arrays begin exactly
+at cell - 122*4.
+
+    0xC0BD9A34 - 122*4 = 0xC0BD984C   run starts 0xC0BD984C
+    0xC0BE1684 - 122*4 = 0xC0BE149C   run starts 0xC0BE149C
+
+Arrays with the same scaler signature (values from {0x3ff, 0x400, 0x600, 0x640,
+0x800, 0xc00}) that we do NOT patch, i.e. candidates for the monitor path:
+
+| base | entries | note |
+|---|---|---|
+| 0xC0BD9B5C | 75 | about the sensor-mode count (70): may be mode-indexed |
+| 0xC0BDA024 | 75 | " |
+| 0xC0BDA154 | 34 | |
+| 0xC0BE1D00 | 75 | " |
+| 0xC0B368E8, 0xC0B36954 | 21 each | different region entirely |
+| 0xC0B369C0 | 270 | profile-sized, different region |
+
+### How to test it, since USB and recording are mutually exclusive
+The green shows on the camera's own LCD, so no host is needed to observe it:
+poke a candidate over USB, unplug, record, look at the screen, report. Each
+iteration is a few minutes and needs no rebuild. Worth trying first, because it
+is cheaper than any of the above: force the monitor to a FIXED mode during
+recording instead of letting it derive geometry from an unusual raster.
+
+Nothing here is hardware-verified yet. The standby accessor fix (0xC0437E98)
+and the record-start buffer hook described above remain as they were.
