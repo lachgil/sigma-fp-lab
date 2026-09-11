@@ -376,3 +376,32 @@ the premise was wrong.
 
 `SEL` reads `SEL=xx CELLS=nn`: the probed selector and how many cells the last
 change rewrote, so "did the swap find anything" is answerable without a shell.
+
+## Why only 29.97 swapped, and the keep list (2026-09-11, hardware)
+
+Three configurations were tried with every cell of the rate rewritten and the
+count confirmed on the LCD:
+
+| preset | selector | C | L | result |
+|---|---|---|---|---|
+| FHD 29.97 12-bit | AF (175) | - | - | real 3968x2640 frames, stopped near 5 s |
+| FHD 23.976 | B0 (176) | 04-05 | 05 | canvas applied, sensor stayed stock, 2 min |
+| FHD 25 | B4 (180) | 04 | 04 | same: canvas applied, sensor stayed stock |
+
+So the canvas gating works at every rate (the frames are the oversized buffer)
+while the **mode swap only takes at 29.97**. Two hardware clues point the same
+way: `C=04` with `L=05` means a cell already named M130 before an apply, and
+that cell was never one we wrote -- so **something copies values between these
+cells**, and re-latching a preset is the obvious moment.
+
+Hence `KEEP` at 0xC072FA80: count, then the addresses the controller claimed.
+The geometry hook rewrites all of them to 130 whenever it matches its selector,
+which happens in standby every time the row is built -- after a latch and before
+a take. It writes the value they should already hold, so it is idempotent and
+cannot tear a running recording.
+
+Measuring the filled region of a corner-boxed clip identifies what the sensor
+really delivered: bytes per written row / 1.5 gives the decoded width, and
+3032 px at 10-bit (3790 bytes) reads as 2527 px in a 12-bit 3968-wide buffer,
+which is what both the 23.976 and 25 clips show (filled fraction 0.409 against
+0.412 predicted; 12-bit would be 0.495).

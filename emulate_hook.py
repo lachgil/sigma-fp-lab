@@ -25,6 +25,7 @@ ARMED = 0xC072FA10
 SELS = 0xC072FA20
 PROBE = 0xC072FA30
 GEOM = 0xC072FA40
+KEEP = 0xC072FA80
 FIELDANGLE = 0x45000000
 ROW = FIELDANGLE + 0x5C
 STACK = 0x46000800
@@ -33,7 +34,7 @@ blob = assemble(HERE / "src" / "rowpatch_gated.S")
 
 
 def run(armed, width, height, r5, sels=(175, 0), geom=(3032, 2012, 3008, 2000),
-        geom1=(3032, 2012, 3008, 2000)):
+        geom1=(3032, 2012, 3008, 2000), keep=()):
     uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
     for base, size in [(0xC0720000, 0x20000), (0x45000000, 0x1000),
                        (0x46000000, 0x1000), (0xC0400000, 0x1000)]:
@@ -43,6 +44,10 @@ def run(armed, width, height, r5, sels=(175, 0), geom=(3032, 2012, 3008, 2000),
     uc.mem_write(SELS, struct.pack("<II", *sels))
     uc.mem_write(PROBE, b"\0" * 8)
     uc.mem_write(GEOM, struct.pack("<4I", *geom) + struct.pack("<4I", *geom1))
+    uc.mem_write(KEEP, struct.pack("<I", len(keep))
+                 + b"".join(struct.pack("<I", a) for a in keep))
+    for a in keep:
+        uc.mem_write(a, struct.pack("<I", 0x6A))     # as if something reset it
     uc.mem_write(LOG, b"\0" * 16)
     uc.mem_write(ROW, struct.pack("<I", width) + struct.pack("<I", height))
     for off in (0x24, 0x2C, 0xD8, 0xDC, 0xE0, 0xE4, 0xF4, 0xF8):
@@ -56,11 +61,12 @@ def run(armed, width, height, r5, sels=(175, 0), geom=(3032, 2012, 3008, 2000),
            for off in (0x00, 0x04, 0x24, 0x2C, 0xD8, 0xE0, 0xDC, 0xE4, 0xF4, 0xF8)}
     hits = struct.unpack_from("<I", uc.mem_read(LOG, 4))[0]
     probe = struct.unpack("<II", uc.mem_read(PROBE, 8))
+    held = tuple(struct.unpack_from("<I", uc.mem_read(a, 4))[0] for a in keep)
     abi_ok = (uc.reg_read(UC_ARM_REG_R0) == FIELDANGLE
               and uc.reg_read(UC_ARM_REG_R4) == FIELDANGLE
               and uc.reg_read(UC_ARM_REG_R5) == r5
               and uc.reg_read(UC_ARM_REG_SP) == STACK)
-    return row, hits, abi_ok, probe
+    return row, hits, abi_ok, probe, held
 
 
 REWRITTEN = {0x00: 3032, 0x04: 2012, 0x24: 3008, 0x2C: 2000,
@@ -110,7 +116,7 @@ cases = [
 
 ok = True
 for label, args, kwargs, expect_row, expect_hits, expect_probe in cases:
-    row, hits, abi_ok, probe = run(*args, **kwargs)
+    row, hits, abi_ok, probe, _ = run(*args, **kwargs)
     passed = (row == expect_row and hits == expect_hits and abi_ok
               and probe == expect_probe)
     ok &= passed
@@ -118,6 +124,18 @@ for label, args, kwargs, expect_row, expect_hits, expect_probe in cases:
     if not passed:
         print("   expected", expect_row, expect_probe)
         print("   got     ", row, probe)
+
+# The keep list: cells the controller claimed must be put back every time the
+# geometry row is built, which is how a re-latch cannot undo a mode swap.
+cells = (0xC0720100, 0xC0720104)
+_, hits, _, _, held = run(1, 1936, 1090, 175, keep=cells)
+passed = hits == 1 and held == (130, 130)
+ok &= passed
+print(f"[{'PASS' if passed else 'FAIL'}] armed + match -> picker cells held at 130  {held}")
+_, hits, _, _, held = run(1, 1936, 1090, 180, keep=cells)
+passed = hits == 0 and held == (0x6A, 0x6A)
+ok &= passed
+print(f"[{'PASS' if passed else 'FAIL'}] selector mismatch -> cells left alone     {held}")
 
 print("\nALL PASS" if ok else "\nFAILURES PRESENT")
 raise SystemExit(0 if ok else 1)

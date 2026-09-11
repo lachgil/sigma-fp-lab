@@ -101,7 +101,7 @@ entry:
         spans = [(a, a + len(b), why) for a, b, why in sections]
         # Include runtime state and loader/file/job reservations, not just code.
         spans += [(STATE, STATE + 0x100, 'menu state'),
-                  (0xC072FA00, 0xC072FA80, 'geometry state, selectors, probe, canvases'),
+                  (0xC072FA00, 0xC072FAC0, 'geometry state, selectors, probe, canvases, keep list'),
                   (0x7000, 0x28000, 'loader read window'),
                   (0x42000, 0x43000, 'gyro file object'),
                   (0x43000, 0x43414, 'gyro jobs')]

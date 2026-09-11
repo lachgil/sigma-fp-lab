@@ -57,6 +57,8 @@
 .equ SLOTS,          4
 .equ PROBE,          0xC072FA30     /* [0] last FHD-row selector, [4] how many   */
 .equ GEOM,           0xC072FA40     /* per-slot canvas: base w/h then active w/h  */
+.equ KEEP,           0xC072FA80     /* [0] count, then addresses to hold at KEEP_ID */
+.equ KEEP_ID,        130            /* ...and the mode id they must keep naming   */
 
 .macro LDA reg, value
     movw    \reg, #:lower16:\value
@@ -112,6 +114,29 @@ entry:
 3:  rsb     r0, r0, #SLOTS         /* which slot matched */
     LDA     r2, GEOM
     add     r2, r2, r0, lsl #4
+
+    /* Hold the picker cells the controller claimed.
+     *
+     * Measured on hardware: a mode swap takes at FHD 29.97 and not at 23.976
+     * or 25, and a cell was once found still naming M130 after a revert -- so
+     * something writes these cells behind us, and re-latching a preset is the
+     * obvious moment. This runs in standby every time the geometry row is
+     * built, which is exactly after a latch and before a take, and it writes
+     * the value they should already hold, so repeating it costs nothing and
+     * cannot tear a running recording. */
+    push    {r1, r2}               /* r1 = the row, r2 = this slot's canvas */
+    LDA     r2, KEEP
+    ldr     r3, [r2]
+    cmp     r3, #0
+    beq     7f
+    add     r2, r2, #4
+    mov     r1, #KEEP_ID
+6:  ldr     r0, [r2], #4
+    cmp     r0, #0
+    strne   r1, [r0]
+    subs    r3, r3, #1
+    bne     6b
+7:  pop     {r1, r2}
 
 2:  /* The canvas belongs to the matched slot: one repointed framerate can be
      * 3032x2012 while another is 3968x2640, so the geometry is per slot and a

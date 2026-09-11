@@ -23,6 +23,7 @@
 .equ SELS, 0xC072FA20
 .equ PROBE, 0xC072FA30
 .equ GEOM, 0xC072FA40
+.equ KEEP, 0xC072FA80           /* count, then the cells the hook holds */
 .equ SEL_2997, 175              /* measured on hardware: FHD/29.97 CinemaDNG */
 #ifndef OG60_SEL
 /* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at
@@ -734,6 +735,21 @@ m130_apply:
     str     r10, [r6, #M130_N]
     str     r9, [r6, #M130_SEL]
     str     r10, [r6, #CELLS_N]
+    /* Hand the addresses to the hook so it can hold them against whatever
+     * rewrites them when a preset is re-latched. Count written last, so the
+     * hook never walks a partial list. */
+    LDA     r2, KEEP
+    mov     r3, #0
+    str     r3, [r2]
+    add     r1, r6, #M130_PAIRS
+    mov     r3, r10
+    add     r2, r2, #4
+7:  ldr     r4, [r1], #8
+    str     r4, [r2], #4
+    subs    r3, r3, #1
+    bne     7b
+    LDA     r2, KEEP
+    str     r10, [r2]
     LDA     r1, M130_VMAX
     ldr     r2, [r1]
     lsr     r2, r2, #16
@@ -770,7 +786,10 @@ m130_revert:
     add     r4, r4, #8
     sub     r7, r7, #1
     b       1b
-2:  LDA     r0, M130_VMAX
+2:  LDA     r0, KEEP
+    mov     r1, #0
+    str     r1, [r0]               @ stop the hook holding them
+    LDA     r0, M130_VMAX
     ldr     r1, [r0]
     lsr     r1, r1, #16
     lsl     r1, r1, #16

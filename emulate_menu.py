@@ -369,6 +369,17 @@ assert c.get(ST + 52) == len(q24), 'the stray is counted, not skipped'
 assert c.press(0x14) == '>M130       OFF'
 assert c.get(stray) in (0x6D, 0x71), 'the stray got a stock id back'
 assert all(c.get(a) != 0x82 for a in SCAN), 'nothing still names M130'
+# The keep list is what defeats a re-latch: the hook re-writes these cells
+# every time the geometry row is built, so whatever resets them loses.
+c = Camera()
+c.put(0xC072FA30, 176)
+c.select(3); c.press(0x14)
+n = c.get(0xC072FA80)
+listed = tuple(c.get(0xC072FA80 + 4 + i * 4) for i in range(n))
+assert n == len(q24) and set(listed) == set(q24), (n, [hex(x) for x in listed])
+c.press(0x14)
+assert c.get(0xC072FA80) == 0, 'the hook must stop holding them once off'
+c.assert_stock()
 print('PASS: every cell of the selected rate is repointed and restored')
 
 # Every independent live/busy signal must block a change without touching hooks.
