@@ -47,7 +47,7 @@ this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
 - Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
-  M130, M130 FAST, M10 WIDE, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP toggles; Stock
+  M130, M130 FAST, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP toggles; Stock
   switches all off. SEL is read-only: `SEL=xx C=nn L=mm` -- the probed
   selector, how many cells the last change rewrote, and how many name M130 now.
 - **None of these modes is reachable from the stock UI**: no picker cell in the
@@ -97,9 +97,17 @@ crop at 1:1 (13.44 ms), UHD/M7 is full-width 1:1 (21.09 ms).
   rate are the 29.97 ones offset by (selector - 175) * 4. Predicted, poked live
   at 25p, and M130 then filled the frame and sustained. Now computed per option
   from the probed selector, so every framerate works.
-- **M10 WIDE** is 6064x2022 FULL readout: the whole sensor WIDTH at 1:1, no
-  horizontal crop, 3:1. 441 MB/s at 23.976, rolling shutter 12.5 ms (better than
-  M130's 16.3). Untested on hardware.
+- **The record path will not accept an arbitrary raster** (2026-09-11,
+  hardware). M10 (6064x2022, full sensor width) was built and REFUSED at both
+  29.97 and 23.976: the cells were rewritten (C=04) and the clip came back a
+  clean, ordinary 1920x1080 -- the signature of the path validating the
+  substitute and falling back, as distinct from a corner-boxed frame (canvas
+  applied, scaler wrong) or a torn one (sensor cannot read it). M130 at 3968
+  wide is accepted; 6064 is not, and the FHD path's buffers are the likely
+  reason. So a 6064-wide mode has to be substituted into the UHD family, which
+  already handles that width -- which needs the hook to gate on the UHD source
+  row as well as 1936x1090. The option was removed rather than left in the menu
+  doing nothing; the parameterised target table it proved out stayed.
 - **M130 follows the preset you have selected: choose the preset FIRST, then
   turn it on.** It gates the canvas on the selector the probe last saw and
   repoints the mode ids belonging to that rate, so it works at 29.97, 23.976 or

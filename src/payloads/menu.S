@@ -34,7 +34,6 @@
 .equ SEL_5994, OG60_SEL
 .equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
-.equ M10_VMAX,  0xC0B59B28      /* M10 timing entry: stock, high half kept   */
 .equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
 .equ SEL_2398, 176              /* measured: FHD/23.976, probe read B0         */
 /* Which resource each option repoints. Two options sharing a bit cannot both
@@ -148,7 +147,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #11
+    cmp r0, #10
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -168,17 +167,15 @@ do_up:
     cmp r0, #4
     beq up_m130f
     cmp r0, #5
-    beq up_m10
-    cmp r0, #6
     beq up_m98b
-    cmp r0, #7
+    cmp r0, #6
     beq up_m6
-    cmp r0, #10
+    cmp r0, #9
     beq show_sel                   @ read-only readout
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #8
+    cmp r0, #7
     beq up_gyro
     mov r0, #GRP_2997              @ Gyro-Gate owns the 29.97 cell
     mov r1, #4
@@ -268,14 +265,6 @@ up_m130f:
     cmp r0, #0
     beq show_need_sel
     b redraw
-up_m10:
-    mov r0, #(GRP_2997|GRP_M130)
-    mov r1, #68
-    bl release
-    bl toggle_m10
-    cmp r0, #0
-    beq show_need_sel
-    b redraw
 up_m98b:
     movw r0, #:lower16:SEL_5994
     cmp r0, #0
@@ -297,9 +286,9 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #10
-    beq show_sel
     cmp r0, #9
+    beq show_sel
+    cmp r0, #8
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
@@ -307,7 +296,7 @@ redraw:
     b state_text
 state_stock:
     PTR r2, state_offsets
-    mov r3, #10
+    mov r3, #9
     mov r1, #0
 1:  ldr r0, [r2, r3, lsl #2]
     ldr r0, [r6, r0]
@@ -585,8 +574,6 @@ apply_shared:
     orr     r0, r7, r1             @ ...or M130 30P
     ldr     r1, [r6, #40]
     orr     r0, r0, r1             @ ...or M130 FAST
-    ldr     r1, [r6, #68]
-    orr     r0, r0, r1             @ ...or M10 6K WIDE
     ldr     r1, [r6, #28]
     orr     r0, r0, r1             @ ...or the 59.94 slot
     orrs    r0, r0, r1             @ (the 59.94 slot closes the list)
@@ -601,8 +588,6 @@ apply_shared:
     bne     shared_2997_binned
     ldr     r0, [r6, #8]
     ldr     r1, [r6, #40]
-    orr     r0, r0, r1
-    ldr     r1, [r6, #68]
     orrs    r0, r0, r1
     bne     shared_2997_full
     mov     r0, #0                 @ nobody holds it: publish no canvas
@@ -934,36 +919,6 @@ m130f_disable:
     mov     r0, #1
     pop     {r4, r5, r6, pc}
 
-/* M10 6K WIDE: 6064x2022 FULL readout -- the whole sensor WIDTH at 1:1, no
- * horizontal crop at all, 3:1. At 23.976 it needs 441 MB/s, between the 377
- * that sustained two minutes and the 471 that stopped near five seconds, and
- * its rolling shutter is 12.5 ms against M130's 16.3. Same learning as M130:
- * pick the preset first. */
-toggle_m10:
-    push    {r4, r5, r6, lr}
-    LDA     r6, ST
-    ldr     r0, [r6, #68]
-    cmp     r0, #0
-    bne     m10_disable
-    PTR     r1, target_m10
-    mov     r0, #4
-    bl      m130_apply
-    cmp     r0, #0
-    beq     m10_out
-    mov     r0, #1
-    str     r0, [r6, #68]
-    bl      apply_shared
-    mov     r0, #1
-m10_out:
-    pop     {r4, r5, r6, pc}
-m10_disable:
-    mov     r0, #0
-    str     r0, [r6, #68]
-    bl      m130_revert
-    bl      apply_shared
-    mov     r0, #1
-    pop     {r4, r5, r6, pc}
-
 /* M98 60P: 3032x2012 in the FHD 59.94 cell -- open-gate geometry at double the
  * rate. Timing entry 2094 -> 2698 is 59.94 fps at M98's hmax, about 548 MB/s:
  * above any card and near the SSD ceiling, so expect short bursts. */
@@ -1036,8 +991,6 @@ toggle_m6:
  * below serves all of them because every 12-bit mode has line period 445. */
 target_m130:
     .word 130, M130_VMAX, 0x1014, 3968, 2640
-target_m10:
-    .word 10,  M10_VMAX,  0x0A8C, 6064, 2022
 zoom_bases:
     .word 0xC0BD9A34, 0xC0BD9EFC, 0xC0BE1684, 0xC0BE1B4C   @ the FHD 29.97 row
 m130_rates:
@@ -1046,14 +999,13 @@ m130_rates:
     .word 180, 0x1948, 0x2217, 0x7d, 0x7f     @ FHD 25,     M125 / M127
     .word 0, 0, 0, 0, 0
 state_offsets:
-    .word 0, 4, 24, 8, 40, 68, 28, 36, 12, 0, 0
+    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
     .word 24, GRP_2997|GRP_M98,    toggle_m98a - entry
     .word 8,  GRP_2997|GRP_M130,   toggle_m130 - entry
     .word 40, GRP_2997|GRP_M130,   toggle_m130f - entry
-    .word 68, GRP_2997|GRP_M130,   toggle_m10 - entry
     .word 28, GRP_5994|GRP_M98,    toggle_m98b - entry
     .word 36, GRP_4K,              toggle_m6 - entry
 .equ FEATURE_COUNT, (. - features_table) / 12
@@ -1111,10 +1063,6 @@ labels:
     .asciz ">M130 FAST  OFF        "
     .space 8
     .asciz ">M130 FAST  ON         "
-    .space 8
-    .asciz ">M10 WIDE   OFF        "
-    .space 8
-    .asciz ">M10 WIDE   ON         "
     .space 8
     .asciz ">M98 60P    OFF        "
     .space 8
