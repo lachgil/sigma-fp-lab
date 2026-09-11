@@ -80,3 +80,23 @@ Menu design: open on TONE press (0x2F); while open, consume UP/DOWN (navigate),
 OK (apply), TONE again or a timeout (close); pass everything else through by
 tail-calling 0xC0265800 so the camera behaves normally when the menu is closed.
 This replaces the earlier placeholder key ids in the withdrawn draft.
+
+## PROVEN end-to-end (2026-09-11, hardware): resident button action
+Installed a resident handler at cave 0xC072E440 via the descriptor swap and had
+it, on TONE press (0x2F), flip the whole open-gate patch-set. Single-press result,
+read back live: ARMED 1->0, picker7 0x75->0x6A, VMAX 0x41C70->0x40888, RWZM
+0x400->0x640. So: intercept a physical button -> run our code -> change camera
+state WORKS. This is the menu's core mechanism, confirmed.
+
+Two confirmed constraints for the real menu:
+1. RETURN VALUE DOES NOT CONSUME. Returning r0=1 does not stop the native action:
+   pressing TONE still opens the camera's native Tone menu (a separate observer).
+   A real menu must either use a trigger with no strong native action, mask the
+   event earlier in the pipeline, or accept/hide the native panel. The per-key
+   choke return is not a global consume.
+2. Geometry-latched features (open gate, mode swaps) need a mode re-latch to show
+   in a take; a toggle alone does not change an already-latched recording.
+
+Also observed: TONE opens the native Tone menu on first press and closes it on the
+next, so while that panel is open, keys may route to it rather than the global
+observer. Trigger choice matters.
