@@ -59,3 +59,24 @@ For now, `toggle_opengate.py` is the host-side experimental control, not a menu.
 It requires the cold-boot-installed matching hook and changes its ARMED data flag
 rather than replacing live instructions. It still relies on the operator keeping
 the camera idle. Hardware state changes must be supervised.
+
+## CONFIRMED LIVE button->id map (2026-09-11, hardware)
+Captured on the actual camera via a live descriptor-swap logger at 0xC091EA38
+(-> logger at 0xC072E400 -> ring at 0xC072FB00), which proved the dispatcher does
+NOT cache the handler pointer (option A works; no inline hook / cache flush needed).
+Handler 0xC0265800, ABI r0=this, r1=keyid. Each physical tap logs press then
+release; **release id = press id + 1**.
+
+| Button | press id | release id |
+|---|---|---|
+| UP (rear) | 0x14 | 0x15 |
+| DOWN | 0x18 | 0x19 |
+| LEFT | 0x10 | 0x11 |
+| RIGHT | 0x0C | 0x0D |
+| OK / center | 0x1C | 0x1D |
+| TONE (chosen menu-open key) | 0x2F | 0x30 |
+
+Menu design: open on TONE press (0x2F); while open, consume UP/DOWN (navigate),
+OK (apply), TONE again or a timeout (close); pass everything else through by
+tail-calling 0xC0265800 so the camera behaves normally when the menu is closed.
+This replaces the earlier placeholder key ids in the withdrawn draft.
