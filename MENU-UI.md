@@ -338,3 +338,32 @@ several repointed framerates coexist. Conflicts between options are declared as
 group bits (which picker cell, which timing entry) in `features_table`, and
 `release()` switches off anything sharing a bit -- adding an option means
 declaring its groups once rather than editing every other option.
+
+## Why hardcoded picker cells kept missing (2026-09-11, hardware)
+
+Two builds repointed a 24p cell and both recorded the same signature: a
+3032x1708 picture in the top-left of a 3968x2640 frame, garbage elsewhere. That
+signature means **the canvas applied and the sensor mode did not** -- the hook
+matched the selector, so the buffer is the wide one, but the sensor still
+delivered the stock raster, which lands left-aligned at the wide stride.
+
+The reason is the layout. `0xC0BE5700..0xC0BE5850` is not a flat picker: it is
+`{group, format id, mode, descriptor}` records at 0x10 stride (group 4 = the FHD
+family, 5 = the 6064-wide family), and the three parallel tables above it repeat
+each framerate. So one mode id appears in several cells:
+
+    M109 (23.976)  0xC0BE5708 5808 58B8 5A58 5BF8
+    M218 (24.00)   0xC0BE57E8 58A8 5A48 5BE8
+    M106 (29.97)   0xC0BE57A8 5888 5A28 5BC8
+
+Open gate works patching only M106's last three, so which cells are live is not
+uniform, and both 24p rows share a raster, so the recording cannot disambiguate.
+
+`M130 AUTO` stops guessing: it calls `F_MODE_NOW` (0xC032C720) for the live mode
+id, scans 0xC0BE5700..0xC0BE5D00 for every word equal to it, rewrites them all
+to 130 and stores each address so they can be restored, takes VMAX from that
+mode's own timing entry (valid verbatim only while the line period is M130's
+445, else it refuses) and the selector from the probe. Preset first, then AUTO.
+
+`SEL` now reads `SEL=xx MODE=yy`: the probed selector and the live mode id, so
+"did the swap take" is answerable on the camera without a shell.

@@ -64,6 +64,7 @@ class Camera:
         self.uc.mem_write(0xC3498E2C, b'\x01')
         if bad_firmware:
             self.put(HOOKS[0], 0xE1A00000)
+        self.live_mode = 109        # stock FHD 23.976
         self.fail_allocation = fail_allocation
         self.allocations = 0
         self.next_allocation = 0x47000000
@@ -81,7 +82,7 @@ class Camera:
         self.uc.mem_write(address, struct.pack('<I', value))
 
     def boundary(self, uc, address, size, _):
-        known = {0xC001CF78, 0xC001D038, 0xC001D2B8, 0xC000E91C,
+        known = {0xC001CF78, 0xC001D038, 0xC001D2B8, 0xC000E91C, 0xC032C720,
                  0xC0058340, 0xC03E4620, 0xC03E3D00, 0xC0265800}
         if address not in known:
             return
@@ -96,6 +97,8 @@ class Camera:
                 self.next_allocation += uc.reg_read(UC_ARM_REG_R1)
         elif address == 0xC0058340:
             value = 1  # CINE
+        elif address == 0xC032C720:
+            value = self.live_mode  # the sensor mode the preset selected
         elif address == 0xC03E4620:
             assert uc.reg_read(UC_ARM_REG_R1) == 1
             message = self.get(uc.reg_read(UC_ARM_REG_R2))
@@ -134,28 +137,28 @@ class Camera:
         assert not self.draws
 
     def select(self, index):
-        for _ in range(11):
+        for _ in range(12):
             if self.get(ST) == index:
                 return
             self.press(0x0C)
         raise AssertionError('cursor did not reach selection')
 
     def features(self):
-        """og, m130, gyro, m98a, m98b, m6, m130f, m130q."""
-        return tuple(self.get(ST + i) for i in (4, 8, 12, 24, 28, 36, 40, 44))
+        """og, m130, gyro, m98a, m98b, m6, m130f, m130q, auto."""
+        return tuple(self.get(ST + i) for i in (4, 8, 12, 24, 28, 36, 40, 44, 48))
 
     def geom(self, slot=0):
         base = GEOM + slot * 0x10
         return tuple(self.get(base + i * 4) for i in range(4))
 
     def assert_stock(self):
-        assert self.features() == (0,) * 8
+        assert self.features() == (0,) * 9
         for at, expected in GUARDS:
             if at not in (0xC091EA38, 0xC043A19C):
                 assert self.get(at) == expected, hex(at)
         assert self.get(0xC072FA10) == 0
         assert all(self.get(0xC072FA20 + i * 4) == 0 for i in range(4))
-        assert all(self.geom(s) == (0, 0, 0, 0) for s in range(3))
+        assert all(self.geom(s) == (0, 0, 0, 0) for s in range(4))
         assert bytes(self.uc.mem_read(0xC3498E2C, 1)) == b'\x01'
 
 
@@ -188,7 +191,7 @@ def cells(addresses):
 # Each option, one key event, and the exact cells/canvas it is supposed to own.
 c.select(1)
 assert c.press(0x14) == '>OPEN GATE  ON'
-assert c.features() == (1, 0, 0, 0, 0, 0, 0, 0)
+assert c.features() == (1, 0, 0, 0, 0, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x75,) * 3 and c.get(0xC0B59A28) == 0x00041C70
 assert c.get(0xC072FA20) == 175 and c.get(0xC072FA10) == 1
 assert c.geom(0) == BINNED and cells(UNITY) == (0x400,) * 4
@@ -197,7 +200,7 @@ c.assert_stock()
 
 c.select(2)
 assert c.press(0x14) == '>M98 30P    ON'
-assert c.features() == (0, 0, 0, 1, 0, 0, 0, 0)
+assert c.features() == (0, 0, 0, 1, 0, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x62,) * 3 and c.get(M98_VMAX) == 0x00041516
 assert c.get(0xC072FA20) == 175 and c.geom(0) == BINNED
 assert c.press(0x14) == '>M98 30P    OFF'
@@ -207,7 +210,7 @@ c.assert_stock()
 # high half of that timing word must survive the rewrite.
 c.select(3)
 assert c.press(0x14) == '>M130 30P   ON'
-assert c.features() == (0, 1, 0, 0, 0, 0, 0, 0)
+assert c.features() == (0, 1, 0, 0, 0, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x82,) * 3 and c.get(M130_VMAX) == 0x04201517
 assert c.get(M130_VMAX) >> 16 == 0x0420, 'high half of the timing word lost'
 assert c.get(0xC072FA20) == 175 and c.geom(0) == FULL130
@@ -218,7 +221,7 @@ c.assert_stock()
 # M130 FAST is the HMAX experiment: same canvas, shorter line period.
 c.select(4)
 assert c.press(0x14) == '>M130 FAST  ON'
-assert c.features() == (0, 0, 0, 0, 0, 0, 1, 0)
+assert c.features() == (0, 0, 0, 0, 0, 0, 1, 0, 0)
 assert cells(OG_CELLS) == (0x82,) * 3
 assert c.get(M130_HMAX) == 0x014A014A and c.get(M130_VMAX) == 0x04201C6E
 assert c.get(M130_HMAX) >> 16 == 0x014A and c.get(M130_VMAX) >> 16 == 0x0420
@@ -230,10 +233,10 @@ c.assert_stock()
 # and whoever lets go must restore the stock line period.
 c.select(3); c.press(0x14)
 c.select(4); c.press(0x14)
-assert c.features() == (0, 0, 0, 0, 0, 0, 1, 0)
+assert c.features() == (0, 0, 0, 0, 0, 0, 1, 0, 0)
 assert c.get(M130_HMAX) == 0x014A014A
 c.select(3); c.press(0x14)
-assert c.features() == (0, 1, 0, 0, 0, 0, 0, 0)
+assert c.features() == (0, 1, 0, 0, 0, 0, 0, 0, 0)
 assert c.get(M130_HMAX) == 0x01BD01BD, 'stock line period not restored'
 assert c.get(M130_VMAX) == 0x04201517
 c.select(0); c.press(0x14)
@@ -241,20 +244,20 @@ c.assert_stock()
 
 # The SEL line is read-only: it reports the probe and changes nothing.
 c.put(0xC072FA30, 0xAF)
-c.select(10)
+c.select(11)
 assert c.press(0x0C) is not None
-c.select(10)
-assert c.press(0x14) == 'SEL PROBE=AF'
+c.select(11)
+assert c.press(0x14) == 'SEL=AF MODE=6D'
 c.assert_stock()
 c.put(0xC072FA30, 0x2F)
-assert c.press(0x14) == 'SEL PROBE=2F'
+assert c.press(0x14) == 'SEL=2F MODE=6D'
 c.assert_stock()
 c.put(0xC072FA30, 0)
 
 # M130 24P: the full-readout canvas in the 23.976 cell, 377 MB/s instead of 471.
 c.select(5)
 assert c.press(0x14) == '>M130 24P   ON'
-assert c.features() == (0, 0, 0, 0, 0, 0, 0, 1)
+assert c.features() == (0, 0, 0, 0, 0, 0, 0, 1, 0)
 # Both 24p rows must be repointed: the first build guessed one and the camera
 # used the other, which recorded 3032x1708 of picture inside a 3968x2640 frame.
 assert cells(Q24_CELLS) == (0x82,) * 3 and cells(Q24B_CELLS) == (0x82,) * 3
@@ -269,19 +272,19 @@ c.assert_stock()
 # Open Gate use different picker cells and must coexist.
 c.select(3); c.press(0x14)
 c.select(5); c.press(0x14)
-assert c.features() == (0, 0, 0, 0, 0, 0, 0, 1)
+assert c.features() == (0, 0, 0, 0, 0, 0, 0, 1, 0)
 assert cells(OG_CELLS) == (0x6A,) * 3 and c.get(M130_VMAX) == 0x04201A5C
 assert cells(Q24_CELLS) == (0x82,) * 3 and cells(Q24B_CELLS) == (0x82,) * 3
 c.select(1); c.press(0x14)
-assert c.features() == (1, 0, 0, 0, 0, 0, 0, 1)
+assert c.features() == (1, 0, 0, 0, 0, 0, 0, 1, 0)
 assert (c.get(0xC072FA20), c.get(0xC072FA28)) == (175, 176)
 assert c.geom(0) == BINNED and c.geom(2) == FULL130
 c.select(0); c.press(0x14)
 c.assert_stock()
 
-c.select(6)
+c.select(7)
 assert c.press(0x14) == '>M98 60P    ON'
-assert c.features() == (0, 0, 0, 0, 1, 0, 0, 0)
+assert c.features() == (0, 0, 0, 0, 1, 0, 0, 0, 0)
 assert cells(HF_CELLS) == (0x62,) * 3 and c.get(M98_VMAX) == 0x00040A8A
 assert c.get(0xC072FA24) == 173 and c.get(0xC072FA20) == 0
 assert c.geom(1) == BINNED and c.geom(0) == (0, 0, 0, 0)
@@ -290,24 +293,24 @@ c.assert_stock()
 
 # M6 shares the 4K raster, so it must stay a picker-only swap: no hook, no
 # canvas, no timing rewrite.
-c.select(7)
+c.select(8)
 assert c.press(0x14) == '>M6 4K      ON'
-assert c.features() == (0, 0, 0, 0, 0, 1, 0, 0)
+assert c.features() == (0, 0, 0, 0, 0, 1, 0, 0, 0)
 assert cells(K4_CELLS) == (0x06,) * 3
 assert c.get(0xC072FA10) == 0 and c.geom(0) == (0, 0, 0, 0)
 assert cells(UNITY) == (0x640,) * 4
 assert c.press(0x14) == '>M6 4K      OFF'
 c.assert_stock()
 
-c.select(8)
+c.select(9)
 assert c.press(0x14) == '>GYRO       ON'
 assert [c.get(a) for a in HOOKS] == ON
 assert c.press(0x14) == '>GYRO       OFF'
 c.assert_stock()
 
-c.select(9)
+c.select(10)
 assert c.press(0x14) == '>GYRO-GATE  ON'
-assert c.features() == (1, 0, 1, 0, 0, 0, 0, 0)
+assert c.features() == (1, 0, 1, 0, 0, 0, 0, 0, 0)
 assert [c.get(a) for a in HOOKS] == ON and c.geom(0) == BINNED
 assert c.press(0x14) == '>GYRO-GATE  OFF'
 c.assert_stock()
@@ -315,11 +318,11 @@ print('PASS: each option owns exactly its cells, canvas and timing entry')
 
 # Everything that shares the 29.97 picker cell must hand it over, not stack.
 for first, second, expected, cell, canvas in [
-        (1, 2, (0, 0, 0, 1, 0, 0, 0, 0), 0x62, BINNED),      # Open Gate -> M98 30P
-        (2, 3, (0, 1, 0, 0, 0, 0, 0, 0), 0x82, FULL130),     # M98 30P -> M130
-        (3, 1, (1, 0, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Open Gate
-        (3, 9, (1, 0, 1, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Gyro-Gate
-        (9, 3, (0, 1, 1, 0, 0, 0, 0, 0), 0x82, FULL130)]:    # Gyro-Gate -> M130
+        (1, 2, (0, 0, 0, 1, 0, 0, 0, 0, 0), 0x62, BINNED),      # Open Gate -> M98 30P
+        (2, 3, (0, 1, 0, 0, 0, 0, 0, 0, 0), 0x82, FULL130),     # M98 30P -> M130
+        (3, 1, (1, 0, 0, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Open Gate
+        (3, 10, (1, 0, 1, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Gyro-Gate
+        (10, 3, (0, 1, 1, 0, 0, 0, 0, 0, 0), 0x82, FULL130)]:    # Gyro-Gate -> M130
     c.select(first)
     c.press(0x14)
     c.select(second)
@@ -334,8 +337,8 @@ for first, second, expected, cell, canvas in [
     c.assert_stock()
 # M98 has one timing entry, so its two rates cannot both be live.
 c.select(2); c.press(0x14)
-c.select(6); c.press(0x14)
-assert c.features() == (0, 0, 0, 0, 1, 0, 0, 0)
+c.select(7); c.press(0x14)
+assert c.features() == (0, 0, 0, 0, 1, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x6A,) * 3 and c.get(M98_VMAX) == 0x00040A8A
 c.select(0); c.press(0x14)
 c.assert_stock()
@@ -344,29 +347,72 @@ print('PASS: shared cell and shared timing entry both hand over cleanly')
 # Independent cells: M130 at 29.97, M98 at 59.94 and M6 at 4K coexist, each
 # with its own selector and canvas -- the per-slot geometry this needs.
 c.select(3); c.press(0x14)
-c.select(6); c.press(0x14)
 c.select(7); c.press(0x14)
-assert c.features() == (0, 1, 0, 0, 1, 1, 0, 0)
+c.select(8); c.press(0x14)
+assert c.features() == (0, 1, 0, 0, 1, 1, 0, 0, 0)
 assert (c.get(0xC072FA20), c.get(0xC072FA24)) == (175, 173)
 assert c.geom(0) == FULL130 and c.geom(1) == BINNED
 assert cells(OG_CELLS) == (0x82,) * 3 and cells(HF_CELLS) == (0x62,) * 3
 assert cells(K4_CELLS) == (0x06,) * 3
 # Releasing one must not take the shared cells or the other's canvas.
 c.select(3); c.press(0x14)
-assert c.features() == (0, 0, 0, 0, 1, 1, 0, 0)
+assert c.features() == (0, 0, 0, 0, 1, 1, 0, 0, 0)
 assert c.geom(0) == (0, 0, 0, 0) and c.geom(1) == BINNED
 assert cells(UNITY) == (0x400,) * 4 and c.get(0xC072FA10) == 1
 c.select(0); c.press(0x14)
 c.assert_stock()
 print('PASS: independent framerates coexist with per-slot canvases')
 
+# AUTO learns the live mode instead of being told which cells to touch.
+M109_CELLS = (0xC0BE5708, 0xC0BE5808, 0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8)
+c.put(0xC072FA30, 176)          # the probe has seen this preset's selector
+c.live_mode = 109               # FHD 23.976, line period 445 like M130's
+c.select(6)
+assert c.press(0x14) == '>M130 AUTO  ON'
+assert c.get(ST + 48) == 1 and c.get(ST + 52) == 109
+assert c.get(ST + 56) == len(M109_CELLS), 'should find every cell holding M109'
+assert cells(M109_CELLS) == (0x82,) * len(M109_CELLS)
+assert [c.get(ST + 60 + i * 4) for i in range(len(M109_CELLS))] == list(M109_CELLS)
+# The rate comes from the stock mode's own timing entry, not a hardcoded value.
+assert c.get(M130_VMAX) == 0x04201A5C and c.get(M130_VMAX) >> 16 == 0x0420
+assert c.get(0xC072FA2C) == 176 and c.geom(3) == FULL130
+assert c.press(0x14) == '>M130 AUTO  OFF'
+assert cells(M109_CELLS) == (0x6D,) * len(M109_CELLS), 'must restore every cell'
+c.assert_stock()
+
+# Same option, a different preset: it must follow whatever is selected.
+c.live_mode = 106               # FHD 29.97
+c.put(0xC072FA30, 175)
+assert c.press(0x14) == '>M130 AUTO  ON'
+assert c.get(ST + 52) == 106 and c.get(ST + 56) == 4
+assert cells(OG_CELLS) == (0x82,) * 3 and c.get(0xC0BE57A8) == 0x82
+assert c.get(M130_VMAX) == 0x04201516, 'M106 frame length transfers verbatim'
+assert c.get(0xC072FA2C) == 175
+assert c.press(0x14) == '>M130 AUTO  OFF'
+assert cells(OG_CELLS) == (0x6A,) * 3 and c.get(0xC0BE57A8) == 0x6A
+c.assert_stock()
+
+# It refuses rather than guess: no selector seen, a line period that would need
+# a rate change, or a mode it cannot find.
+for probe, mode, why in [(0, 109, 'no selector probed'),
+                         (176, 117, 'line period 330, not 445'),
+                         (176, 0, 'no live mode')]:
+    c.put(0xC072FA30, probe)
+    c.live_mode = mode
+    assert c.press(0x14) == 'AUTO REFUSED, SEE SEL', why
+    assert c.features() == (0,) * 9, why
+    c.assert_stock()
+c.put(0xC072FA30, 0)
+c.live_mode = 109
+print('PASS: AUTO learns the live mode, repoints every cell, restores them all')
+
 # Every independent live/busy signal must block a change without touching hooks.
 for label, end, width in [('busy_words', 'busy_bytes', 4), ('busy_bytes', 'guard_table', 1)]:
     for (address,) in struct.iter_unpack('<I', MENU[SYMS[label]:SYMS[end]]):
-        c.select(8)
+        c.select(9)
         c.uc.mem_write(address, b'\x01' + b'\0' * (width - 1))
         assert c.press(0x14) == 'STOP RECORDING / WAIT'
-        assert c.features() == (0, 0, 0, 0, 0, 0, 0, 0)
+        assert c.features() == (0, 0, 0, 0, 0, 0, 0, 0, 0)
         assert [c.get(a) for a in HOOKS] == OFF
         c.uc.mem_write(address, b'\0' * width)
 for key in (0x0D, 0x15, 0x1C, 0x2F):
@@ -378,9 +424,9 @@ for failed in (1, 5, 9):
     c = Camera(fail_allocation=failed)
     assert c.get(ST + 16) == 0
     c.assert_stock()
-    c.select(8)
+    c.select(9)
     assert c.press(0x14) == 'GYRO INIT FAILED'
-    assert c.features() == (0, 0, 0, 0, 0, 0, 0, 0)
+    assert c.features() == (0, 0, 0, 0, 0, 0, 0, 0, 0)
 print('PASS: allocation failures do not arm gyro or falsely enable its menu state')
 
 c = Camera(bad_firmware=True)
@@ -393,7 +439,7 @@ print('PASS: mismatched firmware refuses initialization before allocating/arming
 # what the probe saw instead of rewriting geometry for a guess.
 c = Camera(sel60=0)
 c.put(0xC072FA30, 0xAD)
-c.select(6)
+c.select(7)
 assert c.press(0x14) == 'M98 60P NEEDS SEL=AD'
 c.assert_stock()
 print('PASS: an unmeasured selector refuses and shows the probed value')

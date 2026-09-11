@@ -34,6 +34,9 @@
 .equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
 .equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
+/* () -> the live sensor mode enum. Same address the gyro writer's logger.S and
+ * gcsvgen.S use; not exported by the headers included above. */
+.equ F_MODE_NOW, 0xC032C720
 .equ SEL_2398, 176              /* measured: FHD/23.976, probe read B0         */
 /* Which resource each option repoints. Two options sharing a bit cannot both
  * be on: one picker cell or one timing entry cannot hold two values. */
@@ -43,6 +46,14 @@
 .equ GRP_5994, 8                /* FHD 59.94 picker cell  */
 .equ GRP_2398, 16               /* FHD 23.976 picker cell */
 .equ GRP_4K,   32               /* 4K picker cell         */
+.equ GRP_AUTO, 64               /* whatever cells AUTO learned */
+/* AUTO's bookkeeping, above the toggles' flags. */
+.equ A_ID,   52                 /* the stock mode id it replaced   */
+.equ A_N,    56                 /* how many cells it rewrote       */
+.equ A_SEL,  92                 /* the selector that preset uses   */
+.equ A_CELLS, 60                /* up to A_MAX addresses           */
+.equ A_MAX,  8
+.equ LINE,   0xC0               /* the composed readout line       */
 .macro LDA reg, val
     movw \reg, #:lower16:\val
     movt \reg, #:upper16:\val
@@ -77,7 +88,7 @@ boot:
     push {r4, r5, r6, r7, r8, lr}
     LDA r6, ST
     mov r0, #0
-    mov r1, #12
+    mov r1, #64                    @ the whole state block, AUTO's table included
     mov r2, r6
 1:  str r0, [r2], #4
     subs r1, r1, #1
@@ -149,7 +160,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #11
+    cmp r0, #12
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -171,15 +182,17 @@ do_up:
     cmp r0, #5
     beq up_m130q
     cmp r0, #6
-    beq up_m98b
+    beq up_m130auto
     cmp r0, #7
+    beq up_m98b
+    cmp r0, #8
     beq up_m6
-    cmp r0, #10
+    cmp r0, #11
     beq show_sel                   @ read-only readout
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #8
+    cmp r0, #9
     beq up_gyro
     mov r0, #GRP_2997              @ Gyro-Gate owns the 29.97 cell
     mov r1, #4
@@ -280,6 +293,14 @@ up_m130q:
     bl release
     bl toggle_m130q
     b redraw
+up_m130auto:
+    mov r0, #(GRP_AUTO|GRP_M130)
+    mov r1, #48
+    bl release
+    bl toggle_m130auto
+    cmp r0, #0
+    beq show_auto_fail
+    b redraw
 up_m6:
     mov r0, #GRP_4K
     mov r1, #36
@@ -292,9 +313,9 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #10
+    cmp r0, #11
     beq show_sel
-    cmp r0, #9
+    cmp r0, #10
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
@@ -302,7 +323,7 @@ redraw:
     b state_text
 state_stock:
     PTR r2, state_offsets
-    mov r3, #10
+    mov r3, #11
     mov r1, #0
 1:  ldr r0, [r2, r3, lsl #2]
     ldr r0, [r6, r0]
@@ -329,6 +350,9 @@ show_busy:
 show_unavailable:
     PTR r4, unavailable_label
     b paint
+show_auto_fail:
+    PTR r4, auto_fail_label
+    b paint
 /* A framerate whose selector has not been measured shows what the probe last
  * saw for a 1936x1090 row: record that framerate once with nothing repointed
  * and the number to build with is on the screen. */
@@ -342,8 +366,15 @@ show_need_sel:
  * option for that framerate has to be built with. */
 show_sel:
     PTR r0, sel_label
-    mov r1, #10
+    mov r1, #4
     bl compose
+    push {r4, lr}
+    LDA r3, F_MODE_NOW             @ and which sensor mode is live right now
+    blx r3
+    mov r1, r0
+    add r2, r4, #12
+    bl puthex
+    pop {r4, lr}
 paint:
     bl draw
     mov r0, #1
@@ -455,19 +486,145 @@ compose:
     bne     1b
     add     r2, r4, r1
     LDA     r0, PROBE
-    ldr     r0, [r0]
-    lsr     r1, r0, #4
-    and     r1, r1, #0xF
-    cmp     r1, #10
-    addlo   r1, r1, #48
-    addhs   r1, r1, #55
-    strb    r1, [r2]
-    and     r1, r0, #0xF
-    cmp     r1, #10
-    addlo   r1, r1, #48
-    addhs   r1, r1, #55
-    strb    r1, [r2, #1]
+    ldr     r1, [r0]
+    bl      puthex
     pop     {r5, r6, pc}
+
+/* r1 = value, r2 = where: two hex digits. */
+puthex:
+    lsr     r0, r1, #4
+    and     r0, r0, #0xF
+    cmp     r0, #10
+    addlo   r0, r0, #48
+    addhs   r0, r0, #55
+    strb    r0, [r2]
+    and     r0, r1, #0xF
+    cmp     r0, #10
+    addlo   r0, r0, #48
+    addhs   r0, r0, #55
+    strb    r0, [r2, #1]
+    bx      lr
+
+/* r0 = a sensor mode id -> r0 = its timing entry, or 0. The entries are keyed
+ * by mode id at +0, so they are found by scanning rather than indexing. */
+find_timing:
+    LDA     r1, 0xC0B59500
+    mov     r2, #96
+1:  ldr     r3, [r1]
+    cmp     r3, r0
+    beq     2f
+    add     r1, r1, #0x20
+    subs    r2, r2, #1
+    bne     1b
+    mov     r0, #0
+    bx      lr
+2:  mov     r0, r1
+    bx      lr
+
+/* M130 AUTO -- repoint whatever the CURRENTLY SELECTED preset uses.
+ *
+ * Hardcoding picker cells kept missing: a mode id appears in several places
+ * (the 0xC0BE5700 region is {group, format id, mode, descriptor} records at
+ * 0x10 stride, and there are three parallel tables above it), and two 24p rows
+ * carry the same 3032x1708 raster, so a recording cannot say which one a preset
+ * used. Twice the canvas applied while the mode did not, which records the
+ * picture in the top-left corner of an oversized frame with the rest garbage.
+ *
+ * So nothing is hardcoded here. On the camera, with the preset already chosen:
+ * ask the firmware which mode is live, find every cell holding that id, and
+ * rewrite them all -- remembering each address so they can be put back. The
+ * rate comes from the stock mode's own timing entry, and the selector from the
+ * hook's probe, so this works at whatever framerate is selected.
+ *
+ * Refuses unless the stock mode's line period is M130's 445: then the frame
+ * timing transfers verbatim, no division needed and no rate to get wrong.
+ * Returns r0 = 1 applied, 0 refused. */
+toggle_m130auto:
+    push    {r4, r5, r6, r7, r8, r9, r10, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #48]
+    cmp     r0, #0
+    bne     auto_off
+    LDA     r3, F_MODE_NOW
+    blx     r3
+    mov     r7, r0                 @ the live stock mode id
+    cmp     r7, #0
+    beq     auto_refuse
+    cmp     r7, #130
+    beq     auto_refuse            @ already ours
+    bl      find_timing
+    cmp     r0, #0
+    beq     auto_refuse
+    ldr     r1, [r0, #4]
+    uxth    r1, r1                 @ its line period
+    movw    r2, #445
+    cmp     r1, r2
+    bne     auto_refuse            @ a different line period needs a rate change
+    ldr     r8, [r0, #8]
+    uxth    r8, r8                 @ its frame length, which transfers as-is
+    LDA     r0, PROBE
+    ldr     r9, [r0]
+    cmp     r9, #0
+    beq     auto_refuse            @ no selector seen yet: nothing to gate on
+    LDA     r4, 0xC0BE5700
+    LDA     r5, 0xC0BE5D00
+    mov     r10, #0
+1:  ldr     r0, [r4]
+    cmp     r0, r7
+    bne     2f
+    cmp     r10, #A_MAX
+    beq     2f
+    add     r1, r6, #A_CELLS
+    str     r4, [r1, r10, lsl #2]
+    mov     r0, #130
+    str     r0, [r4]
+    add     r10, r10, #1
+2:  add     r4, r4, #4
+    cmp     r4, r5
+    bne     1b
+    cmp     r10, #0
+    beq     auto_refuse
+    str     r7, [r6, #A_ID]
+    str     r10, [r6, #A_N]
+    str     r9, [r6, #A_SEL]
+    LDA     r0, M130_VMAX
+    ldr     r1, [r0]
+    lsr     r1, r1, #16
+    lsl     r1, r1, #16            @ keep the high half, which differs per mode
+    orr     r1, r1, r8
+    str     r1, [r0]
+    mov     r0, #1
+    str     r0, [r6, #48]
+    bl      apply_shared
+    mov     r0, #1
+    pop     {r4, r5, r6, r7, r8, r9, r10, pc}
+auto_off:
+    ldr     r7, [r6, #A_ID]
+    ldr     r10, [r6, #A_N]
+    add     r4, r6, #A_CELLS
+3:  cmp     r10, #0
+    beq     4f
+    ldr     r0, [r4], #4
+    str     r7, [r0]
+    sub     r10, r10, #1
+    b       3b
+4:  LDA     r0, M130_VMAX
+    ldr     r1, [r0]
+    lsr     r1, r1, #16
+    lsl     r1, r1, #16
+    movw    r2, #0x1014
+    orr     r1, r1, r2
+    str     r1, [r0]
+    mov     r0, #0
+    str     r0, [r6, #48]
+    str     r0, [r6, #A_N]
+    str     r0, [r6, #A_SEL]
+    bl      apply_shared
+    mov     r0, #1
+    pop     {r4, r5, r6, r7, r8, r9, r10, pc}
+auto_refuse:
+    mov     r0, #0
+    pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 /* The cells and words every repointed framerate shares. Recomputed from all
  * the flags, because turning one feature off must not take state another still
@@ -486,7 +643,9 @@ apply_shared:
     ldr     r1, [r6, #28]
     orr     r0, r0, r1             @ ...or the 59.94 slot
     ldr     r1, [r6, #44]
-    orrs    r0, r0, r1             @ ...or the 23.976 slot
+    orr     r0, r0, r1             @ ...or the 23.976 slot
+    ldr     r1, [r6, #48]
+    orrs    r0, r0, r1             @ ...or whatever AUTO learned
     movne   r5, #0x400
     moveq   r5, #0x640
     LDA     r4, 0xC0BD9A34
@@ -563,6 +722,21 @@ shared_5994:
     movne   r1, #SEL_2398
     moveq   r1, #0
     str     r1, [r4, #8]
+    movw    r0, #3968
+    movw    r1, #2640
+    cmp     r7, #0
+    moveq   r0, #0
+    moveq   r1, #0
+    mov     r2, r0
+    mov     r3, r1
+    add     r5, r5, #0x10
+    stmia   r5, {r0, r1, r2, r3}
+    /* Slot 3, AUTO: the selector the probe saw for the preset it learned. */
+    ldr     r7, [r6, #48]
+    cmp     r7, #0
+    ldrne   r1, [r6, #A_SEL]
+    moveq   r1, #0
+    str     r1, [r4, #12]
     movw    r0, #3968
     movw    r1, #2640
     cmp     r7, #0
@@ -745,7 +919,7 @@ toggle_m6:
 
 .balign 4
 state_offsets:
-    .word 0, 4, 24, 8, 40, 44, 28, 36, 12, 0, 0
+    .word 0, 4, 24, 8, 40, 44, 48, 28, 36, 12, 0, 0
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
@@ -755,6 +929,7 @@ features_table:
     .word 44, GRP_2398|GRP_M130,   toggle_m130q - entry
     .word 28, GRP_5994|GRP_M98,    toggle_m98b - entry
     .word 36, GRP_4K,              toggle_m6 - entry
+    .word 48, GRP_AUTO|GRP_M130,   toggle_m130auto - entry
 .equ FEATURE_COUNT, (. - features_table) / 12
 gyro_hooks_table:
     .word ACCEL_SITE, 0xE3A02000, ARM_ACCEL
@@ -815,6 +990,10 @@ labels:
     .space 8
     .asciz ">M130 24P   ON         "
     .space 8
+    .asciz ">M130 AUTO  OFF        "
+    .space 8
+    .asciz ">M130 AUTO  ON         "
+    .space 8
     .asciz ">M98 60P    OFF        "
     .space 8
     .asciz ">M98 60P    ON         "
@@ -838,5 +1017,6 @@ labels:
 busy_label: .asciz "STOP RECORDING / WAIT   "
 unavailable_label: .asciz "GYRO INIT FAILED       "
 need_sel_label: .asciz "M98 60P NEEDS SEL=00   "
-sel_label:      .asciz "SEL PROBE=00           "
+sel_label:      .asciz "SEL=00 MODE=00         "
+auto_fail_label: .asciz "AUTO REFUSED, SEE SEL  "
 .balign 4
