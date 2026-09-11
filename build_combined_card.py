@@ -17,7 +17,9 @@ from armasm import assemble, symbols
 import build_base_card as gyro
 
 MENU_OFFSET = 0x50000
-BOOT = 0xC072F000
+# Above the shell's worker (0xC072F050..0xC072F698) and its state block at
+# 0xC072F000, so the debug and release cards share one address map.
+BOOT = 0xC072F700
 ROW = 0xC072F800
 STATE = 0xC072FB00
 GYRO_DIGEST = 'a34faf9bec9dcb0531a4de816e53f6b51c94817042ff16dc28a6723022a1265d'
@@ -46,6 +48,10 @@ def parse_vbin(raw):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT / 'builds/combined-menu')
+    parser.add_argument('--debug', action='store_true',
+                        help='keep the USB shell in, so the camera can be asked '
+                             'what it is actually doing. Same payload either '
+                             'way; the SSD cannot be used while USB is the host')
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
                         help='FieldAngle selector for FHD/59.94 CinemaDNG. '
                              'Default 173, measured on hardware 2026-09-11: the '
@@ -75,6 +81,9 @@ def main():
         actual = struct.unpack_from('<I', firmware, address - 0xC0000000)[0]
         if actual != expected:
             raise SystemExit(f'firmware guard mismatch at {address:#x}')
+    if args.debug and args.out == ROOT / 'builds/combined-menu':
+        raise SystemExit('--debug needs its own --out so it cannot be mistaken '
+                         'for the release card')
     if any(firmware[BOOT - 0xC0000000:STATE - 0xC0000000 + 0x100]):
         raise SystemExit('combined cave region is not empty in stock firmware')
     with tempfile.TemporaryDirectory() as tmp:
@@ -112,8 +121,12 @@ entry:
                 if lo < hi2 and lo2 < hi:
                     raise SystemExit(f'{why} overlaps {why2}')
         cmd = [sys.executable, str(SHELL / 'build_autorun.py'), '--loader',
-               '--no-shell', '--vshl-entry', hex(BOOT), '--banner', 'fpLAB MENU',
-               '--out', str(args.out / 'AutoRun.txt')]
+               '--vshl-entry', hex(BOOT), '--out', str(args.out / 'AutoRun.txt'),
+               '--banner', 'fpLAB DEBUG' if args.debug else 'fpLAB MENU']
+        # The endpoint patches exist for hook-push, which a card never does; the
+        # interface patch travels with the shell and is what stops the host PTP
+        # stack taking interface 0.
+        cmd += ['--no-ep-patches'] if args.debug else ['--no-shell']
         for index, (address, blob, _) in enumerate(sections):
             path = tmp / f'{index}.bin'
             path.write_bytes(blob)
@@ -121,11 +134,17 @@ entry:
         subprocess.run(cmd, check=True)
     raw = (args.out / 'VSHL.BIN').read_bytes()
     entry, packed = parse_vbin(raw)
-    if entry != BOOT or packed[1:] != [(a, b) for a, b, _ in sections]:
-        raise SystemExit('packaged binary does not match assembled sections')
+    if entry != BOOT:
+        raise SystemExit(f'packaged entry {entry:#x} is not the trampoline')
+    # A debug build also carries the shell's worker, so check ours are present
+    # and byte-identical rather than that the list matches exactly.
+    for address, blob, why in sections:
+        if (address, blob) not in packed:
+            raise SystemExit(f'{why} at {address:#x} is not in the binary as built')
     manifest = {
         'target': 'SIGMA fp 5.02, not fp L',
         'hardware_status': 'combined cold boot and recordings not yet tested',
+        'usb_shell': args.debug,
         'entry': hex(entry), 'menu_pool_offset': hex(MENU_OFFSET),
         'og60_selector': args.og60_sel or 'unmeasured: M98 60P option refuses',
         'menu_symbols': syms, 'gyro_sections_sha256': digest,
