@@ -39,11 +39,26 @@ both `AutoRun.txt` and `VSHL.BIN` at the SD root using a card reader. Do not app
 this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
-- Boots with all features disabled. RIGHT cycles Stock, Open Gate, High FPS,
-  Gyro, Gyro-Gate. UP toggles; Stock switches all features off.
-- Gyro-Gate toggles Open Gate and Gyro together. High FPS remains independent.
-- Open Gate/Gyro-Gate: FHD 29.97 CinemaDNG, 3032x2012 with the existing binned
-  sensor mode. High FPS: existing slot4 M27 to M58 swap, not a new recorder.
+- Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
+  High FPS, M98 60P, Gyro, Gyro-Gate. UP toggles; Stock switches all off.
+- Gyro-Gate toggles Open Gate and Gyro together. Gyro is otherwise orthogonal.
+- Open Gate/Gyro-Gate: FHD 29.97 CinemaDNG, 3032x2012 from M117 (2x2, 9.22 ms).
+  High FPS: FHD 59.94 cell M27 to M58 (3032x1708 @119.88), not a new recorder.
+- **M98 30P** puts the same 3032x2012 canvas on M98 instead of M117 at the
+  already measured 29.97 selector (hmax 445, 12.44 ms readout), so the two can
+  be compared directly. **M98 60P** puts 3032x2012 on the FHD 59.94 cell:
+  open-gate geometry at double the rate, about 548 MB/s, so expect SSD-only
+  short bursts before an overflow stop. Both are untested experiments.
+- M98 60P needs the FieldAngle selector for FHD/59.94, which is not derivable
+  from the image (175/180 are interleaved per-format indices). Until it is
+  measured the option **refuses** and draws `M98 60P NEEDS SEL=xx` with the
+  value the hook's probe last saw for an FHD row. To measure it: boot this card
+  with everything Stock, record ~2 s of FHD/59.94 CinemaDNG (nothing is
+  repointed, so it records normally), select M98 60P, press UP, read the two
+  hex digits, then rebuild with `--og60-sel 0x<value>`.
+- Conflicting options switch each other off instead of fighting over a cell:
+  Open Gate vs M98 30P (29.97 cell), High FPS vs M98 60P (59.94 cell), and
+  M98 30P vs M98 60P (one shared timing entry).
 - After changing Open Gate/High FPS, switch recording preset away and back
   before recording, including after returning to Stock.
 - Gyro uses the working example's GCSV writer and lens JSON beside CinemaDNG

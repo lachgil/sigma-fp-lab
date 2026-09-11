@@ -46,7 +46,16 @@ def parse_vbin(raw):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT / 'builds/combined-menu')
+    parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=0,
+                        help='measured FieldAngle selector for FHD/59.94 '
+                             'CinemaDNG; 0 leaves the M98 60P option refusing, '
+                             'because rewriting geometry for a guessed selector '
+                             'corrupts whatever mode really uses it')
     args = parser.parse_args()
+    if not 0 <= args.og60_sel <= 0xFFFF:
+        raise SystemExit('--og60-sel must be a 16-bit selector value')
+    if args.og60_sel == 175:
+        raise SystemExit('175 is the measured FHD/29.97 selector, not 59.94')
     args.out.mkdir(parents=True, exist_ok=True)
     firmware = (ROOT / 'analysis/MAIN_c0000000.bin').read_bytes()
     if hashlib.sha256(firmware).hexdigest() != FIRMWARE_DIGEST:
@@ -58,8 +67,9 @@ def main():
     if digest != GYRO_DIGEST:
         raise SystemExit('gyro sections differ from verified gyro_og_test example')
     menu_source = ROOT / 'src/payloads/menu.S'
-    menu = assemble(menu_source)
-    syms = symbols(menu_source)
+    defines = (f'OG60_SEL={args.og60_sel}',)
+    menu = assemble(menu_source, defines)
+    syms = symbols(menu_source, defines)
     guards = list(struct.iter_unpack('<II', menu[syms['guard_table']:syms['labels']]))
     for address, expected in guards:
         actual = struct.unpack_from('<I', firmware, address - 0xC0000000)[0]
@@ -91,7 +101,7 @@ entry:
         spans = [(a, a + len(b), why) for a, b, why in sections]
         # Include runtime state and loader/file/job reservations, not just code.
         spans += [(STATE, STATE + 0x100, 'menu state'),
-                  (0xC072FA00, 0xC072FA14, 'geometry state'),
+                  (0xC072FA00, 0xC072FA38, 'geometry state, selectors, probe'),
                   (0x7000, 0x28000, 'loader read window'),
                   (0x42000, 0x43000, 'gyro file object'),
                   (0x43000, 0x43414, 'gyro jobs')]
@@ -117,6 +127,7 @@ entry:
         'target': 'SIGMA fp 5.02, not fp L',
         'hardware_status': 'combined cold boot and recordings not yet tested',
         'entry': hex(entry), 'menu_pool_offset': hex(MENU_OFFSET),
+        'og60_selector': args.og60_sel or 'unmeasured: M98 60P option refuses',
         'menu_symbols': syms, 'gyro_sections_sha256': digest,
         'sections': [{'address': hex(a), 'bytes': len(b), 'name': why,
                       'sha256': hashlib.sha256(b).hexdigest()} for a, b, why in sections],
@@ -125,7 +136,10 @@ entry:
     }
     (args.out / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(f'Combined card: {args.out}\nGyro sections match working example; '
-          f'{len(guards)} firmware guards; code and runtime reservations do not overlap.')
+          f'{len(guards)} firmware guards; code and runtime reservations do not '
+          f'overlap.\nM98 60P: ' + (f'selector {args.og60_sel} baked in.'
+          if args.og60_sel else 'no selector yet, option refuses and shows the '
+          'probe value; record FHD/59.94 CinemaDNG once to read it.'))
 
 
 if __name__ == '__main__':

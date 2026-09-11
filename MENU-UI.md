@@ -166,3 +166,40 @@ Single-press RIGHT/UP menu confirmed pleasant on the camera:
 
 Cold-boot display, real GCSV/JSON writes and recordings in this combined card
 are not yet hardware-verified. No camera writes were performed for this build.
+
+## M98 options and the selector probe (2026-09-11, offline)
+
+M98 is 3032x2012 12-bit like M117, but hmax 445 / vmax 2094 (77.27 fps table,
+12.44 ms readout) against M117's 330 / 2184 (99.9 fps, 9.22 ms). Its timing
+entry is **0xC0B59548**, stock `0x0004082E`; the table is `0xC0B59500 + n*0x20
++ 8`, which is the same relation that puts M117's at the long-known 0xC0B59A28.
+VMAX scales inversely with rate, exactly as the open-gate patch already does
+(M117 2184 -> 7280 for 29.97):
+
+| option | picker cell | value | M98 timing entry | rate | throughput |
+|---|---|---|---|---|---|
+| M98 30P | FHD 29.97 (0xC0BE5888/5A28/5BC8) | 0x62 | 0x00041516 (5398) | 29.97 | ~274 MB/s |
+| M98 60P | FHD 59.94 (0xC0BE5858/59F8/5B98) | 0x62 | 0x00040A8A (2698) | 59.94 | ~548 MB/s |
+
+The 59.94 FieldAngle selector is NOT derivable offline. The hook site's caller
+(0xC043A158) uses r5 as an index into per-format tables (`ldr r1, [0xC0BD05D4 +
+r5*4]`), and the picker records interleave framerates within 0x30-byte structs,
+so the measured 175 (29.97) and 180 (FHD/25) do not sit on a stride that can be
+extrapolated. Guessing would rewrite geometry for whatever mode really owns that
+selector, which is the corruption this hook exists to prevent.
+
+So selectors became data: `SELS` at 0xC072FA20 holds the 29.97 slot and the
+59.94 slot, a zero slot is off, and the hook rewrites only on a match. A probe
+at 0xC072FA30 records the selector of every 1936x1090 row **whether armed or
+not**, which is what makes an unknown framerate measurable with nothing
+repointed. `M98 60P` refuses while its slot is unset and draws the probe value
+in hex, so the number can be read off the LCD on a card that has no USB shell.
+Bake it with `build_combined_card.py --og60-sel <value>`.
+
+The RWZM unity cells and the hook's ARMED flag are now recomputed from all
+three geometry flags (`apply_shared`), because switching one feature off must
+not take cells another still needs -- the failure the emulator now pins.
+
+Unverified beyond emulation: whether M98 images acceptably, whether the
+59.94 path needs its own RWZM/profile cells (only the profile-122 pair is
+known), and whether either M98 rate sustains to storage.
