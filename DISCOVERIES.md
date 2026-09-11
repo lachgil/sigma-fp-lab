@@ -210,6 +210,30 @@ This removes the blindness that shaped the whole session: **arm the log, unplug
 USB, record, plug back in and dump it.** Everything we inferred from DNG byte
 arithmetic can be read directly instead.
 
+### The mode list has NAMES, and there are only two families
+
+`imager mode_list` gives all 70 modes with their real names, and there is no
+movie family at all — **video records on MONITOR modes**:
+
+| our label | real name | what it is |
+|---|---|---|
+| M117 open gate | `MONIT1_100` | monitor, 3032x2012 |
+| **M130** | **`ACQ_12BIT_CROP`** | a **stills acquisition** mode, 3968x2640 crop |
+| M98 | `ACQ_12BIT_MIX` | stills acquisition, binned, full area |
+| M10 (refused) | `MONIT1_60_LOWP2` | monitor, 6064x2022 |
+| M7 UHD | `MONIT1_30_HD_LOWP` | full width, downscaled to 16:9 |
+| M6 | `MONIT1_30_HD` | 4176x2174 at 14-bit |
+| M3 | `MONIT1_30` | **6064x4042 full sensor, 3:2, 12-bit, 30 fps** |
+
+So our best mode, M130, is a **stills** mode pressed into service for video —
+which explains why it needed the scaler poke and why the monitor path dislikes
+it. `LOWP`/`LOWP2`/`LOWP3` are low-power variants of the same output, `_HD` is
+16:9, `_MIX` is binned, `_CROP` is the 3968-wide window, `_CONTINUOUS` is burst.
+
+`MONIT1_30` / `MONIT1_25` being full-sensor 6064x4042 confirms the camera can
+read the whole sensor at 25-30 fps for live view; recording it is blocked by
+storage (919 MB/s at 25), not by the sensor.
+
 ### `imager` — sensor-level tools
 
     mode_now / mode_list / mode_check obvalue <mode_enum> <gain> <shutter>
@@ -263,13 +287,37 @@ So the property write moves the master block without telling the imaging
 pipeline, and the `gui` write/navigate paths are refused outright. The re-latch
 must come from the UI's own apply chain, reached the way the UI reaches it.
 
+### SOLVED (mechanism): a settings change forces a live-view stop/restart
+
+Captured from the camera's own RECMGR log while the framerate was flipped
+29.97 -> 25 -> 29.97 on the body, with our hook's probe counter as the witness
+(**3 -> 4: the geometry row really was rebuilt**, where none of our attempted
+triggers moved it at all):
+
+    0xC0388AE8   state 0x20 -> 0x22 -> 0x16
+    0xC03A2D44   "ret LV stop"          <- live view STOPPED
+    0xC0388AE8   state 0x14 -> 0x01
+    0xC03A2CDC   "ret aeafl"
+    0xC0388AE8   state 0x02             <- and started again
+
+So the re-latch is not a property publish at all: **changing a setting through
+the UI tears live view down and brings it back up**, and the picker is re-read
+on the way up. That is exactly why a property write moves the master block and
+changes nothing, and why our menu options need the preset switched by hand.
+
+`0xC0388AE8` is the RECMGR state logger and `0xC03A2D44` / `0xC03A2CDC` are log
+sites inside the stop and AE/AF-lock paths, both a few instructions before a
+`bl 0xC00102D0` return. The functions containing them are the targets; the state
+codes (0x20, 0x22, 0x16, 0x14, 0x01, 0x02) are the sequence to reproduce.
+
 Remaining routes, in order of promise:
 
-1. **Find the function the menu calls when a value changes** and call it from
-   the payload. The GUI log gives the call sites to start from
-   (`0xC055F8D4`, `0xC055FA14`, `0xC055FA30`), and `log act MENU` plus a real
-   button press on the camera will show the successful path to compare against
-   the rejected one. This is the principled route.
+1. **Drive the live-view stop/start cycle from the payload.** Now identified as
+   the actual mechanism (above). Find the entry points of the functions holding
+   the `0xC03A2D44` and `0xC03A2CDC` log sites and call the pair after applying
+   an option. Riskiest part is calling them from the key-handler task rather
+   than the RECMGR task, so it wants the same treatment the property setter
+   got: try it, read back, and keep a power-cycle escape.
 2. `gui key <eXC_GuiControlType> <eXC_GuiKeyType> <on_off>` — the enum values
    are not in the strings, so it needs either the enum definitions or a small
    brute force over low integers.

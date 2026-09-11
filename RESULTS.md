@@ -72,6 +72,27 @@ frame.**
 The both-axes detail matters: a stride or bit-depth artefact can only affect
 width, so a proportional shrink is always the scaler.
 
+## What the camera calls its own modes
+
+`imager mode_list` on a live camera names all 70. There are only two families,
+`ACQ` (stills acquisition) and `MONIT1` (monitor) — **there is no movie family,
+because video records on MONITOR modes.** So:
+
+| our label | real name |
+|---|---|
+| open gate | `MONIT1_100` |
+| **M130** | **`ACQ_12BIT_CROP`** — a stills mode used for video |
+| M98 | `ACQ_12BIT_MIX` |
+| M10 (refused) | `MONIT1_60_LOWP2` |
+| stock UHD | `MONIT1_30_HD_LOWP` |
+| stock 4K 14-bit | `MONIT1_30_HD` |
+
+And the re-latch we do by hand is a **live-view stop/restart**: changing a
+setting through the UI tears live view down and brings it back, and the picker
+is re-read on the way up. Captured from the RECMGR log with our probe counter
+as witness (3 -> 4). A property write moves the master block without any of
+that, which is why it never re-latched.
+
 ## Dead ends, recorded so they are not retried
 
 - **High FPS (M58)** duplicated a stock preset and mis-timed the 60p one.
