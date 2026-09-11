@@ -140,7 +140,145 @@ Right/Tone/Color/Mode`, `SetFunctionRec/Shutter/AEL`, and the front/rear dial
 functions per exposure mode. Driving those may free a button properly instead of
 fighting one.
 
-## 5. A movie-state dump exists
+## THE DEBUG SURFACE (2026-09-12, live on the camera)
+
+The manual diff settled where NOT to look: every name in the setter and
+menu-item tables is documented in the fp manual, so **nothing is hidden in the
+menu surface**. What is not in the manual is the shell's own 77 command
+families, and those are factory tools. Confirmed working on the camera:
+
+### `gui` — a named variable interface
+
+    gui geti <name>      get an int by NAME      gui seti <name> <v>
+    gui getf / gets                              gui setf / sets
+    gui scr set <screen name>   switch to a screen by name
+    gui key <eXC_GuiControlType> <eXC_GuiKeyType> <on_off>
+    gui send <AppSyncReqName>   gui lang <0-16>   gui mem / gc / ver
+
+Every `MV_*` / `ST_*` / `CM_*` name in the image is readable live:
+
+    MV_Binning -> 0    MV_Resolution -> 1    MV_FrameRate -> 3
+    MV_DNGQuality -> 2    ST_ISOBinningLimit -> 0    CM_ToneControl -> 0
+
+**Reads work; writes and navigation are REJECTED.** This needs stating clearly
+because the command output is misleading:
+
+- `gui seti MV_FrameRate 2` replies `OK:MV_FrameRate <- 2`, then `geti` returns
+  3 again.
+- `gui scr set UicGuiMenuMovieRecord` replies `Scr Set:UicGuiMenuMovieRecord`
+  and **the screen does not change** — confirmed by watching the camera.
+
+The internal log is what settles it. With `gui scr log 1` and then `log out
+GUI`, both attempts appear as **`ERR`** entries from `0xC055F8D4` and
+`0xC055FA14`, including `te <- 2` / `te <- 3`, which are the two rejected
+framerate writes. So `gui`'s replies are echoes of the request, not results.
+
+**The lesson, now seen three times on this camera:** acknowledgement is not
+effect. `setting set` accepted 3840 while the master block stayed 1920;
+`menu SetIsoLowSensitivitySupport 1` returned OK and stayed 0; `gui seti` and
+`gui scr set` reply cheerfully and do nothing. Verify by read-back, by the
+internal log, or by the camera's own screen — never by the return string.
+
+195 `UicGui*` screen names exist and are presumably valid targets for a caller
+the firmware trusts; they are listed in the image, including a full
+`UicGuiMenuDngDev*` family (the in-camera DNG development UI) and
+`UicGuiMenuFactorySettingReset`.
+
+### `tsd temp` — thermal telemetry
+
+    body 42.5C   lcd 37.5C   cmos 43.5C   battery -20.0C (unpopulated)
+
+Tenths of a degree. **CMOS sensor temperature, live** — the missing instrument
+for whether a long full-readout take is thermally limited. `tsd threshold`
+suggests the trip points are settable.
+
+### `log` — the camera's own internal logger, already running
+
+37 channels (INIT, UI, RECMGR, CAMERAMGR, IMGCTL, MOVIE, SIGPRO, AE, AF, MENU,
+DRAW, POWER...), each a 256-entry ring, **all active by default with zero
+overflows**. `log out <FLAG>` dumps timestamped entries with the logging call
+site and its parameters:
+
+    log info                    per-channel counts and overwrite counts
+    log out RECMGR              46 lines of timestamped record-manager trace
+    log act / inact <flag>      enable or disable a channel
+    log expand                  grow the buffers
+    log clear                   reset
+    log level / time / analyzer
+
+This removes the blindness that shaped the whole session: **arm the log, unplug
+USB, record, plug back in and dump it.** Everything we inferred from DNG byte
+arithmetic can be read directly instead.
+
+### `imager` — sensor-level tools
+
+    mode_now / mode_list / mode_check obvalue <mode_enum> <gain> <shutter>
+    mode_check eval_af / eval_wb / eval_y <mode_enum>
+    debug_out mode_change | still_info | still_raw_dump | all
+    reg_add_flag <flag> <sensor mode>      add registers to a mode
+    testpattern    createraw    fixed_shutter    fixed_gain    high_gain_off
+    crmf_off   dclp_off   defect_collect_off   pdaf_cor_off   zero_cut_raw
+
+`mode_check` takes a **mode_enum**, so a dormant mode can be evaluated without
+recording it. `debug_out mode_change` logs mode changes — which is how to prove
+what the camera actually selected, the exact question that cost three rounds of
+guessing. The `*_off` group disables individual raw corrections (digital clamp,
+defect correction, PDAF correction) and `zero_cut_raw` looks like the
+below-black clip.
+
+**Not touched, deliberately:** every `imager exe_*` (AGC/AWB/shading/defect
+calibration) and `adj_init`, because `prom write` is non-volatile and those look
+like the factory calibration path. Nothing in this repo should go near them
+without a specific reason.
+
+### Others worth knowing
+
+| command | what it offers |
+|---|---|
+| `event send [event] [param]` | inject UI events — a native alternative to hijacking a key |
+| `ui rload <file> <bank 0-6>` | load a settings `.bin` into a bank |
+| `pic set (pattern)` / `pic tbsd` | image-pipeline test patterns |
+| `detect set (face) (eye) (tracking)` | detection toggles including tracking |
+| `dbg disp_mess` | toggle firmware debug messages **on screen** |
+| `analyzer tskmon_start/out` | task monitor — where recording time actually goes |
+| `qr dump_yuv` | dump YUV from the pipeline |
+| `ts ram / nand` | RAM/NAND transfer with compressed sizes |
+| `device rc / mic / evf` | force accessory states |
+
+## The auto re-latch idea — tested, not yet solved
+
+Enabling an option currently needs the preset switched away and back by hand.
+Two candidate triggers were tested live, using our own hook's probe counter as a
+re-latch detector (it increments whenever the camera rebuilds the geometry row,
+so it detects a re-latch over USB with no recording):
+
+| attempt | result |
+|---|---|
+| rewrite `SetMovFramerate` with the SAME value | no publish, probe static |
+| write a different framerate, then back | value changed both times, probe static |
+| `gui seti MV_FrameRate` | returns OK, value snaps back, logged as ERR |
+| `gui scr set <recording screen>` | returns OK, screen does not change, logged as ERR |
+
+So the property write moves the master block without telling the imaging
+pipeline, and the `gui` write/navigate paths are refused outright. The re-latch
+must come from the UI's own apply chain, reached the way the UI reaches it.
+
+Remaining routes, in order of promise:
+
+1. **Find the function the menu calls when a value changes** and call it from
+   the payload. The GUI log gives the call sites to start from
+   (`0xC055F8D4`, `0xC055FA14`, `0xC055FA30`), and `log act MENU` plus a real
+   button press on the camera will show the successful path to compare against
+   the rejected one. This is the principled route.
+2. `gui key <eXC_GuiControlType> <eXC_GuiKeyType> <on_off>` — the enum values
+   are not in the strings, so it needs either the enum definitions or a small
+   brute force over low integers.
+3. `event send [event] [param]` — untried.
+
+Worth noting the manual re-latch is a ten-second inconvenience, not a blocker,
+so this ranks below anything that changes what the camera can record.
+
+## 6. A movie-state dump exists
 
 The `[Mov]…` format strings are a complete record-configuration dump —
 quality, pixel binning, shutter angle, manual gain, frame rate. If a shell

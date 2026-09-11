@@ -39,9 +39,11 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   official `SetFunctionKey*` remapping we could use instead of hijacking a
   button. Each item says how sure it is.
 - **Menu surface (next stage):** [MENU-SURFACE.md](MENU-SURFACE.md) maps the
-  firmware's 195 named setters at `0xC0BBB534` (stride 12) and resolves 192 of
-  them to a single property function each, including the whole tone /
-  zebra / false-colour group. Offline only; nothing written to a camera.
+  firmware's **281** named setters (stride 12) and resolves 274 of them to a
+  single property function each — including ISO, shutter angle, focus position
+  and focus bracketing. The manual diff shows every one of these names is
+  documented, so the menu surface hides nothing; the undocumented capability is
+  in the shell's own command families, written up in DISCOVERIES.md.
 - **Darkness/playback:** unverified hypotheses and explicit experiments, not fixes.
 
 ## Combined menu card
