@@ -34,6 +34,13 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
 Build with `.venv/bin/python build_combined_card.py`; exercise the resulting
 binary with `.venv/bin/python emulate_menu.py`.
 
+`./publish_card.sh` does both and then copies `AutoRun.txt`/`VSHL.BIN` plus a
+plain-language `README.txt` to the NAS card folder, refusing to publish if the
+build or either emulation fails. Destination defaults to the gvfs mount of
+`smb://192.168.1.40/media/fp/card`; override with `FP_CARD_DEST`. Files are
+written to a temp name on the share and moved into place, so a half-copied
+binary never sits beside a new script, and both hashes are re-checked after.
+
 For **SIGMA fp 5.02 only, not fp L**. Back up the previous card files, then replace
 both `AutoRun.txt` and `VSHL.BIN` at the SD root using a card reader. Do not append
 this AutoRun to another hack. Start with a full power-off and battery removal,
