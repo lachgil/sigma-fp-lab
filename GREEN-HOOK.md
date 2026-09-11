@@ -77,3 +77,39 @@ config (YuvResize task ~0xC03CB090) or MMIO display-controller registers, not a 
 RAM geometry struct. NEXT: trace YuvResize + the display-controller (XC_DisplayLcd
 0xC0B54FFC / XC_DisplayHdmi 0xC0729B48) register writes, offline (no camera needed).
 Do NOT re-test the 0xC375Exxx geometry blocks — confirmed inert for the display.
+
+## SOLVED TARGET — from FP3K 0.3.5 disassembly (2026-09-11)
+Reversing the FP3K "preview display-fit" module (\FP3KMENU.BIN, a loaded code
+blob at 0xC072DE64) resolves the effective display-geometry target. FP3K touches
+NO picker / VMAX / RWZM / record-geometry (it is display-only; it does NOT hit
+open gate), yet it cleanly reframes the preview to 3:2. Its one geometry hook:
+- **Hook point: accessor `0xC0437E98`** (stock first instr `E92D4030`; trampoline
+  continues at `0xC0437E9C`). This is a DIFFERENT accessor than the manager+0xc
+  `0xC04376E0` we tried — that is why our earlier attempt was inert.
+- **Effective live-view objects: `0xC375EB68` and `0xC375ED3C`** (a third,
+  `0xC375E934`, is a sub-object it validates). These — NOT `0xC375E190/E308` —
+  are the objects the visible display path reads.
+- **Mechanism (accessor-return substitution, gated):** when ARMED and the passed
+  object == `0xC375EB68`/`0xC375ED3C` and a 44-byte fingerprint of it matches,
+  FP3K returns a MODULE-OWNED descriptor instead of the firmware object, then
+  replays the displaced code. The descriptor it forces is `{+00 size_h=0x654=1620,
+  +04 size_v=0x438=1080, +10/+14 duplicate pair, +1c=4, +20=0x003FC000,
+  +24=1, +28=1}` = **1620x1080 (3:2) preview geometry**.
+=> The green fix is a CODE hook on `0xC0437E98` that, gated to open gate, returns
+a 3:2 descriptor for objects `0xC375EB68/ED3C`. A RAM poke cannot hold it
+(recomputed per frame — consistent with our negative result); the accessor-return
+hook does. 1620x1080 is the correct 3:2 preview raster for a 3032x2012 sensor
+frame.
+
+## IMPROVEMENT — true open gate WITHOUT green (combine the two halves)
+FP3K = display half only (no sensor change → no green, but also not open gate).
+Our M117 path = sensor half only (real 3032x2012 readout, but greens). Combine:
+1. SENSOR (ours): picker slot -> M117 3032x2012 + VMAX (build_highfps-style).
+2. DISPLAY (FP3K's, ported): code hook on `0xC0437E98`, gated to open gate/ARMED,
+   return a 3:2 descriptor for `0xC375EB68/ED3C` (1620x1080 preview).
+3. BRIGHTNESS: compensate the RWZM-unity ~-0.65 stop (FIRMWARE-DECODE +0xfc/+0x100
+   per-profile float), gated the same way.
+All three must be CODE (loaded blob), not pokes. Delivery = the compiled-blob
+loader (FP3K proves the pattern: stub@0xC0732100 loads \*.BIN into 0xC072DE64,
+sum-zero checksum, installs trampoline hooks). Hardware bring-up still required to
+confirm the `0xC375EB68/ED3C` field offsets on THIS unit before arming.

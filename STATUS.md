@@ -69,3 +69,69 @@ away/back to re-latch, record to SSD.
 - High-fps M58 CONFIRMED engaged: selected-mode register 0xC343B590 read 0x3A (58) during the take.
 - It auto-stops after ~2-3s = eMOVREC_STOP_OVERFLOW (data rate > sustained storage) => running at 120 (2x data of 60p). Needs a fast SSD for longer takes, or a lower-data-rate mode. Short bursts work.
 - fpSup PR opened: https://github.com/ijigen/fpSup/pull/2 (mode-isolation gated hook).
+
+## Update 2026-09-11 (session 2 — live USB shell + mode intelligence)
+Tooling now live: `fpshd` USB shell BUILT (reference/fpSup/fp_usb_shell, needs
+libusb-1.0-dev + clang; both installed). Camera driven live over class-ff shell.
+keystone/unicorn/capstone installed for offline assemble+emulate.
+
+### GREEN — CORRECTED UNDERSTANDING (supersedes GREEN-HOOK.md live-view theory)
+Ground truth from the user + live shell reads:
+- The green is **RECORD-TIME MONITOR ONLY** (LCD/HDMI while recording). **Live
+  view is clean. The RECORDED FILES ARE CORRECT open gate.** It is purely cosmetic
+  monitor framing, NOT the live-view preview and NOT the files.
+- Root cause (read live during a take): during record the geometry manager points
+  `[0xC375D840+0xc]` (lv-geom) at node **`0xC375E480`** (selector `+0x00`=175) →
+  sub-object **`0xC375E4DC`**. That sub is all 3:2 (3032x2012, 3008x2000) EXCEPT
+  one stale FHD 16:9 pair at **`+0x0c/+0x10` = 1936x1090**. 16:9 output in a 3:2
+  monitor canvas = green top/bottom bands.
+- FP3K's `0xC0437E98` hook (build_greenfix) only fixes the STANDBY/live-view
+  canvas → marginal on the record monitor. The record path uses accessor
+  **`0xC04376E0`** (`[mgr+0xc]`), consumed by MovSigProcess `0xC0428B18` → YUV
+  builder `0xC042A570`.
+- Live experiments (shell): poking `0xC375E4DC+0x10` reverts every frame. A code
+  hook on `0xC04376E0` forcing the field to 3032x2012 overscanned (full sensor
+  into monitor buffer → more green/grain); 1936x1284 gave grain/stride drift.
+  => the monitor **buffer is allocated 16:9 at record-start**; a per-frame accessor
+  patch can't resize it. FIX MUST hook the record-start buffer/geometry build (not
+  the per-frame accessor), following `[mgr+0xc]` dynamically, gated on selector 175.
+  Cave `0xC072E600` + hook-on-`0xC04376E0` scaffolding exists (reverts on power-off).
+- NOTE: `0xC375Exxx` node addresses are DYNAMIC (manager cycles them per state);
+  must gate on the node's `+0x00`==175 selector, never a fixed address.
+
+### OPEN GATE — ON HOLD (user decision)
+M117 records correct 3032x2012, BUT M117 is a **2x2 readout (discards 3 of 4
+photosites)** → soft. Only real win is 9.222 ms rolling shutter. Files fine;
+not worth the green chase right now.
+
+### NEW DIRECTION — UNLOCK FULL-READOUT MODES (see MODE-MAP.md)
+All 70 IMX410 modes mapped by readout quality (firmware table `0xC0B59Exx`,
+cross-checked vs reference/fpSup/gyro/analysis_imx410 CSVs). Sampling field
+`+0x44/48/4c/50`: `1,1,1,1`=FULL(23 modes), `2,2,2,2`=2x2 soft(36 modes — M117
+AND every 3K/2K CinemaDNG preset), `3,x`=heavier(11). The current "UHD" = **M7
+6064x3412 FULL @30 (slot 0)** — already oversampled, why 2x2 can't beat it.
+- Beat-UHD picks: **M6** 4176x2174 14-bit FULL (CLEAN 1-cell swap slot 13),
+  **M130** 3968x2640 FULL @40, **M3** 6064x4042 FULL 6K, **M10** 6064x2022 FULL @60.
+- Only dormant modes that CLEAN-swap (raster matches a slot) are the 14-bit ones
+  into slot 13; all other new full modes need the record-geometry hook (retarget
+  `rowpatch_gated.S`/build_gated to the new raster + VMAX). 14-bit CinemaDNG
+  recorder is UNPROVEN (MODES.txt) — test first.
+- Tool: **`build_modeswap_autorun.py <slot> <mode>`** — repoints any picker slot
+  to any of the 70 modes; verifies stock, flags CLEAN vs NEEDS-GEOM-HOOK.
+
+### NEW FILES THIS SESSION
+- `MODE-MAP.md` — 70-mode quality map + unlock guide.
+- `build_modeswap_autorun.py` — mode-unlock tool (needs reference/ CSVs).
+- `build_greenfix_autorun.py` — FP3K-style standby-canvas display hook (0xC0437E98).
+- `build_opengate_greenfix_autorun.py` — combined open-gate + standby green fix
+  (record hook keystone-built; green hook only fixes standby, see GREEN note above).
+- `GREEN-HOOK.md` updated with the effective objects + the record-monitor findings.
+
+### NEXT AGENT — priority
+1. MODE UNLOCK (primary): test M6 (clean, 14-bit 4K); build the geom-hook path for
+   M130 (4K 3:2 @40 full) and M3/M10 (6K full) — retarget rowpatch_gated to the new
+   raster + set VMAX from imx410_timing.csv. `build_modeswap_autorun.py` is the base.
+2. GREEN (if revisited): hook the record-start buffer/geometry build, not the
+   per-frame `0xC04376E0` accessor; the monitor buffer is 16:9-allocated.
+3. Shell workflow: `fpshd --socket /tmp/fpshd.sock` (sudo) + `host/fpsh mem get/set`
+   for live poke/observe. Records auto-stop ~20s (storage overflow) — enough to test.
