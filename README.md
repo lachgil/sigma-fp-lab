@@ -31,6 +31,10 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   `build_combined_card.py`. RIGHT/UP interaction was proven live; the combined
   binary passes ARM emulation. Its cold boot and recordings still need hardware.
   AF remains research.
+- **Menu surface (next stage):** [MENU-SURFACE.md](MENU-SURFACE.md) maps the
+  firmware's 195 named setters at `0xC0BBB534` (stride 12) and resolves 192 of
+  them to a single property function each, including the whole tone /
+  zebra / false-colour group. Offline only; nothing written to a camera.
 - **Darkness/playback:** unverified hypotheses and explicit experiments, not fixes.
 
 ## Combined menu card
