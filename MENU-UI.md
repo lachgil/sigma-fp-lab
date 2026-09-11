@@ -100,3 +100,24 @@ Two confirmed constraints for the real menu:
 Also observed: TONE opens the native Tone menu on first press and closes it on the
 next, so while that panel is open, keys may route to it rather than the global
 observer. Trigger choice matters.
+
+## PROVEN: resident on-camera text draw (2026-09-11, hardware)
+Resident code CAN draw OSD text by calling the "display text" SUB-HANDLER
+directly, bypassing the command dispatcher:
+- **Draw:** 0xC03E4620(r0=ctx, r1=1, r2=argv) where argv[0]=message string, and
+  ctx is a fake: a pointer to a word holding the address of a `bx lr` stub (the
+  handler only uses [ctx] as a printf, so a no-op stub is safe). Confirmed on the
+  LCD ("RESIDENT2" drew).
+- **Do NOT** call the display DISPATCHER 0xC03E5510 from resident context: its
+  sub-command name lookup (0xC03DB840 over table 0xC0BB1410) fails there and it
+  no-ops. Call the leaf sub-handler directly.
+- 0xC0698D80 (used inside 0xC03E4620) IGNORES its arg and returns a fixed display
+  singleton (0xC3824F98 family), so the fake ctx is fine for the render too.
+- **Composite:** after drawing, the OSD must be composited to show; the shell does
+  `display osd 1`. From resident code, call the "osd" sub-handler the same way, or
+  keep a shell composite during tethered testing.
+- **Clear:** `display text` does NOT erase what it overwrites (leftover chars show,
+  e.g. "RESIDENT2off"). Pad each menu line to a fixed width with trailing spaces,
+  or fill the OSD (osd color 0) before drawing.
+Text draws at a fixed top-left position; multi-line needs the lower renderer
+0xC0529CB8 with a y offset. A single cycling status line works with 0xC03E4620.
