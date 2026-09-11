@@ -47,9 +47,9 @@ this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
 - Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
-  M130 30P, M130 FAST, M130 24P, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP
-  toggles; Stock switches all off. SEL is read-only: `SEL=xx CELLS=nn`, the
-  probed selector and how many cells the last change rewrote.
+  M130, M130 FAST, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP toggles; Stock
+  switches all off. SEL is read-only: `SEL=xx C=nn L=mm` -- the probed
+  selector, how many cells the last change rewrote, and how many name M130 now.
 - **None of these modes is reachable from the stock UI**: no picker cell in the
   image names M117, M98, M130 or M6. M58 *does* have its own cells, so FHD
   119.88 is already a stock preset and the old "High FPS" option was removed
@@ -86,7 +86,15 @@ crop at 1:1 (13.44 ms), UHD/M7 is full-width 1:1 (21.09 ms).
   active area equal to the base was correct. Its crop margin is unknown (the 12/6 measured on M117's binned
   DNGs does not carry over to a 1:1 window), so no margin is claimed -- check
   `DefaultCropOrigin`/`DefaultCropSize` on the first clip.
-- **M130 30P stops after about five seconds on hardware** (2026-09-11): the
+- **M130 follows the preset you have selected: choose the preset FIRST, then
+  turn it on.** It gates the canvas on the selector the probe last saw and
+  repoints the mode ids belonging to that rate, so it works at 29.97, 23.976 or
+  25 without a rebuild. An unmeasured selector is refused with
+  `SEL=xx RATE UNKNOWN` rather than guessed -- 156 was read on hardware at
+  another bit depth, so **bit depth changes the selector too**; report the
+  number and it can be added. Measured: 175 = FHD 29.97 12-bit, 173 = 59.94,
+  176 = 23.976, 180 = 25, and 156 = another FHD configuration (rate unknown).
+- **M130 30P stopped after about five seconds on hardware** (2026-09-11): the
   recorder runs out of buffer at 471 MB/s. M130 FAST does the same, as expected
   -- HMAX changes rolling shutter, not data rate. **M130 24P** is the fix that
   addresses the actual limit: the same full-readout canvas in the FHD 23.976
