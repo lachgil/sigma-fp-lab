@@ -6,7 +6,48 @@ camera**, and several items are guesses that say so.
 
 Ranked by what they would be worth if true.
 
-## 1. Binning may be a *setting*, not a fact
+## 1. Binning is NOT a setting — TESTED AND CLOSED (2026-09-12, hardware)
+
+**Result: `SetMovBiningSupport` has no consumer in the FHD CinemaDNG record
+path.** Two clips of the same scene, FHD 23.976, flag off then on, recorded from
+the camera itself so the flag was live at record start (USB cannot be attached
+while recording, which is why this needed a menu option rather than a shell
+command):
+
+| | noise (std) | fine detail (HF) |
+|---|---|---|
+| binning OFF | 28.35 | 0.430 |
+| binning ON | 28.59 | 0.432 |
+| difference | **+0.9%** | **+0.5%** |
+
+Noise is the decisive measure, not detail: 2×2 binning averages four
+photosites, so switching it off would raise the noise floor by roughly 2× and
+visibly change the high-frequency content. Under half a percent is
+frame-to-frame variation. The property *does* hold the value written — it reads
+back — but nothing downstream consults it when the mode is chosen.
+
+So the picker cells really are the only route to a full-readout mode, and the
+stack built for M130 is not redundant after all.
+
+The menu option added to run this test was removed again once it was proven
+inert. The mechanism it proved is kept below, because it is reusable.
+
+### The reusable part: resident code can drive any of the 195 settings
+
+The shell's own handler shape, minus the argument parsing, works from the
+payload:
+
+    bl 0xC0057AE8        ; fetch the settings object -> r0
+    mov r1, <value>
+    mov r2, #1
+    blx <property_fn>    ; from analysis/menu_setters.json
+
+Verified in emulation against the packaged binary and run on the camera without
+incident, from the key-handler task rather than the shell task — the commit
+function guards re-entrancy at `object+0x10`, which is what makes that safe.
+Adding a setting is one row from `analysis/menu_setters.json`.
+
+## 1b. What the original lead was, and why it looked good
 
 `MV_Binning` appears in the movie-settings group, immediately beside the things
 that obviously decide the recording mode:
@@ -37,15 +78,21 @@ full-readout mode **natively** — correct scaler, correct monitor, no hook.
 That would also explain the live-view green we cannot fix: our modes are
 geometrically valid but arrived at by a route the monitor path never expects.
 
-**The test is one command and costs nothing:** read `menu SetMovBiningSupport`
-for a baseline, set the other value, then ask `imager mode_now` whether the
-chosen mode changed, and record a clip. Read-back and reversible.
+That reasoning still looks sound; it simply is not how this firmware works.
 
-**Caveat, stated plainly:** "Support" in these names often means "is this
-feature offered", not "is it on" — several `Set*Support` settings in the table
-read like capability flags. It may do nothing, or refuse. Unproven.
+## 2. Two facts about the setter surface, measured
 
-## 2. ISO limits look extendable
+These came out of the binning test and apply to all 195:
+
+- **`Support` flags are real read/write state, not capability bits.** Read back
+  changed and persist: `SetAudioRecSupport` = 1, `SetTouchOperationSupport` = 1,
+  `SetMovBiningSupport` = 0 at boot and writable to 1.
+- **The property system validates silently.** `SetIsoLowSensitivitySupport`
+  returned `OK` and stayed `0`. A bare `OK` means nothing — **always read back.**
+  This is the same trap as `setting set`, which accepted 3840 while the master
+  block stayed 1920.
+
+## 3. ISO limits look extendable
 
     ST_ISOBinningLimit        ST_ISOBinningExtension
     ST_ISOExtensionLowSense   ST_ISOHighestLimit
@@ -59,7 +106,12 @@ low-sensitivity extension have their own support flags. The fp's menu offers a
 fixed ISO span; these look like the machinery that decides that span. Worth a
 getter read to see what the current values are before assuming anything.
 
-## 3. Settings with no menu item, and menu items with no setter
+Setting all three ISO flags to 1 changed the menu's top end to 102400, but the
+fp already offers extended ISO to 102400 as stock, so that observation does not
+separate the two cases. The A/B (flags back to 0, look again) is still
+outstanding.
+
+## 4. Settings with no menu item, and menu items with no setter
 
 195 setters, 285 `MenuItem*` names, and **136 menu items have no matching
 setter** — so a large part of the UI is driven some other way. The suggestive
@@ -88,7 +140,7 @@ Right/Tone/Color/Mode`, `SetFunctionRec/Shutter/AEL`, and the front/rear dial
 functions per exposure mode. Driving those may free a button properly instead of
 fighting one.
 
-## 4. A movie-state dump exists
+## 5. A movie-state dump exists
 
 The `[Mov]…` format strings are a complete record-configuration dump —
 quality, pixel binning, shutter angle, manual gain, frame rate. If a shell
@@ -116,11 +168,12 @@ Recorded because each one nearly became a wrong turn:
 
 ## Suggested order
 
-1. `menu SetMovBiningSupport` (read), then flip it and ask `imager mode_now`.
-   Highest possible payoff, one command, reversible.
-2. Read every `Set*Support` getter to learn whether "Support" means offered or
-   enabled. That single answer tells us how much of this table is actionable.
-3. Read the ISO limit/extension values.
+1. ~~Binning~~ — done, negative, see above.
+2. ~~Does `Support` mean offered or enabled?~~ — enabled, and writes validate
+   silently.
+3. Finish the ISO A/B: with the flags back at 0, does the menu still reach
+   102400? If it drops to 25600 the flag is the gate and is worth wiring in at
+   boot.
 4. Try `SetFunctionKey*` to free a button for the menu properly.
 5. Find the `[Mov]` printer by instruction scan; it is the cheapest observability
    win left.

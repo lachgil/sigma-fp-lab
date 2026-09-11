@@ -32,11 +32,12 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   binary passes ARM emulation. Its cold boot and recordings still need hardware.
   AF remains research.
 - **Firmware exploration:** [DISCOVERIES.md](DISCOVERIES.md) — ranked leads from
-  an open-ended dig, headed by the possibility that **binning is a setting**
-  (`MV_Binning` sits beside `MV_Resolution`/`MV_FrameRate` in the movie group,
-  with `SetMovBiningSupport` to drive it), plus extendable ISO limits, 136 menu
-  items with no setter, and the official `SetFunctionKey*` remapping we could
-  use instead of hijacking a button. Offline; each item says how sure it is.
+  an open-ended dig, with the binning lead now **tested and
+  closed** (no consumer in the record path: noise identical to 0.9% with the
+  flag off and on), two measured facts about the setter surface, and the live
+  leads that remain — extendable ISO, 136 menu items with no setter, and the
+  official `SetFunctionKey*` remapping we could use instead of hijacking a
+  button. Each item says how sure it is.
 - **Menu surface (next stage):** [MENU-SURFACE.md](MENU-SURFACE.md) maps the
   firmware's 195 named setters at `0xC0BBB534` (stride 12) and resolves 192 of
   them to a single property function each, including the whole tone /
