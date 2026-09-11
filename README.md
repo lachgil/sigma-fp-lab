@@ -47,7 +47,7 @@ this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
 - Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
-  M130, M130 FAST, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP toggles; Stock
+  M130, M130 FAST, M10 WIDE, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP toggles; Stock
   switches all off. SEL is read-only: `SEL=xx C=nn L=mm` -- the probed
   selector, how many cells the last change rewrote, and how many name M130 now.
 - **None of these modes is reachable from the stock UI**: no picker cell in the
@@ -86,6 +86,20 @@ crop at 1:1 (13.44 ms), UHD/M7 is full-width 1:1 (21.09 ms).
   active area equal to the base was correct. Its crop margin is unknown (the 12/6 measured on M117's binned
   DNGs does not carry over to a 1:1 window), so no margin is claimed -- check
   `DefaultCropOrigin`/`DefaultCropSize` on the first clip.
+- **SOLVED (2026-09-11, hardware): the `raw_zoom` scaler.** The camera's own
+  `imager mode_now` reports a raw_zoom stage; unity is 1024 and the FHD profiles
+  ship 0x640 = 1600, a 1.5625x downscale. Open gate only ever set unity for the
+  FHD 29.97 profile, so 29.97 was the only rate that recorded a whole frame:
+  every other rate produced a correctly-sized buffer containing a 1.5625x
+  shrunken picture in the corner (3968/1.5625 = 2540, 2640/1.5625 = 1690, which
+  is what the clips measured on both axes). The four arrays are indexed by
+  profile with a 4-byte stride and profile = selector - 53, so the cells for any
+  rate are the 29.97 ones offset by (selector - 175) * 4. Predicted, poked live
+  at 25p, and M130 then filled the frame and sustained. Now computed per option
+  from the probed selector, so every framerate works.
+- **M10 WIDE** is 6064x2022 FULL readout: the whole sensor WIDTH at 1:1, no
+  horizontal crop, 3:1. 441 MB/s at 23.976, rolling shutter 12.5 ms (better than
+  M130's 16.3). Untested on hardware.
 - **M130 follows the preset you have selected: choose the preset FIRST, then
   turn it on.** It gates the canvas on the selector the probe last saw and
   repoints the mode ids belonging to that rate, so it works at 29.97, 23.976 or

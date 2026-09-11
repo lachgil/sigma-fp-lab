@@ -34,6 +34,7 @@
 .equ SEL_5994, OG60_SEL
 .equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
+.equ M10_VMAX,  0xC0B59B28      /* M10 timing entry: stock, high half kept   */
 .equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
 .equ SEL_2398, 176              /* measured: FHD/23.976, probe read B0         */
 /* Which resource each option repoints. Two options sharing a bit cannot both
@@ -47,6 +48,7 @@
 .equ CELLS_N, 52                /* cells the last change rewrote  */
 .equ M130_N,    56              /* pairs M130 recorded            */
 .equ M130_SEL,  60              /* the selector it learned        */
+.equ M130_TGT,  64              /* which option's target table    */
 .equ M130_PAIRS, 0x60           /* (address, old id) pairs        */
 .equ M130_MAX,  12
 .equ LINE,   0xC0               /* the composed readout line      */
@@ -146,7 +148,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #10
+    cmp r0, #11
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -166,15 +168,17 @@ do_up:
     cmp r0, #4
     beq up_m130f
     cmp r0, #5
-    beq up_m98b
+    beq up_m10
     cmp r0, #6
+    beq up_m98b
+    cmp r0, #7
     beq up_m6
-    cmp r0, #9
+    cmp r0, #10
     beq show_sel                   @ read-only readout
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #7
+    cmp r0, #8
     beq up_gyro
     mov r0, #GRP_2997              @ Gyro-Gate owns the 29.97 cell
     mov r1, #4
@@ -264,6 +268,14 @@ up_m130f:
     cmp r0, #0
     beq show_need_sel
     b redraw
+up_m10:
+    mov r0, #(GRP_2997|GRP_M130)
+    mov r1, #68
+    bl release
+    bl toggle_m10
+    cmp r0, #0
+    beq show_need_sel
+    b redraw
 up_m98b:
     movw r0, #:lower16:SEL_5994
     cmp r0, #0
@@ -285,9 +297,9 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #9
+    cmp r0, #10
     beq show_sel
-    cmp r0, #8
+    cmp r0, #9
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
@@ -295,7 +307,7 @@ redraw:
     b state_text
 state_stock:
     PTR r2, state_offsets
-    mov r3, #9
+    mov r3, #10
     mov r1, #0
 1:  ldr r0, [r2, r3, lsl #2]
     ldr r0, [r6, r0]
@@ -450,7 +462,7 @@ s_one: .asciz "1"
 compose:
     push    {r5, r6, lr}
     LDA     r6, ST
-    add     r4, r6, #0x40
+    add     r4, r6, #LINE
     mov     r2, r4
     mov     r3, #6
 1:  ldr     r5, [r0], #4
@@ -477,6 +489,34 @@ puthex:
     addhs   r0, r0, #55
     strb    r0, [r2, #1]
     bx      lr
+
+/* The raw_zoom scaler, per profile.
+ *
+ * The camera's own `imager mode_now` reports a raw_zoom stage: 1024 is unity
+ * and the FHD profiles ship 0x640 = 1600, a 1.5625x downscale. That is what
+ * made every rate except 29.97 record a shrunken frame in the corner of a
+ * full-size one -- 3968/1.5625 = 2540 and 2640/1.5625 = 1690, which is exactly
+ * what the clips measured. Open gate only ever set unity for the FHD 29.97
+ * profile, so that was the only rate that came out whole.
+ *
+ * The four arrays are indexed by profile with a 4-byte stride, and
+ * profile = selector - 53, so the cells for any rate are the 29.97 ones offset
+ * by (selector - 175) * 4. Verified on hardware: the predicted 25p cells all
+ * held 0x640, and writing unity to them made M130 fill the frame at 25p.
+ *
+ * r0 = selector, r1 = value (0x400 unity, 0x640 stock). */
+set_zoom:
+    push    {r4, r5, r6, lr}
+    sub     r0, r0, #175
+    lsl     r0, r0, #2             @ signed: 173 and 176 are both in range
+    PTR     r4, zoom_bases
+    mov     r5, #4
+1:  ldr     r6, [r4], #4
+    add     r6, r6, r0
+    str     r1, [r6]
+    subs    r5, r5, #1
+    bne     1b
+    pop     {r4, r5, r6, pc}
 
 /* Rewrite every cell naming mode r0 so it names r1; returns the count, which
  * the SEL line reports.
@@ -540,19 +580,11 @@ apply_shared:
     orr     r0, r7, r1             @ ...or M130 30P
     ldr     r1, [r6, #40]
     orr     r0, r0, r1             @ ...or M130 FAST
+    ldr     r1, [r6, #68]
+    orr     r0, r0, r1             @ ...or M10 6K WIDE
     ldr     r1, [r6, #28]
     orr     r0, r0, r1             @ ...or the 59.94 slot
     orrs    r0, r0, r1             @ (the 59.94 slot closes the list)
-    movne   r5, #0x400
-    moveq   r5, #0x640
-    LDA     r4, 0xC0BD9A34
-    str     r5, [r4]
-    LDA     r4, 0xC0BE1684
-    str     r5, [r4]
-    LDA     r4, 0xC0BD9EFC
-    str     r5, [r4]
-    LDA     r4, 0xC0BE1B4C
-    str     r5, [r4]
     movne   r5, #1
     moveq   r5, #0
     LDA     r4, ARMED
@@ -564,6 +596,8 @@ apply_shared:
     bne     shared_2997_binned
     ldr     r0, [r6, #8]
     ldr     r1, [r6, #40]
+    orr     r0, r0, r1
+    ldr     r1, [r6, #68]
     orrs    r0, r0, r1
     bne     shared_2997_full
     mov     r0, #0                 @ nobody holds it: publish no canvas
@@ -585,11 +619,12 @@ shared_2997_binned:
 shared_2997_full:
     ldr     r0, [r6, #M130_SEL]    @ learned from the probe, never baked
     str     r0, [r4]
-    movw    r0, #3968
-    movw    r1, #2640
-    /* M130 is a 1:1 window, not a binned raster, so the 12/6 crop margin
-     * measured on M117's DNGs does not carry over and no margin is claimed.
-     * Check DefaultCropOrigin/Size on the first clip. */
+    ldr     r2, [r6, #M130_TGT]    @ the canvas this option asked for
+    ldr     r0, [r2, #12]
+    ldr     r1, [r2, #16]
+    /* A 1:1 window, not a binned raster, so the 12/6 crop margin measured on
+     * M117's DNGs does not carry over and no margin is claimed: confirmed on
+     * hardware, DefaultCropSize came back as the full raster. */
     mov     r2, r0
     mov     r3, r1
     stmia   r5, {r0, r1, r2, r3}
@@ -628,12 +663,18 @@ toggle_og:
     mov     r1, #0x75
     bl      repoint
     VMAX    0xC0B59A28, 0x00041C70
+    mov     r0, #SEL_2997
+    movw    r1, #0x400
+    bl      set_zoom
     b       og_done
 og_off:
     mov     r0, #0x75
     mov     r1, #0x6a
     bl      repoint
     VMAX    0xC0B59A28, 0x00040888
+    mov     r0, #SEL_2997
+    movw    r1, #0x640
+    bl      set_zoom
 og_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
@@ -654,12 +695,18 @@ toggle_m98a:
     mov     r1, #0x62
     bl      repoint
     VMAX    M98_VMAX, 0x00041516
+    mov     r0, #SEL_2997
+    movw    r1, #0x400
+    bl      set_zoom
     b       m98a_done
 m98a_off:
     mov     r0, #0x62
     mov     r1, #0x6a
     bl      repoint
     VMAX    M98_VMAX, 0x0004082E
+    mov     r0, #SEL_2997
+    movw    r1, #0x640
+    bl      set_zoom
 m98a_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
@@ -691,6 +738,7 @@ m98a_done:
 m130_apply:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
     LDA     r6, ST
+    str     r1, [r6, #M130_TGT]    @ which full-readout mode this is for
     mov     r7, r0                 @ the column this caller wants
     mov     r10, #0                @ before any branch to the undo path
     LDA     r0, PROBE
@@ -710,7 +758,9 @@ m130_apply:
     LDA     r4, 0xC0BE5700
     LDA     r5, 0xC0BE5D00
 3:  ldr     r2, [r4]
-    cmp     r2, #0x82
+    ldr     r3, [r6, #M130_TGT]
+    ldr     r3, [r3]
+    cmp     r2, r3
     moveq   r2, r0                 @ a stray left by an earlier toggle: adopt it
     beq     4f                     @ so the revert puts a stock id back
     cmp     r2, r0
@@ -723,7 +773,8 @@ m130_apply:
     add     r3, r3, r10, lsl #3
     str     r4, [r3]               @ where
     str     r2, [r3, #4]           @ and what it held
-    mov     r2, #0x82
+    ldr     r2, [r6, #M130_TGT]
+    ldr     r2, [r2]               @ the mode id this option installs
     str     r2, [r4]
     add     r10, r10, #1
 5:  add     r4, r4, #4
@@ -750,12 +801,16 @@ m130_apply:
     bne     7b
     LDA     r2, KEEP
     str     r10, [r2]
-    LDA     r1, M130_VMAX
+    ldr     r1, [r6, #M130_TGT]
+    ldr     r1, [r1, #4]           @ that mode's own timing entry
     ldr     r2, [r1]
     lsr     r2, r2, #16
     lsl     r2, r2, #16            @ the high half differs per mode; keep it
     orr     r2, r2, r0
     str     r2, [r1]
+    mov     r0, r9                 @ the selector this preset uses...
+    movw    r1, #0x400
+    bl      set_zoom               @ ...so its scaler runs at unity
     mov     r0, #1
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 m130_refuse:
@@ -786,16 +841,25 @@ m130_revert:
     add     r4, r4, #8
     sub     r7, r7, #1
     b       1b
-2:  LDA     r0, KEEP
+2:  ldr     r0, [r6, #M130_SEL]
+    cmp     r0, #0
+    beq     3f
+    movw    r1, #0x640
+    bl      set_zoom               @ put that profile's scaler back
+3:  LDA     r0, KEEP
     mov     r1, #0
     str     r1, [r0]               @ stop the hook holding them
-    LDA     r0, M130_VMAX
-    ldr     r1, [r0]
-    lsr     r1, r1, #16
-    lsl     r1, r1, #16
-    movw    r2, #0x1014
-    orr     r1, r1, r2
-    str     r1, [r0]
+    ldr     r0, [r6, #M130_TGT]
+    cmp     r0, #0
+    beq     4f
+    ldr     r1, [r0, #4]           @ its timing entry
+    ldr     r2, [r1]
+    lsr     r2, r2, #16
+    lsl     r2, r2, #16
+    ldr     r3, [r0, #8]           @ and its stock frame length
+    orr     r2, r2, r3
+    str     r2, [r1]
+4:
     mov     r0, #0
     str     r0, [r6, #M130_N]
     str     r0, [r6, #M130_SEL]
@@ -807,6 +871,7 @@ toggle_m130:
     ldr     r0, [r6, #8]
     cmp     r0, #0
     bne     m130_disable
+    PTR     r1, target_m130
     mov     r0, #4                 @ stock line period
     bl      m130_apply
     cmp     r0, #0
@@ -839,6 +904,7 @@ toggle_m130f:
     ldr     r0, [r6, #40]
     cmp     r0, #0
     bne     m130f_disable
+    PTR     r1, target_m130
     mov     r0, #8                 @ the shorter line period's column
     bl      m130_apply
     cmp     r0, #0
@@ -863,6 +929,36 @@ m130f_disable:
     mov     r0, #1
     pop     {r4, r5, r6, pc}
 
+/* M10 6K WIDE: 6064x2022 FULL readout -- the whole sensor WIDTH at 1:1, no
+ * horizontal crop at all, 3:1. At 23.976 it needs 441 MB/s, between the 377
+ * that sustained two minutes and the 471 that stopped near five seconds, and
+ * its rolling shutter is 12.5 ms against M130's 16.3. Same learning as M130:
+ * pick the preset first. */
+toggle_m10:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #68]
+    cmp     r0, #0
+    bne     m10_disable
+    PTR     r1, target_m10
+    mov     r0, #4
+    bl      m130_apply
+    cmp     r0, #0
+    beq     m10_out
+    mov     r0, #1
+    str     r0, [r6, #68]
+    bl      apply_shared
+    mov     r0, #1
+m10_out:
+    pop     {r4, r5, r6, pc}
+m10_disable:
+    mov     r0, #0
+    str     r0, [r6, #68]
+    bl      m130_revert
+    bl      apply_shared
+    mov     r0, #1
+    pop     {r4, r5, r6, pc}
+
 /* M98 60P: 3032x2012 in the FHD 59.94 cell -- open-gate geometry at double the
  * rate. Timing entry 2094 -> 2698 is 59.94 fps at M98's hmax, about 548 MB/s:
  * above any card and near the SSD ceiling, so expect short bursts. */
@@ -878,12 +974,18 @@ toggle_m98b:
     mov     r1, #0x62
     bl      repoint
     VMAX    M98_VMAX, 0x00040A8A
+    movw    r0, #:lower16:SEL_5994
+    movw    r1, #0x400
+    bl      set_zoom
     b       m98b_done
 m98b_off:
     mov     r0, #0x62
     mov     r1, #0x1b
     bl      repoint
     VMAX    M98_VMAX, 0x0004082E
+    movw    r0, #:lower16:SEL_5994
+    movw    r1, #0x640
+    bl      set_zoom
 m98b_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
@@ -924,19 +1026,29 @@ toggle_m6:
  *
  * An unmeasured selector is REFUSED, not guessed. 59.94 is deliberately absent:
  * M130 at that rate would be about 1.1 GB/s. */
+/* One row per full-readout option: the mode id it installs, that mode's timing
+ * entry, the frame length to put back, and the canvas it needs. The rate table
+ * below serves all of them because every 12-bit mode has line period 445. */
+target_m130:
+    .word 130, M130_VMAX, 0x1014, 3968, 2640
+target_m10:
+    .word 10,  M10_VMAX,  0x0A8C, 6064, 2022
+zoom_bases:
+    .word 0xC0BD9A34, 0xC0BD9EFC, 0xC0BE1684, 0xC0BE1B4C   @ the FHD 29.97 row
 m130_rates:
     .word 175, 0x1517, 0x1c70, 0x6a, 0x6f     @ FHD 29.97,  M106 / M111
     .word 176, 0x1a5c, 0x238c, 0x6d, 0x71     @ FHD 23.976, M109 / M113
     .word 180, 0x1948, 0x2217, 0x7d, 0x7f     @ FHD 25,     M125 / M127
     .word 0, 0, 0, 0, 0
 state_offsets:
-    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
+    .word 0, 4, 24, 8, 40, 68, 28, 36, 12, 0, 0
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
     .word 24, GRP_2997|GRP_M98,    toggle_m98a - entry
     .word 8,  GRP_2997|GRP_M130,   toggle_m130 - entry
     .word 40, GRP_2997|GRP_M130,   toggle_m130f - entry
+    .word 68, GRP_2997|GRP_M130,   toggle_m10 - entry
     .word 28, GRP_5994|GRP_M98,    toggle_m98b - entry
     .word 36, GRP_4K,              toggle_m6 - entry
 .equ FEATURE_COUNT, (. - features_table) / 12
@@ -994,6 +1106,10 @@ labels:
     .asciz ">M130 FAST  OFF        "
     .space 8
     .asciz ">M130 FAST  ON         "
+    .space 8
+    .asciz ">M10 WIDE   OFF        "
+    .space 8
+    .asciz ">M10 WIDE   ON         "
     .space 8
     .asciz ">M98 60P    OFF        "
     .space 8
