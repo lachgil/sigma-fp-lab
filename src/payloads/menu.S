@@ -4,19 +4,16 @@
 #include "../../reference/fpSup/gyro/ring_task.inc.S"
 #include "../../reference/fpSup/gyro/imu_stream.inc.S"
 /* fpLAB: RIGHT selects, UP toggles. Stock clears every feature.
- * Options: Stock, Open Gate (M117), M98 30P, M130 30P, M130 FAST, M98 60P,
- * M6 4K, Gyro, Gyro-Gate (linked Open Gate + gyro), and a read-only SEL line
- * showing the selector the hook's probe last saw.
+ * Options: Stock, Open Gate (M117), M98 30P, M130 30P, M130 FAST, M130 24P,
+ * M98 60P, M6 4K, Gyro, Gyro-Gate (linked Open Gate + gyro), and a read-only
+ * SEL line showing the selector the hook's probe last saw.
  * None of the repointed modes is reachable from the stock UI: no picker cell in
  * the image names M117, M98, M130 or M6. (M58 does have its own cells, so FHD
  * 119.88 is already a stock preset and no longer has an option here.)
- * Repointing one picker cell or one timing entry twice would fight itself, so
- * conflicting options switch each other off rather than stack:
- *   Open Gate <-> M98 30P <-> M130 30P <-> M130 FAST   (FHD 29.97 cell)
- *   M98 30P   <-> M98 60P               (M98 has one timing entry)
- * M6 owns the 4K cell and M98 60P the 59.94 cell, so those are independent.
+ * Conflicts are declared as group bits rather than written out per option:
+ * release() switches off anything sharing a bit with what is being turned on.
  * ST: cursor, og, m130, gyro, gyro_ready, init_status, m98a, m98b,
- *     saved_level, m6, m130f; +0x40 is the composed readout line.
+ *     saved_level, m6, m130f, m130q; +0x40 is the composed readout line.
  * Code lives in the allocated pool, not the gyro caves. */
 .equ ST, 0xC072FB00
 .equ KEY_ORIG, 0xC0265800
@@ -37,6 +34,15 @@
 .equ M98_VMAX, 0xC0B59548       /* M98 timing entry: stock 0x0004082E = 2094  */
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
 .equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
+.equ SEL_2398, 176              /* measured: FHD/23.976, probe read B0         */
+/* Which resource each option repoints. Two options sharing a bit cannot both
+ * be on: one picker cell or one timing entry cannot hold two values. */
+.equ GRP_2997, 1                /* FHD 29.97 picker cell  */
+.equ GRP_M130, 2                /* M130's timing entry    */
+.equ GRP_M98,  4                /* M98's timing entry     */
+.equ GRP_5994, 8                /* FHD 59.94 picker cell  */
+.equ GRP_2398, 16               /* FHD 23.976 picker cell */
+.equ GRP_4K,   32               /* 4K picker cell         */
 .macro LDA reg, val
     movw \reg, #:lower16:\val
     movt \reg, #:upper16:\val
@@ -71,7 +77,7 @@ boot:
     push {r4, r5, r6, r7, r8, lr}
     LDA r6, ST
     mov r0, #0
-    mov r1, #11
+    mov r1, #12
     mov r2, r6
 1:  str r0, [r2], #4
     subs r1, r1, #1
@@ -111,7 +117,7 @@ boot_disable:
     str r1, [r0]
     LDA r2, 0xC072FA00             @ telemetry, armed, selectors, probe, canvas
     mov r0, #0
-    mov r1, #24
+    mov r1, #32
 4:  str r0, [r2], #4
     subs r1, r1, #1
     bne 4b
@@ -143,7 +149,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #10
+    cmp r0, #11
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -163,18 +169,21 @@ do_up:
     cmp r0, #4
     beq up_m130f
     cmp r0, #5
-    beq up_m98b
+    beq up_m130q
     cmp r0, #6
+    beq up_m98b
+    cmp r0, #7
     beq up_m6
-    cmp r0, #9
+    cmp r0, #10
     beq show_sel                   @ read-only readout
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #7
+    cmp r0, #8
     beq up_gyro
-    mov r0, #4                     @ Gyro-Gate owns the 29.97 cell
-    bl free_2997
+    mov r0, #GRP_2997              @ Gyro-Gate owns the 29.97 cell
+    mov r1, #4
+    bl release
     ldr r0, [r6, #4]
     ldr r1, [r6, #12]
     and r5, r0, r1
@@ -188,42 +197,37 @@ do_up:
     bl toggle_gyro
     b redraw
 
-/* Release whoever currently holds the FHD 29.97 picker cell, EXCEPT the option
- * in r0 (its state offset), which is about to toggle itself -- releasing that
- * one too would undo the press. */
-free_2997:
-    push {r4, r5, r6, r7, lr}
+/* Switch off every option that holds a resource in r0's group mask, except the
+ * one at state offset r1, which is about to toggle itself. Table-driven: a new
+ * option declares its groups once and every conflict follows from that. */
+release:
+    push {r4, r5, r6, r7, r8, r9, lr}
+    mov r8, r0
+    mov r9, r1
     LDA r6, ST
-    mov r7, r0
-    ldr r0, [r6, #4]
-    cmp r0, #0
-    beq 1f
-    cmp r7, #4
-    beq 1f
-    bl toggle_og
-1:  ldr r0, [r6, #24]
-    cmp r0, #0
+    PTR r7, entry                  @ runtime base for the table's offsets
+    PTR r4, features_table
+    movw r5, #:lower16:FEATURE_COUNT
+1:  ldmia r4!, {r0, r1, r2}
+    tst r1, r8
     beq 2f
-    cmp r7, #24
+    cmp r0, r9
     beq 2f
-    bl toggle_m98a
-2:  ldr r0, [r6, #8]
-    cmp r0, #0
-    beq 3f
-    cmp r7, #8
-    beq 3f
-    bl toggle_m130
-3:  ldr r0, [r6, #40]
-    cmp r0, #0
-    beq 4f
-    cmp r7, #40
-    beq 4f
-    bl toggle_m130f
-4:  pop {r4, r5, r6, r7, pc}
+    ldr r3, [r6, r0]
+    cmp r3, #0
+    beq 2f
+    add r2, r2, r7
+    push {r4, r5}                  @ two registers: the stack stays 8-aligned
+    blx r2
+    pop {r4, r5}
+2:  subs r5, r5, #1
+    bne 1b
+    pop {r4, r5, r6, r7, r8, r9, pc}
 
 stock:
-    mov r0, #0                     @ release every holder
-    bl free_2997
+    mov r0, #63                    @ every group
+    mov r1, #0xFF                  @ an offset no option has: skip nothing
+    bl release
     ldr r0, [r6, #28]
     cmp r0, #0
     beq 1f
@@ -238,40 +242,48 @@ stock:
     bl toggle_gyro
     b redraw
 up_og:
-    mov r0, #4
-    bl free_2997
+    mov r0, #(GRP_2997)
+    mov r1, #4
+    bl release
     bl toggle_og
     b redraw
 up_m98a:
-    mov r0, #24
-    bl free_2997
-    ldr r0, [r6, #28]              @ M98 has one timing entry, so 60P must go
-    cmp r0, #0
-    beq 1f
-    bl toggle_m98b
-1:  bl toggle_m98a
+    mov r0, #(GRP_2997|GRP_M98)
+    mov r1, #24
+    bl release
+    bl toggle_m98a
     b redraw
 up_m130:
-    mov r0, #8
-    bl free_2997
+    mov r0, #(GRP_2997|GRP_M130)
+    mov r1, #8
+    bl release
     bl toggle_m130
     b redraw
 up_m130f:
-    mov r0, #40
-    bl free_2997
+    mov r0, #(GRP_2997|GRP_M130)
+    mov r1, #40
+    bl release
     bl toggle_m130f
     b redraw
 up_m98b:
     movw r0, #:lower16:SEL_5994
     cmp r0, #0
     beq show_need_sel              @ never rewrite geometry for a guessed selector
-    ldr r0, [r6, #24]
-    cmp r0, #0
-    beq 1f
-    bl toggle_m98a
-1:  bl toggle_m98b
+    mov r0, #(GRP_5994|GRP_M98)
+    mov r1, #28
+    bl release
+    bl toggle_m98b
+    b redraw
+up_m130q:
+    mov r0, #(GRP_2398|GRP_M130)
+    mov r1, #44
+    bl release
+    bl toggle_m130q
     b redraw
 up_m6:
+    mov r0, #GRP_4K
+    mov r1, #36
+    bl release
     bl toggle_m6
     b redraw
 up_gyro:
@@ -280,9 +292,9 @@ redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #9
+    cmp r0, #10
     beq show_sel
-    cmp r0, #8
+    cmp r0, #9
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
@@ -290,7 +302,7 @@ redraw:
     b state_text
 state_stock:
     PTR r2, state_offsets
-    mov r3, #9
+    mov r3, #10
     mov r1, #0
 1:  ldr r0, [r2, r3, lsl #2]
     ldr r0, [r6, r0]
@@ -472,7 +484,9 @@ apply_shared:
     ldr     r1, [r6, #40]
     orr     r0, r0, r1             @ ...or M130 FAST
     ldr     r1, [r6, #28]
-    orrs    r0, r0, r1             @ ...or the 59.94 slot
+    orr     r0, r0, r1             @ ...or the 59.94 slot
+    ldr     r1, [r6, #44]
+    orrs    r0, r0, r1             @ ...or the 23.976 slot
     movne   r5, #0x400
     moveq   r5, #0x640
     LDA     r4, 0xC0BD9A34
@@ -523,6 +537,7 @@ shared_2997_full:
     mov     r2, r0
     mov     r3, r1
     stmia   r5, {r0, r1, r2, r3}
+    b       shared_5994
 shared_5994:
     ldr     r0, [r6, #28]
     cmp     r0, #0
@@ -539,6 +554,22 @@ shared_5994:
     moveq   r1, #0
     moveq   r2, #0
     moveq   r3, #0
+    add     r5, r5, #0x10
+    stmia   r5, {r0, r1, r2, r3}
+    /* Slot 2, at the measured 23.976 selector: M130's full-readout canvas at
+     * the rate that actually fits storage. */
+    ldr     r7, [r6, #44]
+    cmp     r7, #0
+    movne   r1, #SEL_2398
+    moveq   r1, #0
+    str     r1, [r4, #8]
+    movw    r0, #3968
+    movw    r1, #2640
+    cmp     r7, #0
+    moveq   r0, #0
+    moveq   r1, #0
+    mov     r2, r0
+    mov     r3, r1
     add     r5, r5, #0x10
     stmia   r5, {r0, r1, r2, r3}
     pop     {r4, r5, r6, r7, pc}
@@ -635,6 +666,29 @@ m130f_done:
     bl      apply_shared
     pop     {r4, r5, r6, pc}
 
+/* M130 24P: the full-readout 3968x2640 canvas in the FHD 23.976 cell instead of
+ * the 29.97 one. Timing entry 4116 -> 6748 gives 23.976 fps, which is 377 MB/s
+ * against 471 at 29.97 -- the point being that 471 only sustained about five
+ * seconds on hardware before the recorder stopped, and rolling shutter is not
+ * what limits that; data rate is. Same 16.32 ms readout as M130 30P. */
+toggle_m130q:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #44]
+    eor     r0, r0, #1
+    str     r0, [r6, #44]
+    cmp     r0, #0
+    beq     m130q_off
+    PICK    0x82, 0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8
+    VMAX    M130_VMAX, 0x04201A5C
+    b       m130q_done
+m130q_off:
+    PICK    0x6D, 0xC0BE58B8, 0xC0BE5A58, 0xC0BE5BF8
+    VMAX    M130_VMAX, 0x04201014
+m130q_done:
+    bl      apply_shared
+    pop     {r4, r5, r6, pc}
+
 /* M98 60P: 3032x2012 in the FHD 59.94 cell -- open-gate geometry at double the
  * rate. Timing entry 2094 -> 2698 is 59.94 fps at M98's hmax, about 548 MB/s:
  * above any card and near the SSD ceiling, so expect short bursts. */
@@ -681,7 +735,17 @@ toggle_m6:
 
 .balign 4
 state_offsets:
-    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
+    .word 0, 4, 24, 8, 40, 44, 28, 36, 12, 0, 0
+/* state offset, the resources it holds, and its toggle -- see release(). */
+features_table:
+    .word 4,  GRP_2997,            toggle_og - entry
+    .word 24, GRP_2997|GRP_M98,    toggle_m98a - entry
+    .word 8,  GRP_2997|GRP_M130,   toggle_m130 - entry
+    .word 40, GRP_2997|GRP_M130,   toggle_m130f - entry
+    .word 44, GRP_2398|GRP_M130,   toggle_m130q - entry
+    .word 28, GRP_5994|GRP_M98,    toggle_m98b - entry
+    .word 36, GRP_4K,              toggle_m6 - entry
+.equ FEATURE_COUNT, (. - features_table) / 12
 gyro_hooks_table:
     .word ACCEL_SITE, 0xE3A02000, ARM_ACCEL
     .word START_SITE, 0xE5DB25CE, ARM_START
@@ -711,6 +775,7 @@ guard_table:
     .word M98_VMAX, 0x0004082E
     .word M130_VMAX, 0x04201014
     .word M130_HMAX, 0x01BD01BD
+    .word 0xC0BE58B8, 0x6D, 0xC0BE5A58, 0x6D, 0xC0BE5BF8, 0x6D
     .word 0xC0BD9A34, 0x640, 0xC0BE1684, 0x640
     .word 0xC0BD9EFC, 0x640, 0xC0BE1B4C, 0x640
 .equ GUARD_COUNT, (. - guard_table) / 8
@@ -734,6 +799,10 @@ labels:
     .asciz ">M130 FAST  OFF        "
     .space 8
     .asciz ">M130 FAST  ON         "
+    .space 8
+    .asciz ">M130 24P   OFF        "
+    .space 8
+    .asciz ">M130 24P   ON         "
     .space 8
     .asciz ">M98 60P    OFF        "
     .space 8

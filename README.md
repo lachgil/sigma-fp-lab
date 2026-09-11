@@ -47,8 +47,8 @@ this AutoRun to another hack. Start with a full power-off and battery removal,
 then boot with USB disconnected. No firmware-update operation is involved.
 
 - Boots with all features disabled. RIGHT cycles Stock, Open Gate, M98 30P,
-  M130 30P, M130 FAST, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP toggles; Stock
-  switches all off; SEL is a read-only readout of the probed selector.
+  M130 30P, M130 FAST, M130 24P, M98 60P, M6 4K, Gyro, Gyro-Gate, SEL. UP
+  toggles; Stock switches all off; SEL is a read-only readout of the probe.
 - **None of these modes is reachable from the stock UI**: no picker cell in the
   image names M117, M98, M130 or M6. M58 *does* have its own cells, so FHD
   119.88 is already a stock preset and the old "High FPS" option was removed
@@ -66,6 +66,7 @@ then boot with USB disconnected. No firmware-update operation is involved.
 | M98 30P | M98 | 100% x 100% | 2x2 binned | 3032x2012 | 12.44 ms | 274 MB/s |
 | M130 30P | M130 | 65% x 65% (1.53x crop) | **FULL 1:1** | 3968x2640 | 16.32 ms | 471 MB/s |
 | M130 FAST | M130 | 65% x 65% | FULL 1:1 | 3968x2640 | **12.10 ms** | 471 MB/s |
+| M130 24P | M130 | 65% x 65% | FULL 1:1 | 3968x2640 | 16.32 ms | **377 MB/s** |
 | M98 60P | M98 | 100% x 100% | 2x2 binned | 3032x2012 | 12.44 ms | 548 MB/s |
 | M6 4K | M6 | 69% x 54% | FULL 1:1 14-bit | 4176x2174 | 27.51 ms | 476 MB/s |
 
@@ -84,6 +85,13 @@ crop at 1:1 (13.44 ms), UHD/M7 is full-width 1:1 (21.09 ms).
   active area equal to the base was correct. Its crop margin is unknown (the 12/6 measured on M117's binned
   DNGs does not carry over to a 1:1 window), so no margin is claimed -- check
   `DefaultCropOrigin`/`DefaultCropSize` on the first clip.
+- **M130 30P stops after about five seconds on hardware** (2026-09-11): the
+  recorder runs out of buffer at 471 MB/s. M130 FAST does the same, as expected
+  -- HMAX changes rolling shutter, not data rate. **M130 24P** is the fix that
+  addresses the actual limit: the same full-readout canvas in the FHD 23.976
+  cell (selector 176, measured), timing entry 4116 -> 6748, **377 MB/s**. Also
+  worth trying on any of them: 10-bit takes 29.97 down to 392 MB/s and 8-bit to
+  314, since file depth follows the menu setting.
 - **M130 FAST** is the HMAX experiment: the same M130 canvas with its line
   period cut 445 -> 330, which is what rolling shutter is made of (16.32 ms ->
   12.10 ms, better than stock 4K), VMAX 4116 -> 7278 to hold 29.97. Every 12-bit
@@ -93,7 +101,8 @@ crop at 1:1 (13.44 ms), UHD/M7 is full-width 1:1 (21.09 ms).
   RAM only, so toggling off or a power cycle undoes it.
 - **SEL** shows the selector the hook's probe last saw for an FHD row. Switch the
   preset to any framerate, read the two hex digits, and that is the number a new
-  option for that framerate must be built with (FHD/29.97 reads AF, 59.94 AD).
+  option for that framerate must be built with. Measured so far: FHD/29.97 reads
+  AF (175), 59.94 reads AD (173), 23.976 reads B0 (176).
 - **M6 4K** was tested live 2026-09-11 and looked identical to stock 4K: the
   CinemaDNG file depth follows the menu's 8/10/12 setting, so M6's extra two
   bits are quantised away. Kept because it is a three-word swap and the only

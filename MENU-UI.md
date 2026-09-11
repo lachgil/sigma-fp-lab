@@ -301,3 +301,40 @@ by width in this range, which is what makes `M130 FAST` (M130 at HMAX 330, RS
 16.32 -> 12.10 ms, VMAX 4116 -> 7278 to hold 29.97) a legitimate experiment
 rather than a guess. It is still unobserved at 3968 wide 1:1: if the sensor
 cannot deliver a line that fast the frames tear, and it is RAM only.
+
+## What actually limits a take (2026-09-11, hardware)
+
+M130 30P recorded a sustained 3968x2640 sequence and then **stopped at about
+five seconds**. M130 FAST stopped at the same point, which is the useful part of
+that result: HMAX only changes the line period (rolling shutter), so both run at
+471 MB/s and hit the same buffer-drain wall. **Rolling shutter and data rate are
+separate knobs, and only VMAX/bit depth move the rate.**
+
+Rates for the 3968x2640 canvas:
+
+| | 29.97 | 23.976 |
+|---|---|---|
+| 12-bit | 471 MB/s | **377 MB/s** |
+| 10-bit | 392 MB/s | 314 MB/s |
+| 8-bit | 314 MB/s | 251 MB/s |
+
+Hence `M130 24P`: the same canvas in the FHD 23.976 cell, timing entry
+4116 -> 6748 (0x04201A5C), 377 MB/s. Cells `0xC0BE58B8/5A58/5BF8` (stock M109
+0x6D). Note there are two 24-ish triples -- M218 at `0xC0BE58A8/5A48/5BE8` is
+24.00, M109 is 23.976 -- and the selector measured for the FHD 23.976 preset
+(B0 = 176) belongs to the M109 one.
+
+## Selectors measured so far
+
+| preset | selector | how |
+|---|---|---|
+| FHD 29.97 CinemaDNG | 175 (AF) | USB shell, then the probe |
+| FHD 59.94 | 173 (AD) | probe, cross-checked against 29.97 |
+| FHD 23.976 | 176 (B0) | probe |
+| FHD 25 | 180 | USB shell |
+
+The hook now carries `SLOTS = 4` selector slots, each with its own canvas, so
+several repointed framerates coexist. Conflicts between options are declared as
+group bits (which picker cell, which timing entry) in `features_table`, and
+`release()` switches off anything sharing a bit -- adding an option means
+declaring its groups once rather than editing every other option.

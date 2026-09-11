@@ -27,7 +27,9 @@
  * framerate nobody has recorded yet cannot be derived from the image: 175 and
  * 180 are indices into per-format tables whose framerate order is interleaved,
  * so there is no stride to extrapolate along. SELS therefore holds one selector
- * per repointed framerate, written by the controller, and a zero slot is off.
+ * per repointed framerate (SLOTS of them), written by the controller, and a
+ * zero slot is off. Measured so far: 175 = FHD/29.97, 173 = FHD/59.94,
+ * 176 = FHD/23.976, 180 = FHD/25.
  * Rewriting for a guessed selector would corrupt an unrelated mode, so an
  * unmeasured framerate stays disabled rather than assumed.
  *
@@ -51,7 +53,8 @@
 .equ LOG,            0xC072FA00     /* telemetry: [0]=hits [4]=selector [8..]=orig */
 .equ ROW,            0x5C
 .equ ARMED,          0xC072FA10     /* controller flag: nonzero = a feature is on */
-.equ SELS,           0xC072FA20     /* [0] 29.97 slot, [4] 59.94 slot; 0 = off   */
+.equ SELS,           0xC072FA20     /* SLOTS selectors, one per repointed rate   */
+.equ SLOTS,          4
 .equ PROBE,          0xC072FA30     /* [0] last FHD-row selector, [4] how many   */
 .equ GEOM,           0xC072FA40     /* per-slot canvas: base w/h then active w/h  */
 
@@ -96,19 +99,19 @@ entry:
      * slot is zero, or any other selector building a 1936x1090 row, falls
      * through untouched and records as stock. */
     LDA     r2, SELS
-    ldr     r3, [r2]
+    mov     r0, #SLOTS
+1:  ldr     r3, [r2]
     cmp     r3, #0
-    beq     1f
+    beq     4f
     cmp     r5, r3
-    bne     1f
+    beq     3f
+4:  add     r2, r2, #4
+    subs    r0, r0, #1
+    bne     1b
+    b       out
+3:  rsb     r0, r0, #SLOTS         /* which slot matched */
     LDA     r2, GEOM
-    b       2f
-1:  ldr     r3, [r2, #4]
-    cmp     r3, #0
-    beq     out
-    cmp     r5, r3
-    bne     out
-    LDA     r2, (GEOM + 0x10)
+    add     r2, r2, r0, lsl #4
 
 2:  /* The canvas belongs to the matched slot: one repointed framerate can be
      * 3032x2012 while another is 3968x2640, so the geometry is per slot and a
