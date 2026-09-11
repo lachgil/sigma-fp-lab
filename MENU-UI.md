@@ -121,3 +121,25 @@ directly, bypassing the command dispatcher:
   or fill the OSD (osd color 0) before drawing.
 Text draws at a fixed top-left position; multi-line needs the lower renderer
 0xC0529CB8 with a y offset. A single cycling status line works with 0xC03E4620.
+
+## WORKING resident menu (2026-09-11, hardware) — src/payloads/menu.S
+Single-press RIGHT/UP menu confirmed pleasant on the camera:
+- Trigger keys must be NATIVE-FREE. On this body only RIGHT (0x0C) and UP (0x14)
+  are free. RIGHT cycles the item, UP toggles it on/off. (OK/Tone have native
+  actions that fight the menu - do not use them.)
+- Draw: 0xC03E4620(fakectx,1,[str]) then composite 0xC03E3D00(fakectx,1,["1"]).
+- **The OSD is multi-buffered:** a single draw only lands in one buffer, so it
+  took ~3 presses to appear. FIX: repaint the text+composite 4x per action
+  (draw_loop). Then it shows on a single press. This was the key polish.
+- State block 0xC072EF00: +0 cursor, +4 og, +8 hfps. Installed live via descriptor
+  swap at 0xC091EA38 -> payload at 0xC072E700; feature cells per toggle_opengate.
+- Persistence: this is loaded live over the shell; it clears on power-cycle. The
+  next step is packing menu.S into a boot VSHL.BIN so it loads from the card.
+
+## NEXT: 5-preset combined boot card (Stock/OpenGate/HighFPS/Gyro/GyroGate)
+Gyro is NOT a cell toggle: the gyro card (Downloads/gyro_og_test) is a 15-section
+VSHL.BIN (entry 0xC072E064) that places gyro code in caves 0xC072E2xx..ECxx, a
+~10.5KB writer at DMA pool +0x44000, and patches 0xC03660E8; entry calls
+pool+0x44000+[+0x18]. So the full menu must be a COMBINED VSHL.BIN carrying gyro +
+open-gate hook + menu, with the menu arming/disarming each feature's hooks. That
+is an offline integration build + one clean test, not a live poke.
