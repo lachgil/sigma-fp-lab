@@ -54,6 +54,12 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   `menu SetSlideshowRepeat` write that byte. Edge-triggered, so the OSD menu
   still works and neither source undoes the other; refused while recording.
   The cost is slideshow looping, and only while the card is loaded.
+- **Running our own code:** [PLATFORM.md](PLATFORM.md) is the inventory for
+  anyone who wants to build on the camera rather than reverse it -- what is
+  proven (boot from card, key hook, on-screen text, resident thread, ~195
+  settings, native menu binding), the one missing piece (access to the image
+  data, with two traced routes), and the small module ABI that follows once it
+  lands.
 - **Darkness/playback:** unverified hypotheses and explicit experiments, not fixes.
 
 ## Combined menu card
