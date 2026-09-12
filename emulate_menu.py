@@ -444,4 +444,52 @@ c.select(5)
 assert c.press(0x14) == 'SEL=AD RATE UNKNOWN'
 c.assert_stock()
 print('PASS: an unmeasured selector refuses and shows the probed value')
+
+# The borrowed native switch (Playback -> Slideshow -> Repeat). Edge-triggered:
+# it adopts the switch when the switch moves, and otherwise leaves whatever the
+# menu chose alone -- level-triggering made the two fight, with the next key
+# undoing an option the menu had just turned on.
+NATIVE_SW, NATIVE_LAST = 0xC31ADA36, ST + 68
+
+c = Camera()
+c.put(0xC072FA30, 175)
+c.uc.mem_write(NATIVE_SW, b'\x01')
+c.press(0x0D)                                   # any key, not one of ours
+assert c.features()[0] == 1, 'switching it on must turn Open Gate on'
+assert cells(OG_CELLS) == (0x75,) * len(OG_CELLS)
+assert c.get(NATIVE_LAST) == 1
+c.uc.mem_write(NATIVE_SW, b'\x00')
+c.press(0x0D)
+assert c.features()[0] == 0, 'switching it off must turn Open Gate off'
+c.assert_stock()
+
+# The menu keeps control while the switch is untouched.
+c.select(1)
+assert c.press(0x14) == '>OPEN GATE  ON'
+c.press(0x0D); c.press(0x0D)
+assert c.features()[0] == 1, 'an unmoved switch must not undo the menu'
+c.press(0x14)
+c.assert_stock()
+
+# A switch already on at boot is adopted on the first key, not ignored.
+c = Camera()
+c.put(0xC072FA30, 175)
+c.uc.mem_write(NATIVE_SW, b'\x01')
+assert c.features()[0] == 0
+c.press(0x0D)
+assert c.features()[0] == 1
+
+# ...but never while recording: the switch is not latched, so it is retried.
+c = Camera()
+c.put(0xC072FA30, 175)
+busy = struct.unpack('<I', MENU[SYMS['busy_words']:SYMS['busy_words'] + 4])[0]
+c.put(busy, 1)
+c.uc.mem_write(NATIVE_SW, b'\x01')
+c.press(0x0D)
+assert c.features()[0] == 0, 'must not rewrite geometry during a take'
+assert c.get(NATIVE_LAST) == 0, 'unlatched, so the change is picked up later'
+c.put(busy, 0)
+c.press(0x0D)
+assert c.features()[0] == 1, 'and adopted once recording stops'
+print('PASS: the native switch drives Open Gate, edge-triggered and record-safe')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')

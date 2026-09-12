@@ -36,6 +36,12 @@
 .equ M130_VMAX, 0xC0B59A88      /* M130 timing entry: stock 0x04201014 = 4116 */
 .equ M130_HMAX, 0xC0B59A84      /* M130 line period: stock 0x01BD01BD = 445   */
 .equ SEL_2398, 176              /* measured: FHD/23.976, probe read B0         */
+/* The native On/Off we borrow: Playback -> Slideshow -> Slideshow Settings ->
+ * Repeat. Measured on hardware 2026-09-12: both the camera's own menu and
+ * `menu SetSlideshowRepeat` write this byte, and the getter follows it. The
+ * settings store the item table points at (0xC31B32BC+0x28) is NOT written by
+ * either, so it is the wrong address to poll however reasonable it looks. */
+.equ NATIVE_SW, 0xC31ADA36
 /* Which resource each option repoints. Two options sharing a bit cannot both
  * be on: one picker cell or one timing entry cannot hold two values. */
 .equ GRP_2997, 1                /* FHD 29.97 picker cell  */
@@ -49,6 +55,7 @@
 .equ M130_SEL,  60              /* the selector it learned        */
 .equ M130_TGT,  64              /* which option's target table    */
 .equ M130_PAIRS, 0x60           /* (address, old id) pairs        */
+.equ NATIVE_LAST, 68            /* last value read from the native switch */
 .equ M130_MAX,  12
 .equ LINE,   0xC0               /* the composed readout line      */
 .macro LDA reg, val
@@ -134,12 +141,52 @@ boot_refused:
 
 .global entry
 entry:
+    push {r0, r1, r2, r3, r12, lr}
+    bl sync_native                 @ adopt the native toggle before dispatching
+    pop {r0, r1, r2, r3, r12, lr}
     cmp r1, #0x0C
     beq handle
     cmp r1, #0x14
     beq handle
     LDA r12, KEY_ORIG
     bx r12
+
+/* Make Open Gate follow the borrowed native switch. Runs on every key, so it
+ * has to be cheap and must refuse exactly where the menu's own UP refuses:
+ * before the payload is armed, and while anything is recording -- rewriting
+ * geometry under a running take is the one thing that must never happen.
+ *
+ * Edge-triggered, not level-triggered. Comparing the switch against the option
+ * every time makes the two fight: turn Open Gate on from our menu and the next
+ * keypress sees the native switch still off and turns it straight back off.
+ * So act only when the switch itself moves, and let either source win until
+ * the other is touched. NATIVE_LAST holds what the switch read last time. */
+sync_native:
+    push {r4, r5, r6, lr}
+    LDA r6, ST
+    ldr r0, [r6, #20]
+    cmp r0, #1                     @ armed only; a refused boot stays inert
+    bne 1f
+    LDA r4, NATIVE_SW
+    ldrb r0, [r4]
+    cmp r0, #0
+    movne r0, #1                   @ any nonzero is On; the state word is 0 or 1
+    ldr r5, [r6, #NATIVE_LAST]
+    cmp r0, r5
+    beq 1f                         @ switch unmoved: leave the menu's choice alone
+    mov r5, r0
+    bl busy
+    cmp r0, #0
+    bne 1f                         @ recording: do not latch it, retry next key
+    str r5, [r6, #NATIVE_LAST]
+    ldr r1, [r6, #4]
+    cmp r5, r1
+    beq 1f                         @ already in that state; nothing to toggle
+    mov r0, #GRP_2997              @ same conflict release the menu's UP does
+    mov r1, #4
+    bl release
+    bl toggle_og
+1:  pop {r4, r5, r6, pc}
 handle:
     push {r4, r5, r6, lr}
     LDA r6, ST

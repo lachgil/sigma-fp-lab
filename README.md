@@ -38,12 +38,22 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   leads that remain — extendable ISO, 136 menu items with no setter, and the
   official `SetFunctionKey*` remapping we could use instead of hijacking a
   button. Each item says how sure it is.
-- **Menu surface (next stage):** [MENU-SURFACE.md](MENU-SURFACE.md) maps the
-  firmware's **281** named setters (stride 12) and resolves 274 of them to a
-  single property function each — including ISO, shutter angle, focus position
-  and focus bracketing. The manual diff shows every one of these names is
-  documented, so the menu surface hides nothing; the undocumented capability is
-  in the shell's own command families, written up in DISCOVERIES.md.
+- **Native menu investigation:** [MENU-SURFACE.md](MENU-SURFACE.md) documents
+  the decoded NBR resource directory, NDB localization and NBU scene definitions.
+  `menu_resources.py` inspects 2,259 resources and 221 scenes offline, including
+  the exact `MainB5` Zebra title binding. Editing its packaged English string
+  changed RAM but **did not change the camera's displayed label**.
+  `menu_text.py` safely bounds source-text writes and supports restoration;
+  it is not yet a native menu customization interface.
+  The separate shell setter map has 281 candidates, 274 resolved property
+  functions; it must not be mistaken for the native UI dispatch table.
+- **Open Gate on a native menu item:** Open Gate now follows the camera's own
+  **Playback -> Slideshow -> Slideshow Settings -> Repeat** switch
+  (`0xC31ADA36`), so it can be turned on with the normal buttons instead of the
+  RIGHT/UP hijack. Measured on hardware: both the camera's menu and
+  `menu SetSlideshowRepeat` write that byte. Edge-triggered, so the OSD menu
+  still works and neither source undoes the other; refused while recording.
+  The cost is slideshow looping, and only while the card is loaded.
 - **Darkness/playback:** unverified hypotheses and explicit experiments, not fixes.
 
 ## Combined menu card
