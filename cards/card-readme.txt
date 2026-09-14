@@ -7,11 +7,9 @@ with USB unplugged. Screen reads @BANNER@ when loaded.
 The two files are a MATCHED PAIR. The menu code lives in VSHL.BIN and
 AutoRun.txt only loads it, so never mix files from different builds.
 
-BEFORE YOU BOOT IT: clear any custom function assigned to UP and to RIGHT
-(Menu -> Custom -> button settings). This card takes both keys for itself the
-moment it loads, so whatever you had mapped there will not fire, and pressing
-them while you are in the camera's own menu also moves our cursor in the
-background. Clearing the mappings avoids surprises until that is fixed.
+UP and RIGHT belong to this card WHILE YOU ARE IN LIVE VIEW. In the camera's
+own menu and in playback they are the camera's, so you can navigate normally and
+anything you have mapped to them still works there.
 
 RIGHT cycles, UP toggles. Everything boots OFF. The panel is drawn top right;
 there is no key to open it, the keys are ours whenever the card is running.

@@ -46,6 +46,12 @@
 #ifndef PANEL_BODY_OFF
 #define PANEL_BODY_OFF 0
 #endif
+/* The camera's own screen state, measured on hardware 2026-09-14 by diffing RAM
+ * with SIGMA's menu open and shut: 2 = live view, 4 = playback, 5 = menu. It is
+ * snapshot+0x1F8, the word the firmware's standby handlers test at 0xC0481DC0
+ * and 0xC0482188. */
+.equ UI_STATE,   0xC3033A44
+.equ UI_LIVEVIEW, 2
 .equ PANEL_FETCH_MAX, 8        /* how many times the key path may take the
                                 * display lock to learn the buffers */
 .equ PANEL_IDLE, 25            /* passes of no change before it hides; the
@@ -217,13 +223,31 @@ boot_refused:
 
 .global entry
 entry:
+    /* Only take RIGHT and UP while the camera is in live view.
+     *
+     * UI_STATE is the camera's own screen state: measured on hardware
+     * 2026-09-14, it reads 2 in live view, 4 in playback and 5 with SIGMA's
+     * menu open. The firmware's standby handlers test the same word
+     * (0xC0481DC0, 0xC0482188 both compare it against 3).
+     *
+     * Without this the card owns UP and RIGHT everywhere, so navigating the
+     * camera's own menu moved our cursor in the background -- and any custom
+     * function assigned to those keys never fired at all.
+     */
     push {r0, r1, r2, r3, r12, lr}
+    LDA r12, UI_STATE
+    ldr r12, [r12]
+    cmp r12, #UI_LIVEVIEW
+    bne 1f
     bl sync_native                 @ adopt the native toggle before dispatching
     pop {r0, r1, r2, r3, r12, lr}
     cmp r1, #0x0C
     beq handle
     cmp r1, #0x14
     beq handle
+    LDA r12, KEY_ORIG
+    bx r12
+1:  pop {r0, r1, r2, r3, r12, lr}
     LDA r12, KEY_ORIG
     bx r12
 

@@ -15,19 +15,19 @@ Extract the zip straight to the card root, so the card holds `AutoRun.txt` and
 a matched pair:** each card has its own `VSHL.BIN` (the menu code lives there,
 `AutoRun.txt` is only the loader), so never mix files between the two zips.
 
-## Before you boot it: clear your UP and RIGHT assignments
+## About UP and RIGHT
 
-This card **takes the UP and RIGHT keys for itself** the whole time it is
-loaded. There is no shortcut to open the menu, the keys are simply ours.
+The card uses **UP and RIGHT while you are in live view**: RIGHT moves down the
+list, UP switches the highlighted option on. There is no shortcut to open the
+menu, the panel is simply there.
 
-So, in the camera: **Menu -> Custom -> button settings, and clear anything you
-have assigned to UP and to RIGHT.** Whatever is mapped there will not fire while
-the card is in.
+**In the camera's own menu and in playback the keys are the camera's**, so you
+navigate SIGMA's menu normally and anything you have assigned to those buttons
+still works there. The card decides by reading the camera's screen state
+(snapshot `+0x1F8`: 2 live view, 4 playback, 5 menu), measured on hardware.
 
-**Known bug, being worked on:** because the keys are taken globally, pressing
-UP or RIGHT while you are inside SIGMA's own menu also moves our cursor in the
-background. Nothing is written until you press UP on a row, but it is untidy and
-it is the next thing on the list.
+If you have a custom function on UP or RIGHT that you use *in live view*, it
+will not fire while this card is loaded.
 
 ## What it does
 

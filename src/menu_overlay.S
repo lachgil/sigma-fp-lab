@@ -39,6 +39,8 @@
 .equ MENU_ST,    0xC072FB00     /* menu.S's own state block; read only */
 .equ MENU_INIT,  20             /*   +20 armed flag                    */
 .equ MENU_FC_ON, 72             /*   +72 the menu's own false-colour latch */
+.equ UI_STATE,   0xC3033A44     /* 2 live view, 4 playback, 5 the camera's menu */
+.equ UI_LIVEVIEW, 2             /*   +72 the menu's own false-colour latch */
 .equ SETTINGS_OBJ, 0xC0057AE8   /* the settings object every setter takes */
 .equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton at 0xC351FE88 */
 .equ REC_SM,     0xC358CB80     /* rec state machine; +0x144 is its state */
@@ -144,13 +146,29 @@ menu_core:
     movne   r0, #0x30
     bne     refuse
 
+    /* Not in live view: take the panel off the screen and stop. The camera's
+     * own menu and playback own the display then, and painting over them is
+     * both wrong and confusing. 2 = live view; measured on hardware. */
+    LDA     r0, UI_STATE
+    ldr     r0, [r0]
+    cmp     r0, #UI_LIVEVIEW
+    beq     1f
+    ldr     r0, [r10, #0x68]        @ exactly one clearing pass, as when hiding
+    cmp     r0, #1
+    moveq   r0, #2
+    movne   r0, #0
+    str     r0, [r10, #0x68]
+    cmp     r0, #0
+    beq     done
+    b       2f
+1:
     bl      follow_options          @ the cursor or an option moved: follow it
     bl      visibility              @ decide whether the panel shows at all
     ldr     r0, [r10, #0x68]
     cmp     r0, #0
     beq     done                    @ idle and already hidden: nothing to draw
 
-    ldr     r7, [r10, #0x28]        @ stride
+2:  ldr     r7, [r10, #0x28]        @ stride
     ldr     r8, [r10, #0x2C]        @ surface height
     ldr     r5, [r10, #0x30]        @ panel x
     ldr     r6, [r10, #0x34]        @ panel y

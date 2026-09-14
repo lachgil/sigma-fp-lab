@@ -43,6 +43,8 @@ SURFACE_GEOM = 0x48000400   # {width, height}
 # surface has to live where a real OSD buffer does.
 SURFACE = 0xC4100000
 SURFACE_W, SURFACE_H = 1024, 682
+UI_STATE = 0xC3033A44
+UI_LIVEVIEW = 2
 HOOKS = [0xC050D4C8, 0xC03790B8, 0xC038C484, 0xC0058310]
 OFF = [0xE3A02000, 0xE5DB25CE, 0xE3500000, 0xE1A05001]
 SCAN = range(0xC0BE5700, 0xC0BE5D00, 4)
@@ -103,6 +105,9 @@ class Camera:
         self.uc.mem_write(0xC0000000, FW)
         self.uc.mem_write(POOL + 0x8000, RAW)
         self.put(0xC3757A7C, POOL)
+        # The camera's screen state: 2 = live view, which is the only state the
+        # card takes UP and RIGHT in. 4 is playback, 5 is SIGMA's own menu.
+        self.put(UI_STATE, UI_LIVEVIEW)
         self.put(0xC31AC530, 0xC31AC59C)
         self.uc.mem_write(0xC3498E2C, b'\x01')
         if bad_firmware:
@@ -205,7 +210,9 @@ class Camera:
         self.draws.clear()
         before = self.composites
         self.run(self.get(0xC091EA38), r0=0x12345678, key=key)
-        if key in (0x0C, 0x14):
+        # RIGHT and UP are only ours in live view; anywhere else the card hands
+        # them to the camera untouched and draws nothing.
+        if key in (0x0C, 0x14) and self.get(UI_STATE) == UI_LIVEVIEW:
             assert len(self.draws) == 4 and len(set(self.draws)) == 1
             assert self.composites - before == 4
             return self.draws[0].strip()
@@ -598,4 +605,23 @@ c.run(POOL + MANIFEST['panel_offset'] + MANIFEST['panel_symbols']['menu_core'])
 assert c.features()[0] == 1, 'Open Gate is on'
 assert c.settings, 'a toggle queues the framerate write that re-latches the mode'
 print('PASS: a toggle asks the camera to adopt the mode, no manual preset switch')
+
+# The keys are ours ONLY in live view. In the camera's own menu or in playback
+# they must go straight through, or navigating SIGMA's menu moves our cursor in
+# the background and anything the user mapped to UP/RIGHT never fires.
+c = Camera()
+c.press(0x0C)
+moved = c.get(ST)
+assert moved == 1, 'live view: RIGHT moves our cursor'
+for state, what in ((5, "the camera's menu"), (4, 'playback'), (0, 'no screen')):
+    c.put(UI_STATE, state)
+    native_before = len(c.native)
+    c.press(0x0C)
+    c.press(0x14)
+    assert c.get(ST) == moved, f'cursor must not move in {what}'
+    assert len(c.native) > native_before, f'and the key must reach the camera in {what}'
+c.put(UI_STATE, UI_LIVEVIEW)
+c.press(0x0C)
+assert c.get(ST) == moved + 1, 'and back in live view the keys are ours again'
+print('PASS: UP and RIGHT are ours in live view only, not in menu or playback')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')
