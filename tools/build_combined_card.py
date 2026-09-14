@@ -38,6 +38,9 @@ NATIVE_RANGE = 0xC1A709BC
 NATIVE_RANGE_THREE = 0x40
 NATIVE_STOCK_RANGE = 0x803F
 NATIVE_CSV_LEN = 89
+NATIVE_PICK = 0xC0732400        # the selection hook, empty in stock
+NATIVE_SITE = 0xC057A6A0        # MV_Resolution selection callback (ARM)
+NATIVE_SITE_STOCK = 0xE92D40F0  # push {r4,r5,r6,r7,lr}, the displaced word
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
 # 0xC072F000, so the debug and release cards share one address map.
 BOOT = 0xC072F700
@@ -168,10 +171,28 @@ entry:
             # bytes of padding before the next one: carry them through unchanged.
             tail = firmware[NATIVE_CSV - 0xC0000000 + NATIVE_CSV_LEN:
                             NATIVE_CSV - 0xC0000000 + NATIVE_CSV_LEN + 3]
+            # And the half that makes it do something: intercept the selection
+            # so index 2 turns on open gate and dispatches FHD instead of the
+            # invalid enum 4.
+            got = struct.unpack_from('<I', firmware, NATIVE_SITE - 0xC0000000)[0]
+            if got != NATIVE_SITE_STOCK:
+                raise SystemExit(f'selection callback starts {got:#x}, '
+                                 f'expected {NATIVE_SITE_STOCK:#x}')
+            if any(firmware[NATIVE_PICK - 0xC0000000:
+                            NATIVE_PICK - 0xC0000000 + 0x100]):
+                raise SystemExit('selection hook cave is not empty in stock')
+            pick = assemble(ROOT / 'src/nativepick.S',
+                            (f'SEL_OG_OFF={syms["native_select_og"]:#x}',
+                             f'SEL_STOCK_OFF={syms["native_select_stock"]:#x}'))
+            branch = 0xEA000000 | (((NATIVE_PICK - (NATIVE_SITE + 8)) >> 2)
+                                   & 0xFFFFFF)
             sections.extend([
                 (NATIVE_CSV, csv + tail, 'native resolution list'),
                 (NATIVE_RANGE, struct.pack('<I', NATIVE_RANGE_THREE),
-                 'native resolution range')])
+                 'native resolution range'),
+                (NATIVE_PICK, pick, 'native selection hook'),
+                (NATIVE_SITE, struct.pack('<I', branch),
+                 'native selection branch')])
         if args.ui_probe:
             # Thumb, so it cannot share the ARM assembler's defaults, and the
             # hook word is emitted as its own one-word section: the loader

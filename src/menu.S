@@ -446,6 +446,51 @@ up_gyro:
     bl toggle_gyro
     b redraw
 
+/* Called from the native Resolution list, not from our own menu.
+ *
+ * Selecting "OG 3032x2012" there lands here. Open gate repoints the FHD 29.97
+ * cell, so the honest mapping is: turn open gate on, and let the camera dispatch
+ * FHD -- which is exactly what our own OPEN GATE row does. The hook rewrites the
+ * widget's index for the same reason: index 2 maps to enum 4, which is not a
+ * valid capture enum and reaches an "Invalid MovSize" path.
+ *
+ * Refuses while recording, like every other geometry change here.
+ */
+.global native_select_og
+native_select_og:
+    push {r4, r5, r6, lr}
+    LDA r6, ST
+    ldr r0, [r6, #20]
+    cmp r0, #1                     @ armed only
+    bne 1f
+    bl busy
+    cmp r0, #0
+    bne 1f                         @ recording: leave everything alone
+    ldr r0, [r6, #4]
+    cmp r0, #1
+    beq 1f                         @ already on
+    mov r0, #GRP_2997
+    mov r1, #4
+    bl release
+    bl toggle_og
+1:  pop {r4, r5, r6, pc}
+
+.global native_select_stock
+native_select_stock:
+    push {r4, r5, r6, lr}
+    LDA r6, ST
+    ldr r0, [r6, #20]
+    cmp r0, #1
+    bne 1f
+    bl busy
+    cmp r0, #0
+    bne 1f
+    ldr r0, [r6, #4]
+    cmp r0, #0
+    beq 1f                         @ already off
+    bl toggle_og
+1:  pop {r4, r5, r6, pc}
+
 up_h1344:
     mov r0, #GRP_H1344
     mov r1, #H1344_ON
