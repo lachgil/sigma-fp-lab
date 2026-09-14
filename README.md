@@ -39,6 +39,8 @@ UP switches on, **Stock** switches everything off.
 | M98 30P | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 274 MB/s | offline only, a comparison against M117 |
 | M98 60P | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 548 MB/s | offline only, expect short bursts |
 | M6 4K | M6 | 69% x 54% | full 1:1, 14-bit | 4176x2174 | 27.5 ms | 476 MB/s | **no visible gain**: file depth follows the menu's 8/10/12 |
+| FHD 120 | M58 (from M27) | whole sensor | 2x2 binned | 3032x1708 | | 60 -> **120 fps** | **recorded on hardware**, then overflows after a couple of seconds: a burst, not a take |
+| 2088 120 | M103 (from M88) | whole sensor | 2x2 binned | 2088x1174 | | 60 -> 120 fps | same swap, never run |
 | 2K120 | M56 (from M139) | whole sensor | 2x2 binned | 2016x1344 | | 60 -> 120 fps | experimental: the readout is selected, the cadence is unconfirmed |
 | 672 240 | M12 (from M140) | whole sensor, letterboxed | 2x2 binned | 2016x672 | | 60 -> 240 fps | experimental, same caveat |
 | Gyro, Gyro-Gate | | | | | | | writes Gyroflow GCSV alongside the take |

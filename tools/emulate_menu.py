@@ -219,7 +219,7 @@ class Camera:
         assert not self.draws
 
     def select(self, index):
-        for _ in range(15):   # twelve card rows, then FALSE COL and GREEN FIX
+        for _ in range(17):   # fourteen card rows, then FALSE COL and GREEN FIX
             if self.get(ST) == index:
                 return
             self.press(0x0C)
@@ -662,12 +662,38 @@ for row, stock_id, fast_id, name in ((10, 139, 56, '2K120'), (11, 140, 12, '672 
     assert {a: c.get(a) for a in SCAN} == cells_before, f'{name} restores every cell'
 print('PASS: the high-framerate rows swap exactly one cell each, and restore it')
 
+# The two swaps whose target id IS already in the picker (58 is stock FHD
+# 119.88). A symmetric swap would rewrite those stock cells on the way back,
+# which is why they had no row until now: these journal every address they
+# touch, so OFF has to restore the table byte for byte.
+for row, stock_id, fast_id, log, name in ((12, 27, 58, 0xC0732D00, 'FHD 120'),
+                                          (13, 88, 103, 0xC0732E00, '2088 120')):
+    c = Camera()
+    cells_before = {a: c.get(a) for a in SCAN}
+    assert fast_id in cells_before.values(), f'{fast_id} is in the stock picker'
+    c.select(row)
+    assert c.press(0x14).startswith('>' + name), f'{name} turns on'
+    changed = {a: c.get(a) for a in SCAN if c.get(a) != cells_before[a]}
+    assert changed and set(changed.values()) == {fast_id}
+    assert all(cells_before[a] == stock_id for a in changed)
+    assert c.get(log) == len(changed), 'every cell it wrote is journalled'
+    assert c.press(0x14).startswith('>' + name), f'{name} turns off'
+    assert {a: c.get(a) for a in SCAN} == cells_before, f'{name} restores every cell'
+    assert c.get(log) == 0, 'and empties its log'
+    # Stock has to clear them too: the old #63 release mask stopped at M6.
+    c.select(row)
+    c.press(0x14)
+    c.select(0)
+    c.press(0x14)
+    assert {a: c.get(a) for a in SCAN} == cells_before, f'Stock clears {name}'
+print('PASS: the journalled 120 fps rows restore the picker exactly, and Stock clears them')
+
 # GREEN FIX arms a code hook rather than a data cell, so what matters is the one
 # word at the accessor: our branch while on, the stock instruction while off.
 GREEN_SITE, GREEN_STOCK, GREEN_CODE = 0xC0437E98, 0xE92D4030, 0xC0794240
 c = Camera()
 assert c.get(GREEN_SITE) == GREEN_STOCK, 'the accessor starts stock'
-c.select(13)
+c.select(15)
 assert c.press(0x14) == '>GREEN FIX  ON'
 assert c.get(ST + 76) == 1
 branch = 0xEA000000 | (((GREEN_CODE - GREEN_SITE - 8) >> 2) & 0xFFFFFF)

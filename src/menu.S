@@ -74,6 +74,11 @@
 .equ GEOM, 0xC072FA40
 .equ KEEP, 0xC072FA80           /* count, then the cells the hook holds */
 .equ SEL_2997, 175              /* measured on hardware: FHD/29.97 CinemaDNG */
+/* Where the journalled swaps keep their (address, old id) lists: one 256-byte
+ * slot each, in a cave the card checks is empty. 31 pairs is far more than the
+ * picker holds for any one mode id. */
+.equ LOG_H1708,    0xC0732D00
+.equ LOG_H2088,    0xC0732E00
 #ifndef OG60_SEL
 /* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at
  * FHD/29.97 and AD (173) at FHD/59.94, which is the framerate-tracking
@@ -104,9 +109,14 @@
  * modes above -- but release() still needs a bit to reason with. */
 .equ GRP_H1344, 64              /* the 2016x1344 cell     */
 .equ GRP_H672,  128             /* the 2016x672 cell      */
+.equ GRP_H1708, 256             /* the 3032x1708 cell     */
+.equ GRP_H2088, 512             /* the 2088x1174 cell     */
+.equ GRP_ALL,   1023            /* every group above: what Stock releases */
 
 .equ H1344_ON,  44              /* their state words      */
 .equ H672_ON,   48
+.equ H1708_ON,  80
+.equ H2088_ON,  84
 
 .equ CELLS_N, 52                /* cells the last change rewrote  */
 .equ M130_N,    56              /* pairs M130 recorded            */
@@ -313,7 +323,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #14                    @ twelve card rows, FALSE COL, GREEN FIX
+    cmp r0, #16                    @ fourteen card rows, FALSE COL, GREEN FIX
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -343,8 +353,12 @@ do_up:
     cmp r0, #11                    @ hold no shared cell, so they answer here
     beq up_h672
     cmp r0, #12
-    beq up_false                   @ ours, and needs no gyro and no cells
+    beq up_h1708
     cmp r0, #13
+    beq up_h2088
+    cmp r0, #14
+    beq up_false                   @ ours, and needs no gyro and no cells
+    cmp r0, #15
     beq up_green                   @ display only: no cells, no gyro
     ldr r1, [r6, #16]
     cmp r1, #0
@@ -395,7 +409,8 @@ release:
     pop {r4, r5, r6, r7, r8, r9, pc}
 
 stock:
-    mov r0, #63                    @ every group
+    LDA r0, GRP_ALL                @ every group, including the fast ones --
+                                   @ #63 stopped at M6 and left them running
     mov r1, #0xFF                  @ an offset no option has: skip nothing
     bl release
     ldr r0, [r6, #28]
@@ -515,6 +530,23 @@ up_h672:
     bl release
     bl toggle_h672
     b redraw
+/* The two swaps that had their own cards and never had a row. FHD120 is the
+ * one with a hardware result: it records and the recorder overflows after a
+ * couple of seconds, which is a usable burst rather than a failure. 2088 120
+ * is its smaller sibling and was never run.
+ */
+up_h1708:
+    mov r0, #GRP_H1708
+    mov r1, #H1708_ON
+    bl release
+    bl toggle_h1708
+    b redraw
+up_h2088:
+    mov r0, #GRP_H2088
+    mov r1, #H2088_ON
+    bl release
+    bl toggle_h2088
+    b redraw
 
 /* FALSE COL. The camera only offers false colour as a button you hold: an
  * assigned function key calls CameraIF vtable +0xCC on press, which posts
@@ -579,9 +611,9 @@ redraw:
     beq state_stock
     cmp r0, #9
     beq show_sel
-    cmp r0, #12
+    cmp r0, #14
     beq state_false
-    cmp r0, #13
+    cmp r0, #15
     beq state_green
     cmp r0, #8
     beq state_gate
@@ -968,6 +1000,65 @@ repoint:
     str     r7, [r6, #CELLS_N]
     mov     r0, r7
     pop     {r4, r5, r6, r7, pc}
+
+/* The same swap, but journalled by address.
+ *
+ * `repoint` is symmetric: OFF swaps the ids back the other way. That is only
+ * safe while the target id appears nowhere else in the picker, which is why
+ * two of the same-raster swaps were left out -- turning 27 -> 58 on and off
+ * again would rewrite the cells that were GENUINELY 58 into 27, and 58 is the
+ * stock FHD 119.88 mode.
+ *
+ * So these record (address, old id) for every cell they touch, the way M130
+ * does, and OFF puts each address back to exactly what it held. The log lives
+ * in its own cave rather than the state block, which has no room left.
+ *
+ * r0 = id to replace, r1 = id to write, r2 = log base. Returns cells written.
+ */
+repoint_log:
+    push    {r4, r5, r6, r7, r8, lr}
+    LDA     r4, 0xC0BE5700
+    LDA     r5, 0xC0BE5D00
+    mov     r7, #0
+    mov     r8, #0
+    str     r8, [r2]                @ count last, so a partial log never walks
+1:  ldr     r6, [r4]
+    cmp     r6, r0
+    bne     2f
+    cmp     r7, #31                 @ SWAP_LOG_MAX: the log holds 31 pairs
+    bhs     2f
+    add     r8, r2, #4
+    add     r8, r8, r7, lsl #3
+    str     r4, [r8]                @ where
+    str     r6, [r8, #4]            @ and what it held
+    str     r1, [r4]
+    add     r7, r7, #1
+2:  add     r4, r4, #4
+    cmp     r4, r5
+    bne     1b
+    str     r7, [r2]
+    LDA     r6, ST
+    str     r7, [r6, #CELLS_N]
+    mov     r0, r7
+    pop     {r4, r5, r6, r7, r8, pc}
+
+/* r0 = log base. Restores every journalled cell and empties the log. */
+restore_log:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    ldr     r5, [r4]
+    mov     r6, #0
+    str     r6, [r4]
+1:  cmp     r5, #0
+    beq     2f
+    add     r6, r4, #4
+    subs    r5, r5, #1
+    add     r6, r6, r5, lsl #3
+    ldr     r0, [r6]
+    ldr     r1, [r6, #4]
+    str     r1, [r0]
+    b       1b
+2:  pop     {r4, r5, r6, pc}
 
 /* The cells and words every repointed framerate shares. Recomputed from all
  * the flags, because turning one feature off must not take state another still
@@ -1408,6 +1499,41 @@ toggle_h672:
     bl      repoint
     pop     {r4, r5, r6, pc}
 
+toggle_h1708:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #H1708_ON]
+    eor     r0, r0, #1
+    str     r0, [r6, #H1708_ON]
+    LDA     r2, LOG_H1708
+    cmp     r0, #0
+    beq     1f
+    mov     r0, #27                 @ 3032x1708 at 60 -> M58, the same raster
+    mov     r1, #58                 @ at 120. Journalled: 58 is stock FHD 119.88
+    bl      repoint_log
+    pop     {r4, r5, r6, pc}
+1:  mov     r0, r2
+    bl      restore_log
+    pop     {r4, r5, r6, pc}
+
+toggle_h2088:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #H2088_ON]
+    eor     r0, r0, #1
+    str     r0, [r6, #H2088_ON]
+    LDA     r2, LOG_H2088
+    cmp     r0, #0
+    beq     1f
+    mov     r0, #88                 @ 2088x1174 at 60 -> M103 at 120
+    mov     r1, #103
+    bl      repoint_log
+    pop     {r4, r5, r6, pc}
+1:  mov     r0, r2
+    bl      restore_log
+    pop     {r4, r5, r6, pc}
+
+
 toggle_m6:
     push    {r4, r5, r6, lr}
     LDA     r6, ST
@@ -1452,7 +1578,7 @@ m130_rates:
     .word 0, 0, 0, 0, 0
 state_offsets:
     .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
-    .word H1344_ON, H672_ON
+    .word H1344_ON, H672_ON, H1708_ON, H2088_ON
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
@@ -1463,6 +1589,8 @@ features_table:
     .word 36, GRP_4K,              toggle_m6 - entry
     .word H1344_ON, GRP_H1344,     toggle_h1344 - entry
     .word H672_ON,  GRP_H672,      toggle_h672 - entry
+    .word H1708_ON, GRP_H1708,     toggle_h1708 - entry
+    .word H2088_ON, GRP_H2088,     toggle_h2088 - entry
 .equ FEATURE_COUNT, (. - features_table) / 12
 gyro_hooks_table:
     .word ACCEL_SITE, 0xE3A02000, ARM_ACCEL
@@ -1547,6 +1675,14 @@ labels:
     .asciz ">672 240    OFF        "
     .space 8
     .asciz ">672 240    ON         "
+    .space 8
+    .asciz ">FHD 120    OFF        "
+    .space 8
+    .asciz ">FHD 120    ON         "
+    .space 8
+    .asciz ">2088 120   OFF        "
+    .space 8
+    .asciz ">2088 120   ON         "
     .space 8
     .asciz ">FALSE COL  OFF        "
     .space 8

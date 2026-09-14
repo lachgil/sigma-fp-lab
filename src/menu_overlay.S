@@ -55,7 +55,7 @@
 .equ INK,        0xB2           /* what the firmware's own glyphs read back as */
 .equ CELL_W,     12             /* (FONT_W + 1) * 2 */
 .equ ROW_PITCH,  18
-.equ ROWS,       12     /* ten original rows plus two high-framerate ones */
+.equ ROWS,       14     /* ten original rows, two 120s, two 240/120 swaps */
 .equ PANEL_W,    192
 .equ PANEL_H,    (24 + (ROWS + 2) * ROW_PITCH + 6)   /* two rows are ours */
 .equ VALUE_X,    132
@@ -914,6 +914,8 @@ cursor_rates:
     .word 0        @ SEL
     .word 0        @ 2K120       its own cell, not an FHD rate
     .word 0        @ 672 240     likewise
+    .word 0        @ FHD 120     its own cell
+    .word 0        @ 2088 120    likewise
 
 option_rates:
     .word 0        @ STOCK
@@ -928,10 +930,12 @@ option_rates:
     .word 0        @ SEL
     .word 0        @ 2K120       its own cell, not an FHD rate
     .word 0        @ 672 240     likewise
+    .word 0        @ FHD 120     its own cell
+    .word 0        @ 2088 120    likewise
 
 state_offsets:
     .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
-    .word 44, 48             @ the high-framerate rows
+    .word 44, 48, 80, 84     @ the high-framerate rows
 
 title_text:
     .asciz "FPLAB"
@@ -961,6 +965,8 @@ row_labels:
     .asciz "SEL";        .space 8
     .asciz "2K120";       .space 6
     .asciz "672 240";     .space 4
+    .asciz "FHD 120";     .space 4
+    .asciz "2088 120";    .space 3
 thread_name:
     .asciz "fpLABmn"
     .balign 4

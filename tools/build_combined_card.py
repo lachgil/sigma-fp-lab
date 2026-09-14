@@ -82,6 +82,9 @@ FIRMWARE_DIGEST = '92a8ee993f6c3d66c251e88d45a2ccd5135c6cf7342717784321c2ed506e2
 # The loader build pads to 32 KB and refuses more; stage2 reads up to 0x20000,
 # so a bigger image is a pad decision, not a loader limit. See repack_vbin.
 BIN_PAD = 65536
+# Where the menu journals the picker cells its 120 fps rows rewrite, so OFF can
+# restore them by address. Two 256-byte slots; menu.S holds the same addresses.
+SWAP_LOG = 0xC0732D00
 
 
 def parse_vbin(raw):
@@ -199,6 +202,8 @@ def main():
                          'for the release card')
     if any(firmware[BOOT - 0xC0000000:STATE - 0xC0000000 + 0x100]):
         raise SystemExit('combined cave region is not empty in stock firmware')
+    if any(firmware[SWAP_LOG - 0xC0000000:SWAP_LOG - 0xC0000000 + 0x200]):
+        raise SystemExit('the picker-swap journal cave is not empty in stock firmware')
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         trampoline = tmp / 'boot.S'
@@ -358,6 +363,7 @@ entry:
                   (PANEL_STATE, PANEL_STATE + 0x180, 'panel state'),
                   (0xC072FA00, 0xC072FAC0, 'geometry state, selectors, probe, canvases, keep list'),
                   (0x7000, 0x28000, 'loader read window'),
+                  (SWAP_LOG, SWAP_LOG + 0x200, 'journalled picker swaps'),
                   (0x42000, 0x43000, 'gyro file object'),
                   (0x43000, 0x43414, 'gyro jobs')]
         for i, (lo, hi, why) in enumerate(spans):
