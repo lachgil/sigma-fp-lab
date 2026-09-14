@@ -53,8 +53,13 @@ modes are not our discovery:
   code on this camera at all, the AutoRun loader, the USB shell, the gyro
   metadata build, and the sensor mode table these options are selected from.
   Open gate was submitted back as [fpSup#2](https://github.com/ijigen/fpSup/pull/2).
-- **FP3K** — the display accessor (`0xC0437E98`) the standby green fix is
-  built on.
+- **Vitaly Li / FP3K** — got open gate out of an fp first (3000×2000 12-bit
+  CinemaDNG), and the display accessor (`0xC0437E98`) our standby green fix is
+  built on. FP3K also demonstrates a native resolution entry, with its own
+  `.xci` artwork.
+- **ijigen's research handoff** — the GUI resource system: the XCI icon format,
+  the enum→state table at `0xC2E4020C`, and the measurement that value lists are
+  built once at startup. See `docs/menu/gui-resources.md`.
 - **[magiclantern](https://github.com/reticulatedpines/magiclantern_simplified)**
   — reference for how this kind of thing is done, no code used.
 

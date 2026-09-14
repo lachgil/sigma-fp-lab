@@ -22,6 +22,11 @@ MENU_OFFSET = 0x50000
 # the card carries it now, which is the only way it exists without a cable.
 PANEL_OFFSET = 0x52000
 PANEL_STATE = 0xC072FC00
+# The GUI append probe (--ui-probe): observation only, see src/uiprobe.S.
+PROBE_CODE = 0xC0732100         # empty in stock firmware, verified at build time
+PROBE_STATE = 0xC0732300
+PROBE_SITE = 0xC05E2CA8         # FUN_c05e2ca8, the element append; Thumb
+PROBE_RESUME = PROBE_SITE + 4 + 1
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
 # 0xC072F000, so the debug and release cards share one address map.
 BOOT = 0xC072F700
@@ -57,6 +62,8 @@ def main():
                         help='keep the USB shell in, so the camera can be asked '
                              'what it is actually doing. Same payload either '
                              'way; the SSD cannot be used while USB is the host')
+    parser.add_argument('--ui-probe', action='store_true',
+                        help='arm the observation-only GUI append hook at boot')
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
                         help='FieldAngle selector for FHD/59.94 CinemaDNG. '
                              'Default 173, measured on hardware 2026-09-11: the '
@@ -125,6 +132,26 @@ entry:
     add r0, r0, r1
     bx r0
 ''')
+        if args.ui_probe:
+            # Thumb, so it cannot share the ARM assembler's defaults, and the
+            # hook word is emitted as its own one-word section: the loader
+            # writes every section before jumping to our boot, and boot runs
+            # F_CACHE, so the site is coherent before anything executes it.
+            if any(firmware[PROBE_CODE - 0xC0000000:PROBE_STATE - 0xC0000000 + 0x40]):
+                raise SystemExit('probe cave is not empty in stock firmware')
+            probe = assemble(ROOT / 'src/uiprobe.S',
+                             (f'PROBE_STATE={PROBE_STATE:#x}',
+                              f'PROBE_RESUME={PROBE_RESUME:#x}'))
+            off = PROBE_CODE - (PROBE_SITE + 4)
+            s = (off >> 24) & 1
+            j1 = (~((off >> 23) & 1) ^ s) & 1
+            j2 = (~((off >> 22) & 1) ^ s) & 1
+            hw1 = 0xF000 | (s << 10) | ((off >> 12) & 0x3FF)
+            hw2 = 0x9000 | (j1 << 13) | (j2 << 11) | ((off >> 1) & 0x7FF)
+            sections.extend([(PROBE_CODE, probe, 'gui append probe'),
+                             (PROBE_STATE, bytes(0x40), 'gui probe state'),
+                             (PROBE_SITE, struct.pack('<I', hw1 | (hw2 << 16)),
+                              'gui append hook')])
         sections.extend([(MENU_OFFSET, menu, 'menu'),
                          (PANEL_OFFSET, panel, 'drawn panel'),
                          (BOOT, assemble(trampoline), 'combined boot'),

@@ -1,5 +1,11 @@
 # The native menu is data, not code
 
+> **Read `gui-resources.md` first.** ijigen's handoff tree measured this
+> subsystem properly on hardware, including the one result that decides the
+> whole question: value lists are built **once at startup**, and the
+> enum→state table at `0xC2E4020C` is the part that patches at runtime. The
+> notes below are our own earlier, shallower look at the same area.
+
 Credit where it is due: this came from **FP3K 0.3.5** (Vitaly). Its `AutoRun.txt`
 ends with `mem save` lines that dump four regions to the card, and the addresses
 are the point, not the dumps:
@@ -33,6 +39,12 @@ entry, not an overlay. From its strings and the addresses it references:
 So the recipe for a native entry is: register assets, extend the resolution
 list, and drive the existing setters. It does **not** appear to patch the CSV
 tables below, so those remain a separate, unexplored lead.
+
+Worth knowing before anyone repeats this: ijigen's measurements show the
+resolution array is built once during the startup resource pass and is never
+rebuilt, so any hook that adds an entry must be armed before that. Whether an
+AutoRun runs early enough is an open, testable question -- see
+`gui-resources.md`.
 
 ## What LIST is
 
