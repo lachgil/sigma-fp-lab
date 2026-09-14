@@ -239,6 +239,52 @@ For instruction inspection, use `.venv/bin/python af_dis.py dis ADDRESS COUNT`;
 append `t` for Thumb. Relevant anchors are listed above. The probe checks MAIN hash
 `92a8ee993f6c3d66c251e88d45a2ccd5135c6cf7342717784321c2ed506e2fb4`.
 
+## A menu drawn by our own code, 2026-09-14
+
+`src/menu_overlay.S` puts the card menu's whole option list on screen at once,
+with the row the camera's cursor is on highlighted and each option's real state
+beside it. It carries its own 5x7 font (`tools/make_font.py`), so it writes
+characters anywhere in the layer with plain byte stores: no firmware text call,
+no fixed rectangle, no display lock. The firmware's own text handler renders
+into a rectangle it hardcodes, which is exactly why the card menu shows one row.
+
+It **reads** menu.S's state block at `0xC072FB00` and never writes it. RIGHT and
+UP still belong to the card; this is a display for state that already exists.
+
+**One thread draws both overlays.** The menu renderer is a function pointer in
+the histogram's state block, called after each pass. That is deliberate: a
+second thread, spawned from the shell's own dispatcher, preceded a session where
+the shell stopped answering, and drawing never needed its own thread. The cause
+of that stall was never established, so the design removes the suspect rather
+than claiming a diagnosis.
+
+## Changing camera settings from our own code
+
+The overlay thread can also apply a camera setting, using the camera's own
+property call rather than the `setting` mirror:
+
+    r0 = 0xC0057AE8()      the settings object
+    r1 = value, r2 = 1
+    blx property_fn        one row of analysis/menu_setters.json
+
+The host queues a request in the menu state block (`+0x48` function, `+0x4C`
+value) and the thread performs it on its next pass, clearing the request first
+so a fault cannot become a loop of writes. Only addresses inside the firmware
+image are accepted.
+
+Measured on hardware: `SetMovFramerate` (`0xC005C0B8`) driven from the thread
+moved the camera from 3 to 5 and back, confirmed through the camera's own getter
+and `gui geti MV_FrameRate`. `tools/overlay_deploy.py set --setting framerate
+--value N` is that path.
+
+This is the mechanism an option needs to select its own preset instead of asking
+you to switch the recording preset away and back. **What is still missing is the
+mapping from that enum to an actual frame rate.** The firmware's own label lists
+are ids `0316..` and `1281..` (23.98, 25, 29.97, 50, 59.94, 100, 119.88, with 24
+and 48 elsewhere), and some values are refused or clamped depending on the
+current format, so the mapping has to be read off the camera rather than
+assumed. Until it is, no option sets a preset by itself.
+
 ## Frame ownership: DMA only, no lease
 
 The detection path was traced to its producer and consumers. There is **no

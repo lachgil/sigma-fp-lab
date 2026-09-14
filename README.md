@@ -45,7 +45,11 @@ tighter frame. Neither is simply better. Details and measurements in
 ![A histogram drawn on the camera by our own code](docs/osd_histogram.png)
 
 That histogram is computed and drawn inside the camera, by our code, on its own
-thread, about ten times a second.
+thread. The same thread also draws a **menu panel**: every option in the card's
+menu at once, with the selected row highlighted and each state read live, using
+a font we carry ourselves. And it can **change camera settings** through the
+camera's own property call, which is the groundwork for an option that selects
+its own recording preset.
 
 **The camera's built-in histogram is better, and the fp already has false
 colour.** The point is not the plot: it is that the display and the live image

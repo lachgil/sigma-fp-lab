@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""Put the live histogram overlay on a SIGMA fp (firmware Ver.5.02), over USB.
+"""Put our own overlays on a SIGMA fp (firmware Ver.5.02), over USB.
 
-    ./hist_deploy.py surfaces     read the OSD buffer addresses off the camera
-    ./hist_deploy.py place        write the payload into the pool and prime it
-    ./hist_deploy.py once         one pass, for checking before going resident
-    ./hist_deploy.py start        start the resident thread (about 12 passes/s)
-    ./hist_deploy.py status       counters and the last refusal code
-    ./hist_deploy.py stop         ask the thread to exit, and wait for it
-    ./hist_deploy.py clear        wipe the whole OSD layer
+    ./tools/overlay_deploy.py surfaces  read the OSD buffer addresses off the camera
+    ./tools/overlay_deploy.py place     write both payloads into the pool and prime them
+    ./tools/overlay_deploy.py once      one pass of each, to check before going resident
+    ./tools/overlay_deploy.py start     start the single resident thread
+    ./tools/overlay_deploy.py status    counters and the last refusal code
+    ./tools/overlay_deploy.py stop      ask the thread to exit, and wait for it
+    ./tools/overlay_deploy.py clear     wipe the whole OSD layer
+
+Two overlays are placed:
+
+  * a **histogram** of the detection image channel (0xC375D8C0), an 8-bit
+    grayscale frame, 320x180 on the camera this was written against
+  * a **menu panel** listing every option in the card's menu at once, with the
+    row the camera's cursor is on highlighted. It only reads menu.S's state
+    block; RIGHT and UP still belong to the card
 
 RAM only. Nothing is flashed and no card file is written; a battery pull puts
 the camera back exactly as it was. It needs the USB shell (a debug card) and
 `fpshd` already running, and the camera must not be recording.
 
-What it does on the camera:
-
-  * reads the detection image channel's descriptor at 0xC375D8C0 -- an 8-bit
-    grayscale frame, 320x180 on the camera this was written against
-  * bins those samples and paints bars into the OSD layer's own buffers
+**One thread draws both.** The menu panel is a word in the histogram's state
+block, called after each pass, rather than a thread of its own: spawning a
+second one from the shell's own task preceded a session where the shell stopped
+answering, and nothing about drawing needs its own thread.
 
 The overlay layer rotates three buffers and only the camera's UI decides which
 is on screen, so every pass paints all of them; painting one made the plot
@@ -31,7 +38,7 @@ Honest limits, so nobody is misled by a pretty picture:
     which is the part the fp does not otherwise let you do
   * the detection feed has no frame lock, so a plot can straddle two frames
   * the bars are display-path grayscale codes, not calibrated raw clipping
-  * a mode change wipes the layer; run `once` again, or leave the thread going
+  * a mode change wipes the layer; the resident thread paints it back
 """
 import argparse
 import pathlib
@@ -46,13 +53,17 @@ sys.path.insert(0, str(ROOT / 'reference/fpSup/fp_usb_shell'))
 from armasm import assemble, symbols                            # noqa: E402
 
 SOURCE = ROOT / 'src/hist_overlay.S'
+MENU_SOURCE = ROOT / 'src/menu_overlay.S'
 POOL_PTR = 0xC3757A7C           # [0] = the pool the AutoRun asked for at boot
 CODE_OFF = 0x30000              # clear of the loader window, gyro and the menu
 STATE_OFF = 0x31000
+MENU_STATE_OFF = 0x32000
+MENU_CODE_OFF = 0x33000
 ECHO_SLOT = 0xC0BAC2F8          # command table entry 17, echo's handler pointer
 ECHO_ORIG = 0xC03D99A0
 CACHE_FN = 0xC000E91C           # freshly written pool code is data until this runs
 PLOT_X, PLOT_Y = 32, 64
+PANEL_X, PANEL_Y = 780, 60
 
 # state block offsets, mirroring the header comment in hist_overlay.S
 ST_STATUS, ST_PIXELS, ST_WIDTH, ST_HEIGHT = 0x00, 0x04, 0x08, 0x0C
@@ -64,6 +75,23 @@ ST_STOP, ST_LIVE, ST_EXITED = 0x3C, 0x40, 0x44
 ST_ATTACH, ST_CREATE = 0x48, 0x4C
 ST_BASE1, ST_BASE2 = 0x50, 0x54
 ST_BODYOBJ, ST_VTABLE = 0xC0, 0xC4
+ST_SECOND = 0x58                # the menu renderer, called on the same thread
+
+# and menu_overlay.S's own block
+MN_STATUS, MN_PASSES, MN_STOP = 0x00, 0x04, 0x08
+MN_BASE0, MN_BASE1, MN_BASE2 = 0x1C, 0x20, 0x24
+MN_STRIDE, MN_SURFH, MN_X, MN_Y = 0x28, 0x2C, 0x30, 0x34
+MN_CURSOR, MN_MENUINIT = 0x38, 0x44
+MN_SET_FN, MN_SET_VALUE, MN_SET_DONE = 0x48, 0x4C, 0x50
+
+# analysis/menu_setters.json, the rows worth reaching from a keypress
+SETTERS = {
+    'framerate': 0xC005C0B8,        # SetMovFramerate
+    'recsize': 0xC005C020,          # SetMovRecSize
+    'recformat': 0xC005BE58,        # SetMovRecFormat
+    'dngquality': 0xC005BEF0,       # SetMovCinemaDNGQuality
+    'cropmode': 0xC005BB60,         # SetCropMode
+}
 
 REFUSALS = {
     0x11: 'frame pointer below the DRAM window', 0x12: 'frame pointer above it',
@@ -73,6 +101,12 @@ REFUSALS = {
     0x22: 'backbuffer carries no geometry', 0x23: 'surface below the OSD window',
     0x24: 'surface above it', 0x25: 'plot wider than the surface',
     0x26: 'plot taller than the surface',
+}
+
+MENU_REFUSALS = {
+    0x30: 'the card menu is not loaded, so there is no state to show',
+    0x31: 'panel wider than the surface', 0x32: 'panel taller than the surface',
+    0x33: 'surface below the OSD window', 0x34: 'surface above it',
 }
 
 
@@ -129,9 +163,9 @@ def pool():
     return base
 
 
-def build(state_addr):
+def build(source, state_addr):
     defines = (f'STATE_ADDR={hex(state_addr)}',)
-    return assemble(SOURCE, defines), symbols(SOURCE, defines)
+    return assemble(source, defines), symbols(source, defines)
 
 
 def call_once(addr, label):
@@ -190,18 +224,47 @@ def status(state):
     print(f'  thread        exited={fields[17]} attach={fields[18]:#x}'
           f' create={fields[19]:#010x}')
 
+def menu_status(menu_state):
+    fields = struct.unpack('<18I', read(menu_state, 72))
+    code = fields[0]
+    print(f'  menu status   {code}'
+          + ('  done' if code == 1 else '  running' if code == 0
+             else '  refused: ' + MENU_REFUSALS.get(code, 'unknown')))
+    print(f'  menu passes   {fields[1]}   cursor row {fields[14]}'
+          f'   card menu armed={fields[17]}')
+
+
+def place_code(code_at, blob, what):
+    """Write, verify, repair. `mem set` drops writes, so nothing is assumed."""
+    expected = list(struct.unpack(f'<{len(blob)//4}I', blob))
+    for i, value in enumerate(expected):
+        shell('mem', 'set', f'{code_at + i*4:#x}', f'{value:#x}')
+    for _ in range(6):
+        got = list(struct.unpack(f'<{len(blob)//4}I', read(code_at, len(blob))))
+        holes = [i for i, v in enumerate(expected) if got[i] != v]
+        if not holes:
+            return
+        for i in holes:
+            shell('mem', 'set', f'{code_at + i*4:#x}', f'{expected[i]:#x}')
+    raise SystemExit(f'{what} would not land intact')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=('surfaces', 'place', 'once', 'start',
-                                            'status', 'stop', 'clear'))
+                                            'status', 'stop', 'clear', 'set'))
+    parser.add_argument('--setting', choices=sorted(SETTERS),
+                        help='which camera setting `set` changes')
+    parser.add_argument('--value', type=int, help='the value `set` writes')
     parser.add_argument('--x', type=int, default=PLOT_X)
     parser.add_argument('--y', type=int, default=PLOT_Y)
+    parser.add_argument('--panel-x', type=int, default=PANEL_X)
+    parser.add_argument('--panel-y', type=int, default=PANEL_Y)
     args = parser.parse_args()
 
     base = pool()
     code_at, state = base + CODE_OFF, base + STATE_OFF
+    menu_code_at, menu_state = base + MENU_CODE_OFF, base + MENU_STATE_OFF
 
     if args.command == 'clear':
         for _ in range(3):
@@ -212,11 +275,15 @@ def main():
     if args.command == 'status':
         print(f'pool {base:#010x}  code {code_at:#010x}  state {state:#010x}')
         status(state)
+        menu_status(menu_state)
         return 0
 
-    blob, syms = build(state)
+    blob, syms = build(SOURCE, state)
     entry, body, spawn = (code_at + syms[n] for n in ('hist_entry', 'hist_body',
                                                       'hist_spawn'))
+    menu_blob, menu_syms = build(MENU_SOURCE, menu_state)
+    menu_entry = menu_code_at + menu_syms['menu_entry']
+    menu_core = menu_code_at + menu_syms['menu_core']
 
     if args.command == 'stop':
         write(state + ST_STOP, 1)
@@ -235,46 +302,78 @@ def main():
         return 0
 
     if args.command == 'place':
-        if word(state + ST_LIVE) and word(state + ST_EXITED) != 1:
-            raise SystemExit('a resident thread may still be running; `stop` first')
-        expected = list(struct.unpack(f'<{len(blob)//4}I', blob))
-        for i, value in enumerate(expected):
-            shell('mem', 'set', f'{code_at + i*4:#x}', f'{value:#x}')
-        for _ in range(6):
-            got = list(struct.unpack(f'<{len(blob)//4}I', read(code_at, len(blob))))
-            holes = [i for i, v in enumerate(expected) if got[i] != v]
-            if not holes:
-                break
-            for i in holes:
-                shell('mem', 'set', f'{code_at + i*4:#x}', f'{expected[i]:#x}')
-        else:
-            raise SystemExit('the payload would not land intact')
+        # A cold boot leaves the pool full of whatever was there, so the state
+        # block cannot be trusted on its own: an old counter reads as a running
+        # thread and refuses a perfectly safe placement. Ask the only question
+        # that matters instead -- is our code there, and is it still counting?
+        placed = read(code_at, 32) == blob[:32]
+        if placed and word(state + ST_EXITED) != 1:
+            before = word(state + ST_LIVE)
+            time.sleep(0.5)
+            if word(state + ST_LIVE) != before:
+                raise SystemExit('the resident thread is running; `stop` first')
+        place_code(code_at, blob, 'the histogram payload')
+        place_code(menu_code_at, menu_blob, 'the menu payload')
         call_once(CACHE_FN, 'cache maintenance')
 
         buffers, geometry = surfaces()
+        base1 = buffers[1] if len(buffers) > 1 else 0
+        base2 = buffers[2] if len(buffers) > 2 else 0
         for offset in range(0x00, 0x60, 4):
             write(state + offset, 0)
-        for offset, value in ((ST_BASE0, buffers[0]),
-                              (ST_BASE1, buffers[1] if len(buffers) > 1 else 0),
-                              (ST_BASE2, buffers[2] if len(buffers) > 2 else 0),
+            write(menu_state + offset, 0)
+        for offset, value in ((ST_BASE0, buffers[0]), (ST_BASE1, base1),
+                              (ST_BASE2, base2),
                               (ST_STRIDE_SET, geometry[0]), (ST_SURFH, geometry[1]),
                               (ST_PLOTX, args.x), (ST_PLOTY, args.y),
                               (ST_BODYOBJ, state + ST_VTABLE),
-                              (ST_VTABLE + 0xC, body)):
+                              (ST_VTABLE + 0xC, body),
+                              (ST_SECOND, menu_core)):
             write(state + offset, value)
-        print(f'payload at {code_at:#010x} ({len(blob)} bytes), state {state:#010x}')
-        print(f'surfaces {", ".join(f"{b:#010x}" for b in buffers)}'
-              f'  plot at {args.x},{args.y}')
+        for offset, value in ((MN_BASE0, buffers[0]), (MN_BASE1, base1),
+                              (MN_BASE2, base2),
+                              (MN_STRIDE, geometry[0]), (MN_SURFH, geometry[1]),
+                              (MN_X, args.panel_x), (MN_Y, args.panel_y)):
+            write(menu_state + offset, value)
+        print(f'histogram {code_at:#010x} ({len(blob)} bytes), state {state:#010x}')
+        print(f'menu      {menu_code_at:#010x} ({len(menu_blob)} bytes),'
+              f' state {menu_state:#010x}')
+        print(f'surfaces  {", ".join(f"{b:#010x}" for b in buffers)}')
+        print(f'placed    plot at {args.x},{args.y}'
+              f'   panel at {args.panel_x},{args.panel_y}')
         return 0
 
+    if args.command == 'set':
+        # The write happens on the overlay thread, not in the shell's
+        # dispatcher: this is the camera's own property call, and the one note
+        # we have about it says it was proven from a task rather than from the
+        # shell. The thread has to be running to pick the request up.
+        if args.setting is None or args.value is None:
+            raise SystemExit('`set` needs --setting and --value')
+        if word(state + ST_LIVE) == 0:
+            raise SystemExit('`start` the thread first; it is what applies this')
+        done = word(menu_state + MN_SET_DONE)
+        write(menu_state + MN_SET_VALUE, args.value)
+        write(menu_state + MN_SET_FN, SETTERS[args.setting])
+        for _ in range(20):
+            time.sleep(0.2)
+            if word(menu_state + MN_SET_DONE) != done:
+                print(f'{args.setting} = {args.value} applied by the camera-side thread')
+                return 0
+        raise SystemExit('the thread did not apply it; is it still running?')
+
     if args.command == 'once':
-        call_once(entry, 'one pass')
+        call_once(entry, 'one histogram pass')
+        call_once(menu_entry, 'one menu pass')
         status(state)
+        menu_status(menu_state)
         return 0
 
     if args.command == 'start':
         if word(state + ST_VTABLE + 0xC) != body:
             raise SystemExit('run `place` first')
+        if word(state + ST_SECOND) != menu_core:
+            raise SystemExit('the menu renderer is not wired up; run `place`')
         call_once(spawn, 'spawn')
         time.sleep(1.0)
         first = word(state + ST_LIVE)
@@ -283,7 +382,7 @@ def main():
         if rate <= 0:
             status(state)
             raise SystemExit('the thread is not running')
-        print(f'resident histogram running, {rate:.1f} passes per second')
+        print(f'one thread drawing both overlays, {rate:.1f} passes per second')
         print('`stop` ends it; a battery pull removes everything')
         return 0
     return 0

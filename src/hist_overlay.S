@@ -31,6 +31,7 @@
  *   +0x34 plot x       +0x38 plot y
  *   +0x3C stop request  +0x40 resident passes  +0x44 resident exited
  *   +0x48 attach result +0x4C create result
+ *   +0x58 optional second renderer, called after each pass, 0 for none
  *   +0x80 thread holder +0xC0 body object      +0xC4 body vtable
  *   +0x100 the 256 bins
  *
@@ -68,7 +69,12 @@ hist_entry:
     pop     {r4, pc}
 /* The resident body. The pool worker calls vtable slot +0xC with the body
  * object in r0; returning ends the thread's work, so the loop is here and a
- * host-settable stop request is the only way out. */
+ * host-settable stop request is the only way out.
+ *
+ * One thread drives every overlay. A second renderer is a word the deployer
+ * fills in, not a second thread: spawning one from the shell's own task is
+ * what preceded a session where the shell stopped answering, and nothing about
+ * drawing needs its own thread anyway. */
 .global hist_body
 hist_body:
     push    {r4, lr}
@@ -80,6 +86,9 @@ hist_body:
     ldr     r0, [r4, #0x40]
     add     r0, r0, #1
     str     r0, [r4, #0x40]
+    ldr     r0, [r4, #0x58]         @ the menu panel, when one is placed
+    cmp     r0, #0
+    blxne   r0
     mov     r0, #PERIOD_MS
     LDA     ip, TK_DLY
     blx     ip
@@ -257,7 +266,7 @@ surface_next:
     cmp     r9, #0x2C
     moveq   r9, #0x50
     addne   r9, r9, #4
-    cmp     r9, #0x58
+    cmp     r9, #0x54               @ the last base word; +0x58 is the renderer
     bls     surface_loop
 painted:
     LDA     ip, CACHE_FN            @ CPU writes are only data to the caches
