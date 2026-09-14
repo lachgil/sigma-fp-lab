@@ -170,7 +170,9 @@ entry:
         'usb_shell': args.debug,
         'entry': hex(entry), 'menu_pool_offset': hex(MENU_OFFSET),
         'og60_selector': args.og60_sel or 'unmeasured: M98 60P option refuses',
-        'menu_symbols': syms, 'gyro_sections_sha256': digest,
+        'menu_symbols': syms,
+        'panel_offset': PANEL_OFFSET, 'panel_state': f'{PANEL_STATE:#x}',
+        'panel_symbols': panel_syms, 'gyro_sections_sha256': digest,
         'sections': [{'address': hex(a), 'bytes': len(b), 'name': why,
                       'sha256': hashlib.sha256(b).hexdigest()} for a, b, why in sections],
         'files': {name: hashlib.sha256((args.out / name).read_bytes()).hexdigest()

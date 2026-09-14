@@ -46,6 +46,8 @@
 #ifndef PANEL_BODY_OFF
 #define PANEL_BODY_OFF 0
 #endif
+.equ PANEL_FETCH_MAX, 8        /* how many times the key path may take the
+                                * display lock to learn the buffers */
 .equ PANEL_IDLE, 25            /* passes of no change before it hides; the
                                 * panel's thread runs every 150 ms, so this is
                                 * about four seconds. Counted in passes, which
@@ -649,9 +651,24 @@ panel:
     add r5, r5, r4                @ menu_core, in the pool
 
     LDA r6, PANEL_ST              @ placed and sized at boot
-    LDA r0, DRAW_LOCK             @ the same pair the histogram payload uses,
-    blx r0                        @ and the same context: the camera draws its
-    LDA r1, DRAW_OBJ              @ own menus from the key path too
+    /* Discovery only, and only while something is still unknown.
+     *
+     * DRAW_LOCK takes the display lock. Doing that on every key press meant a
+     * double click asked for it twice in quick succession, which is half of
+     * what crashed the camera. The three buffer bases never change once seen,
+     * so once the third is known this path stops calling the firmware at all.
+     */
+    ldr r0, [r6, #0x24]           @ third base known: nothing left to discover
+    cmp r0, #0
+    bne 4f
+    ldr r0, [r6, #0x148]          @ and a hard cap regardless: if this camera
+    cmp r0, #PANEL_FETCH_MAX      @ only ever presents one buffer the slots
+    bhs 4f                        @ never fill, and asking for the display lock
+    add r0, r0, #1                @ on every key press is exactly what we are
+    str r0, [r6, #0x148]          @ here to stop doing
+    LDA r0, DRAW_LOCK
+    blx r0
+    LDA r1, DRAW_OBJ
     blx r1
     cmp r0, #0
     beq panel_out
@@ -674,15 +691,29 @@ panel:
     mov r3, #0x1C                 @ remember this base if it is new
 2:  ldr r0, [r6, r3]
     cmp r0, r2
-    beq 3f                        @ already known
+    beq 4f                        @ already known
     cmp r0, #0
     streq r2, [r6, r3]
-    beq 3f
+    beq 4f
     add r3, r3, #4
     cmp r3, #0x24
     bls 2b
-3:
-    blx r5
+
+    /* Paint from here ONLY when nothing else owns the panel.
+     *
+     * The thread repaints every 150 ms. Painting from the key path as well
+     * means a fast double press lands a second pass inside the thread's, and
+     * they share scratch (+0x3C current base, +0x40 colour). The thread owns
+     * the drawing whenever it is alive; this path only hands it the surface,
+     * which the thread has no safe way to ask for itself.
+     */
+4:  ldr r0, [r6, #0x18]           @ create result: nonzero means a thread exists
+    cmp r0, #0
+    beq 6f                        @ no thread: this path is the only painter
+    ldr r0, [r6, #0x10]           @ unless it has exited
+    cmp r0, #0
+    beq panel_out
+6:  blx r5
 panel_out:
     mov sp, r8
     pop {r4, r5, r6, r7, r8, pc}

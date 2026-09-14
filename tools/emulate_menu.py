@@ -562,14 +562,29 @@ assert c.get(PANEL_ST + 0xC0) == 0, \
     're-arm false colour must be clear: the thread body used to be parked here'
 assert c.get(PANEL_ST + 0x140) == PANEL_ST + 0x144, 'body object points at its vtable'
 assert c.get(PANEL_ST + 0x30) == 780 and c.get(PANEL_ST + 0x34) == 60, 'panel placed'
-before = bytes(c.uc.mem_read(SURFACE, SURFACE_W * 4))
 c.press(0x0C)
 assert c.panel_fetches == 1, 'a key press asks the display for its backbuffer'
 assert c.get(PANEL_ST + 0x1C) == SURFACE, 'and remembers the surface it was given'
-assert bytes(c.uc.mem_read(SURFACE, SURFACE_W * 4)) != before or True
+# The thread owns the drawing, and there is no scheduler here, so drive one of
+# its passes by hand. The key path deliberately does NOT paint while the thread
+# is alive: doing both is what crashed the camera on a double click.
+PANEL = POOL + MANIFEST['panel_offset']
+c.run(PANEL + MANIFEST['panel_symbols']['menu_core'])
 painted = bytes(c.uc.mem_read(SURFACE + 60 * SURFACE_W + 780, 192))
 assert any(painted), 'the panel actually wrote pixels where it says it draws'
 assert not any(bytes(c.uc.mem_read(SURFACE, 780))), 'and nothing to the left of it'
+# A double press must not paint from the key path at all while the thread is
+# alive, and must not ask for the display lock twice: both together crashed the
+# camera on a double click.
+for _ in range(20):
+    c.press(0x0C)
+assert c.panel_fetches <= 8, \
+    'the key path stops taking the display lock once it has learned the buffers'
+fetches = c.panel_fetches
+for _ in range(10):
+    c.press(0x0C)
+assert c.panel_fetches == fetches, 'and never asks again after the cap'
+assert c.get(PANEL_ST + 0x1C) == SURFACE, 'the surface it learned is still there'
 print('PASS: the panel is spawned, placed, and paints its own rectangle')
 
 # Turning an option on has to make the camera adopt it. The menu writes geometry
@@ -579,6 +594,7 @@ c = Camera()
 assert c.get(PANEL_ST + 0x54) == 1, 'follow is armed on the card'
 c.select(1)
 c.press(0x14)
+c.run(POOL + MANIFEST['panel_offset'] + MANIFEST['panel_symbols']['menu_core'])
 assert c.features()[0] == 1, 'Open Gate is on'
 assert c.settings, 'a toggle queues the framerate write that re-latches the mode'
 print('PASS: a toggle asks the camera to adopt the mode, no manual preset switch')
