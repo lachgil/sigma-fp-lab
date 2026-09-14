@@ -51,6 +51,12 @@ INJECT_HEADER = 0xC0793500
 INJECT_SITE = 0xC05E6400        # the NBU record interpreter; Thumb
 INJECT_MENU = 0xC0794100
 INJECT_RECORDS = 0xC07A4400
+# The green fix (src/greenfix.S), armed from the menu's GREEN FIX row. Caves
+# checked empty at build time; the hook word at 0xC0437E98 is NOT written here,
+# the menu writes it when the row is switched on and puts the stock instruction
+# back when it is switched off.
+GREEN_DESC = 0xC0794200
+GREEN_CODE = 0xC0794240
 INJECT_SITE_STOCK = 0x4FF0E92D  # push.w {r4-r11,lr} then the start of vpush
 
 
@@ -73,6 +79,9 @@ ROW = 0xC072F800
 STATE = 0xC072FB00
 GYRO_DIGEST = 'a34faf9bec9dcb0531a4de816e53f6b51c94817042ff16dc28a6723022a1265d'
 FIRMWARE_DIGEST = '92a8ee993f6c3d66c251e88d45a2ccd5135c6cf7342717784321c2ed506e2fb4'
+# The loader build pads to 32 KB and refuses more; stage2 reads up to 0x20000,
+# so a bigger image is a pad decision, not a loader limit. See repack_vbin.
+BIN_PAD = 65536
 
 
 def parse_vbin(raw):
@@ -92,6 +101,34 @@ def parse_vbin(raw):
     if offset != 16 + count * 8 + length:
         raise ValueError('VBIN body length mismatch')
     return entry, sections
+
+
+def repack_vbin(path, extra, pad):
+    """Add sections to a built VSHL.BIN, re-emitting the header and table.
+
+    The FP LAB row's scene records are several kilobytes, and the loader build
+    pads its image to 32 KB and refuses anything past it. That ceiling is the
+    pad, not the loader: stage2 reads up to 0x20000 into pool+0x8000. So the
+    big buffers are spliced in here rather than handed to the loader build,
+    and the file is padded further.
+
+    A card is copied with a card reader, which truncates. `putfile` over USB
+    does not, so pushing a smaller image over a larger one would leave its tail
+    behind -- the same reason the pad exists at all.
+    """
+    entry, sections = parse_vbin(path.read_bytes())
+    sections = sections + [(address, blob) for address, blob in extra]
+    for address, blob in sections:
+        if len(blob) % 4:
+            raise SystemExit(f'section at {address:#x} is not a whole number of words')
+    body = b''.join(blob for _address, blob in sections)
+    table = b''.join(struct.pack('<II', address, len(blob))
+                     for address, blob in sections)
+    blob = struct.pack('<4sIII', b'VBIN', len(sections), entry, len(body)) + table + body
+    if len(blob) > pad:
+        raise SystemExit(f'card image is {len(blob)} bytes, past the {pad} it pads to')
+    path.write_bytes(blob + bytes(pad - len(blob)))
+    return sections
 
 
 def main():
@@ -148,7 +185,8 @@ def main():
                f'SHOW_SEL={1 if args.debug else 0}',
                f'PANEL_OFF={panel_core:#x}',
                f'PANEL_SPAWN_OFF={panel_spawn:#x}',
-               f'PANEL_BODY_OFF={panel_body:#x}')
+               f'PANEL_BODY_OFF={panel_body:#x}',
+               f'GREEN_CODE={GREEN_CODE:#x}')
     menu = assemble(menu_source, defines)
     syms = symbols(menu_source, defines)
     guards = list(struct.iter_unpack('<II', menu[syms['guard_table']:syms['labels']]))
@@ -288,7 +326,28 @@ entry:
                             for address, blob, why in payload.values())
             sections.append((INJECT_SITE, struct.pack('<I', thumb_branch(
                 INJECT_SITE, INJECT_CODE)), 'scene injector hook'))
+            # The row's label. Not a cave: this deliberately overwrites one
+            # stock English string, the HDMI page's "DCI 4K 4096x2160", for a
+            # format this body cannot output. fplab_page checks it reads that
+            # before replacing it, and it is RAM only.
+            sections.append((plan['label']['patch_at'], plan['label']['patch'],
+                             f"row label {plan['label']['text']!r}"))
 
+        # The green fix, placed but not armed: the menu's GREEN FIX row writes
+        # the branch at 0xC0437E98 and puts the stock instruction back.
+        green = assemble(ROOT / 'src/greenfix.S',
+                         (f'GREEN_STATE={STATE + 76:#x}',
+                          f'GREEN_DESC={GREEN_DESC:#x}'))
+        green_syms = symbols(ROOT / 'src/greenfix.S',
+                             (f'GREEN_STATE={STATE + 76:#x}',
+                              f'GREEN_DESC={GREEN_DESC:#x}'))
+        if any(firmware[GREEN_DESC - 0xC0000000:
+                        GREEN_CODE - 0xC0000000 + len(green)]):
+            raise SystemExit('the green fix cave is not empty in stock firmware')
+        sections.extend([(GREEN_DESC, green[:green_syms['green_fix']],
+                          'green fix 3:2 descriptor'),
+                         (GREEN_CODE, green[green_syms['green_fix']:],
+                          'green fix handler')])
         sections.extend([(MENU_OFFSET, menu, 'menu'),
                          (PANEL_OFFSET, panel, 'drawn panel'),
                          (BOOT, assemble(trampoline), 'combined boot'),
@@ -314,11 +373,27 @@ entry:
         # interface patch travels with the shell and is what stops the host PTP
         # stack taking interface 0.
         cmd += ['--no-ep-patches'] if args.debug else ['--no-shell']
-        for index, (address, blob, _) in enumerate(sections):
+        # Two reasons a section is spliced in after the loader build rather than
+        # handed to it: buffers past a kilobyte do not fit its 32 KB image, and
+        # hook words must be written LAST. The loader runs while the camera is
+        # already up, so a hook armed before the buffers it reads would have a
+        # window, however small, of pointing at zeros.
+        def late(blob, why):
+            return len(blob) > 1024 or why.endswith('hook')
+
+        spliced = ([(address, blob) for address, blob, why in sections
+                    if len(blob) > 1024 and not why.endswith('hook')]
+                   + [(address, blob) for address, blob, why in sections
+                      if why.endswith('hook')])
+        for index, (address, blob, why) in enumerate(sections):
+            if late(blob, why):
+                continue
             path = tmp / f'{index}.bin'
             path.write_bytes(blob)
             cmd += ['--also-bin', f'{address:#x}:{path}']
         subprocess.run(cmd, check=True)
+        if spliced:
+            repack_vbin(args.out / 'VSHL.BIN', spliced, BIN_PAD)
     raw = (args.out / 'VSHL.BIN').read_bytes()
     entry, packed = parse_vbin(raw)
     if entry != BOOT:

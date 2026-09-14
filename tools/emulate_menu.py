@@ -219,7 +219,7 @@ class Camera:
         assert not self.draws
 
     def select(self, index):
-        for _ in range(14):   # thirteen rows: twelve of the card's, plus FALSE COL
+        for _ in range(15):   # twelve card rows, then FALSE COL and GREEN FIX
             if self.get(ST) == index:
                 return
             self.press(0x0C)
@@ -661,4 +661,20 @@ for row, stock_id, fast_id, name in ((10, 139, 56, '2K120'), (11, 140, 12, '672 
     assert c.press(0x14).startswith('>' + name), f'{name} turns off'
     assert {a: c.get(a) for a in SCAN} == cells_before, f'{name} restores every cell'
 print('PASS: the high-framerate rows swap exactly one cell each, and restore it')
+
+# GREEN FIX arms a code hook rather than a data cell, so what matters is the one
+# word at the accessor: our branch while on, the stock instruction while off.
+GREEN_SITE, GREEN_STOCK, GREEN_CODE = 0xC0437E98, 0xE92D4030, 0xC0794240
+c = Camera()
+assert c.get(GREEN_SITE) == GREEN_STOCK, 'the accessor starts stock'
+c.select(13)
+assert c.press(0x14) == '>GREEN FIX  ON'
+assert c.get(ST + 76) == 1
+branch = 0xEA000000 | (((GREEN_CODE - GREEN_SITE - 8) >> 2) & 0xFFFFFF)
+assert c.get(GREEN_SITE) == branch, 'armed: the accessor branches to our handler'
+assert c.press(0x14) == '>GREEN FIX  OFF'
+assert c.get(ST + 76) == 0
+assert c.get(GREEN_SITE) == GREEN_STOCK, 'off: the stock instruction is back'
+c.assert_stock()
+print('PASS: GREEN FIX arms and disarms the display accessor, and nothing else')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')

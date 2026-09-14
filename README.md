@@ -27,18 +27,34 @@ supports them, but no menu item names them. See **[docs/menu/](docs/menu/)**.
 
 ### 2. Recording modes the fp does not ship
 
-| Option | Framing | Readout | Recorded | Rolling shutter |
-|---|---|---|---|---|
-| Open Gate | 100% of the sensor | 2x2 binned | 3032x2012 | 9.2 ms |
-| **M130 24P** | middle 65% (1.53x crop) | **full 1:1** | 3968x2640 | 16.3 ms |
-| M130 30P | middle 65% | full 1:1 | 3968x2640 | 16.3 ms |
-| M6 4K | 69% x 54% | full 1:1, 14-bit | 4176x2174 | 27.5 ms |
+Every row the card's menu offers, and how each one is known. RIGHT moves,
+UP switches on, **Stock** switches everything off.
 
-**M130 24P is the one that holds.** Full 1:1 readout at 3968x2640 is 377 MB/s
-at 23.976; the same mode at 29.97 needs 471 MB/s and stopped after about five
-seconds on test. Open Gate is the widest field, M130 the most real detail on a
-tighter frame. Neither is simply better. Details and measurements in
-**[docs/modes/](docs/modes/)**.
+| Row | Sensor mode | Field of view | Readout | Recorded | Rolling shutter | Rate | Status |
+|---|---|---|---|---|---|---|---|
+| **M130** at 23.976 | M130 | middle 65% (1.53x crop) | **full 1:1** | 3968x2640 | 16.3 ms | 377 MB/s | **sustained on hardware**, two minutes |
+| M130 at 29.97 | M130 | middle 65% | full 1:1 | 3968x2640 | 16.3 ms | 471 MB/s | records, stops after about 5 s |
+| M130 FAST | M130 | middle 65% | full 1:1 | 3968x2640 | **12.1 ms** | as above | line period only; **not** a frame rate |
+| Open Gate | M117 | **the whole sensor** | 2x2 binned | 3032x2012 | 9.2 ms | 274 MB/s | works, greens the preview |
+| M98 30P | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 274 MB/s | offline only, a comparison against M117 |
+| M98 60P | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 548 MB/s | offline only, expect short bursts |
+| M6 4K | M6 | 69% x 54% | full 1:1, 14-bit | 4176x2174 | 27.5 ms | 476 MB/s | **no visible gain**: file depth follows the menu's 8/10/12 |
+| 2K120 | M56 (from M139) | whole sensor | 2x2 binned | 2016x1344 | | 60 -> 120 fps | experimental: the readout is selected, the cadence is unconfirmed |
+| 672 240 | M12 (from M140) | whole sensor, letterboxed | 2x2 binned | 2016x672 | | 60 -> 240 fps | experimental, same caveat |
+| Gyro, Gyro-Gate | | | | | | | writes Gyroflow GCSV alongside the take |
+| False Col | | | | | | | latches false colour, which the camera only offers held |
+| Green Fix | | | | | | | 3:2 preview for the 3:2 modes; **never run on a camera** |
+| SEL | | | | | | | read-only: what the mode probe last saw (debug cards) |
+
+The rate follows your recording preset, so M130 means 24p when the camera is on
+CinemaDNG FHD 23.976 and 30p when it is on 29.97. That is why the table names
+the same mode twice.
+
+**M130 at 23.976 is the one that holds**, and it is the mode this project found.
+Open Gate is the widest field; M130 is the most real detail on a tighter frame,
+and it frames like a 1.53x crop **because** it is 1:1: 3968 of the sensor's 6064
+columns, one photosite per pixel, no binning. Neither is simply better.
+Measurements in **[docs/modes/](docs/modes/)**.
 
 ### 3. Our own code, reading the image and drawing on the screen
 

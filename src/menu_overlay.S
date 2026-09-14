@@ -40,6 +40,7 @@
 .equ MENU_ST,    0xC072FB00     /* menu.S's own state block; read only */
 .equ MENU_INIT,  20             /*   +20 armed flag                    */
 .equ MENU_FC_ON, 72             /*   +72 the menu's own false-colour latch */
+.equ MENU_GREEN_ON, 76          /*   +76 and its green-fix latch           */
 .equ UI_STATE,   0xC3033A44     /* 2 live view, 4 playback, 5 the camera's menu */
 .equ UI_LIVEVIEW, 2             /*   +72 the menu's own false-colour latch */
 .equ SETTINGS_OBJ, 0xC0057AE8   /* the settings object every setter takes */
@@ -56,7 +57,7 @@
 .equ ROW_PITCH,  18
 .equ ROWS,       12     /* ten original rows plus two high-framerate ones */
 .equ PANEL_W,    192
-.equ PANEL_H,    (24 + (ROWS + 1) * ROW_PITCH + 6)   /* the extra row is ours */
+.equ PANEL_H,    (24 + (ROWS + 2) * ROW_PITCH + 6)   /* two rows are ours */
 .equ VALUE_X,    132
 .equ PERIOD_MS,  150
 .equ PRIORITY,   20
@@ -729,6 +730,43 @@ row_loop:
     mov     r1, r9
     bl      draw_str
 
+    /* And the second of ours: the green fix, which is display-only and so has
+     * no camera state to read back either -- the row shows what the menu last
+     * armed, at MENU_ST+MENU_GREEN_ON. */
+    add     r9, r9, #ROW_PITCH
+    LDA     r0, MENU_ST
+    ldr     r0, [r0]
+    cmp     r0, #(ROWS + 1)
+    bne     6f
+    mov     r0, #INK
+    str     r0, [r10, #0x40]
+    add     r0, r4, #2
+    sub     r1, r9, #2
+    movw    r2, #(PANEL_W - 4)
+    mov     r3, #ROW_PITCH
+    bl      fill_rect
+    mov     r0, #0
+    str     r0, [r10, #0x40]
+    b       7f
+6:  mov     r0, #INK
+    str     r0, [r10, #0x40]
+7:  add     r0, r4, #8
+    mov     r1, r9
+    PTR     r2, green_fix_label
+    bl      draw_str
+    LDA     r1, MENU_ST
+    ldr     r0, [r1, #MENU_GREEN_ON]
+    cmp     r0, #0
+    movne   r0, #1
+    moveq   r0, #0
+    mov     r1, #4
+    mul     r0, r0, r1
+    PTR     r2, value_texts
+    add     r2, r2, r0
+    add     r0, r4, #VALUE_X
+    mov     r1, r9
+    bl      draw_str
+
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 /* row_value(index) -> 0 off, 1 on, 2 not a toggle.
@@ -906,6 +944,9 @@ value_texts:
 /* Twelve bytes each, so a row index is a multiply rather than a table walk. */
 false_colour_label:
     .asciz "FALSE COL"
+green_fix_label:
+    .asciz "GREEN FIX"
+    .balign 4
     .balign 4
 row_labels:
     .asciz "STOCK";      .space 6

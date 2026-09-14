@@ -113,6 +113,76 @@ def place_row(image: bytes, scene, root: int) -> dict[int, bytes]:
     struct.pack_into('>f', record, size - 4, ROW_SLOT)
     return {at: bytes(record)}
 
+# The row's own label. Localization keys are referenced by NBU pool offset, and
+# changing that reference is the one label mechanism proven on hardware
+# (2026-09-12: the Shoot page 5 Zebra row displayed "False Color" after its
+# label word was changed). Every four-digit key in the pool is referenced by at
+# least one record, so there is no unused one to borrow; `1636` is referenced
+# exactly once, by the HDMI output-format page, for a format this body cannot
+# output. Its English slot is 16 characters, so "FP LAB" fits with room to
+# spare, and the patch is RAM only.
+#
+# Whether a patched .nloc value reaches the LCD has never been confirmed
+# visually. If it does not, the row will read "DCI 4K 4096x2160", which is
+# still unambiguous evidence that the row is ours -- and an answer to that
+# second question.
+LABEL_KEY = '1636'
+LABEL_STOCK = 'DCI 4K 4096x2160'
+LABEL_TEXT = 'FP LAB'
+LOCALE = '../Common/Strings/English.nloc'
+
+
+def label_row(image: bytes, scene, root: int) -> dict[int, bytes]:
+    """Point the row's Name label at our key instead of the donor's."""
+    pool = res.NBU_BASE + 20
+    picked, _ = ns.subtree(image, scene, root)
+    name = None
+    for at, tag, _size in picked:
+        if tag != ns.DECLARATION:
+            continue
+        offset = struct.unpack_from('>I', image, at + 28)[0]
+        if image[pool + offset:image.index(b'\x00', pool + offset)] == b'Name':
+            name = struct.unpack_from('>I', image, at + 20)[0]
+    key = key_offset(image, LABEL_KEY)
+    out = {}
+    for at, tag, size in picked:
+        if (tag == 0x10005 and struct.unpack_from('>I', image, at + 20)[0] == name
+                and struct.unpack_from('>I', image, at + 28)[0] == 0x40000011):
+            record = bytearray(image[at:at + size])
+            struct.pack_into('>I', record, 32, key)
+            out[at] = bytes(record)
+    if len(out) != 1:
+        raise SystemExit(f'expected one label field on the row, found {len(out)}')
+    return out
+
+
+def key_offset(image: bytes, key: str) -> int:
+    """NBU pool offset of a localization key, which must already be there."""
+    pool = res.NBU_BASE + 20
+    end = res.NBU_BASE + 12 + struct.unpack_from('>I', image, res.NBU_BASE + 16)[0]
+    wanted = key.encode() + b'\x00'
+    found = [at for at in range(pool, end - len(wanted))
+             if image[at:at + len(wanted)] == wanted and image[at - 1] == 0]
+    if len(found) != 1:
+        raise SystemExit(f'{key!r} is not a unique NBU pool string ({len(found)})')
+    return found[0] - pool
+
+
+def label_patch(image: bytes) -> dict:
+    """The word-aligned English.nloc slice that renames our key's text."""
+    entry = next(e for e in res.resources(image) if e.name == LOCALE)
+    at, stock = res.localized_text(image, entry)[LABEL_KEY]
+    if stock != LABEL_STOCK:
+        raise SystemExit(f'key {LABEL_KEY} reads {stock!r}, not {LABEL_STOCK!r}')
+    if len(LABEL_TEXT) > len(stock):
+        raise SystemExit('the replacement label is longer than its slot')
+    low = at & ~3
+    high = (at + len(stock) + 1 + 3) & ~3
+    slice_ = bytearray(image[low:high])
+    slice_[at - low:at - low + len(stock) + 1] = (LABEL_TEXT.encode()
+                                                 + bytes(len(stock) + 1 - len(LABEL_TEXT)))
+    return dict(patch_at=low + res.LOAD, patch=bytes(slice_))
+
 
 def build(image: bytes, with_page: bool = False) -> dict:
     """Build the row. With `with_page`, its stock value list comes too.
@@ -145,8 +215,10 @@ def build(image: bytes, with_page: bool = False) -> dict:
                 for at, tag, _ in scene.records if tag == ns.DECLARATION}
     if set(identifiers.values()) & declared:
         raise SystemExit('private id range collides with the stock scene')
+    rewrites = place_row(image, scene, DONOR_ROW)
+    rewrites |= label_row(image, scene, DONOR_ROW)
     header, body = ns.graft(image, scene, donor, DONOR_ROW, MENU, identifiers,
-                            place_row(image, scene, DONOR_ROW))
+                            rewrites)
 
     menu_at = next(at for at, tag, _ in scene.records if tag == ns.DECLARATION
                    and struct.unpack_from('>I', image, at + 20)[0] == MENU)
@@ -173,6 +245,8 @@ def build(image: bytes, with_page: bool = False) -> dict:
         identifiers=identifiers,
         objects=(scene.header.objects, grown.objects),
         capacity=(capacity, capacity + 1),
+        label=dict(key=LABEL_KEY, stock=LABEL_STOCK, text=LABEL_TEXT,
+                   **label_patch(image)),
     )
 
 

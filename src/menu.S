@@ -28,6 +28,16 @@
 .equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton */
 .equ FC_START,   0xC03722E8     /* vtable +0xCC: posts event 0x21 */
 .equ FC_STOP,    0xC0372330     /* vtable +0xD0: posts event 0x22 */
+/* GREEN FIX (src/greenfix.S). Our enable word, the accessor it hooks, and the
+ * stock instruction there. GREEN_CODE and GREEN_DESC are where the card places
+ * the handler and its descriptor; the builder passes the same values to both
+ * sources so they cannot drift. */
+.equ GREEN_ON,         76
+.equ GREEN_SITE,       0xC0437E98
+.equ GREEN_SITE_STOCK, 0xE92D4030
+#ifndef GREEN_CODE
+#define GREEN_CODE 0
+#endif
 /* The drawn panel: its own state block, where it sits, and where its code
  * lands in the pool. PANEL_OFF is the pool offset of menu_core, supplied by
  * the card builder so the two cannot drift. */
@@ -303,7 +313,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #13                    @ twelve card rows, then FALSE COL
+    cmp r0, #14                    @ twelve card rows, FALSE COL, GREEN FIX
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -334,6 +344,8 @@ do_up:
     beq up_h672
     cmp r0, #12
     beq up_false                   @ ours, and needs no gyro and no cells
+    cmp r0, #13
+    beq up_green                   @ display only: no cells, no gyro
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
@@ -532,6 +544,35 @@ up_false:
     pop {r4, lr}
     b redraw
 
+/* GREEN FIX. The 3:2 modes green the standby preview, because the display
+ * accessor keeps handing out stock 16:9 geometry. src/greenfix.S returns a 3:2
+ * descriptor instead; this row arms it by writing the branch at its hook site,
+ * and disarms it by putting the stock instruction back.
+ *
+ * The handler and its descriptor are already in the cave and already flushed
+ * (the card writes every section before boot runs F_CACHE), so only the one
+ * word here is new code and only that needs flushing.
+ *
+ * Display only: no picker cell, no timing entry, no gyro, so it releases
+ * nothing and conflicts with nothing. It is 3:2 geometry, so it suits open
+ * gate, M98 and M130, and is wrong for M6 4K -- which is why it is a switch.
+ */
+up_green:
+    push {r4, r5, r6, lr}          @ four: the cache call needs 8-byte alignment
+    ldr r0, [r6, #GREEN_ON]
+    eor r0, r0, #1
+    str r0, [r6, #GREEN_ON]
+    LDA r4, GREEN_SITE
+    LDA r1, GREEN_SITE_STOCK
+    LDA r5, (0xEA000000 | (((GREEN_CODE - GREEN_SITE - 8) >> 2) & 0xFFFFFF))
+    cmp r0, #0
+    movne r1, r5
+    str r1, [r4]
+    LDA r3, F_CACHE
+    blx r3
+    pop {r4, r5, r6, lr}
+    b redraw
+
 redraw:
     ldr r0, [r6]
     cmp r0, #0
@@ -540,6 +581,8 @@ redraw:
     beq show_sel
     cmp r0, #12
     beq state_false
+    cmp r0, #13
+    beq state_green
     cmp r0, #8
     beq state_gate
     PTR r2, state_offsets
@@ -567,6 +610,9 @@ state_gate:
     b state_text
 state_false:
     ldr r1, [r6, #FC_ON]           @ what we last asked the camera for
+    b state_text
+state_green:
+    ldr r1, [r6, #GREEN_ON]        @ armed means our branch is at the site
 state_text:
     PTR r4, labels
     add r0, r1, r0, lsl #1
@@ -1440,6 +1486,7 @@ guard_table:
     .word MODE_SITE, 0xE1A05001
     .word 0xC091EA38, KEY_ORIG
     .word 0xC043A19C, 0xE1A00004
+    .word GREEN_SITE, GREEN_SITE_STOCK
     .word 0xC0BE5888, 0x6A, 0xC0BE5A28, 0x6A, 0xC0BE5BC8, 0x6A
     .word 0xC0BE5858, 0x1B, 0xC0BE59F8, 0x1B, 0xC0BE5B98, 0x1B
     .word 0xC0BE58E8, 0x66, 0xC0BE5A88, 0x66, 0xC0BE5C28, 0x66
@@ -1504,6 +1551,10 @@ labels:
     .asciz ">FALSE COL  OFF        "
     .space 8
     .asciz ">FALSE COL  ON         "
+    .space 8
+    .asciz ">GREEN FIX  OFF        "
+    .space 8
+    .asciz ">GREEN FIX  ON         "
     .space 8
 busy_label: .asciz "STOP RECORDING / WAIT   "
 unavailable_label: .asciz "GYRO INIT FAILED       "
