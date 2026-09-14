@@ -36,6 +36,8 @@ about four seconds, and comes back on the next key.
 | M130, M130 Fast | 3968×2640 cropped RAW12 |
 | M6 4K | 4176×2174, 14-bit full readout |
 | Gyro-Gate | Open gate together with the gyro metadata build |
+| 2K120 | 2016×1344 at 120 instead of 60 (mode 56) |
+| 672 240 | 2016×672 at 240 instead of 60 (mode 12) |
 | FALSE COL | False colour as a latch, instead of a button you hold |
 | SEL | A readout, not a switch (dev card only) |
 
@@ -65,9 +67,17 @@ Confirmed on hardware: open gate records and the files are correct; the menu,
 
 **Not confirmed, and where help is wanted:**
 
-- **120fps cadence.** The high-fps cards hit ~389–441 MB/s and need a fast
-  USB-C SSD. Nobody has confirmed the files really run at 120. Shoot a clip and
-  read the DNG `FrameRate` tag and the frame count.
+- **120fps and 240fps cadence.** `2K120` and `672 240` select the faster sensor
+  readout for a cell that keeps its resolution, so they need a fast USB-C SSD
+  and nobody has confirmed the files really run at the rate the sensor is
+  clocked to. Shoot a clip and read the DNG `FrameRate` tag and the frame count.
+  This is the single most useful thing anyone can report back.
+
+  Only swaps whose target mode is **not already in the camera's picker table**
+  are offered. 3032×1708@120 (mode 58) and 2088×1174@120 (mode 103) are not in
+  the menu for that reason: switching them off would rewrite the cells that were
+  genuinely 58 or 103. They remain available as the standalone `fhd120` and
+  `2k120` cards.
 - **M130 / M6 / M98 in real use.** They record, but rolling shutter, banding
   and highlight behaviour have had almost no real footage through them.
 - **Other bodies.** Everything was worked out on one camera.

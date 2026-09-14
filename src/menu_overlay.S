@@ -54,7 +54,7 @@
 .equ INK,        0xB2           /* what the firmware's own glyphs read back as */
 .equ CELL_W,     12             /* (FONT_W + 1) * 2 */
 .equ ROW_PITCH,  18
-.equ ROWS,       10
+.equ ROWS,       12     /* ten original rows plus two high-framerate ones */
 .equ PANEL_W,    192
 .equ PANEL_H,    (24 + (ROWS + 1) * ROW_PITCH + 6)   /* the extra row is ours */
 .equ VALUE_X,    132
@@ -182,7 +182,8 @@ menu_core:
     cmp     r0, r7
     movhi   r0, #0x31
     bhi     refuse
-    add     r0, r6, #PANEL_H
+    movw    r0, #PANEL_H
+    add     r0, r6, r0
     cmp     r0, r8
     movhi   r0, #0x32
     bhi     refuse
@@ -615,7 +616,8 @@ paint_panel:
     mov     r3, #1
     bl      fill_rect
     mov     r0, r4
-    add     r1, r5, #(PANEL_H - 1)
+    movw    r1, #(PANEL_H - 1)      @ too big for an ARM immediate once the
+    add     r1, r5, r1              @ list grew past ten rows
     movw    r2, #PANEL_W
     mov     r3, #1
     bl      fill_rect
@@ -872,6 +874,8 @@ cursor_rates:
     .word 0        @ GYRO
     .word 0        @ GYRO-GATE
     .word 0        @ SEL
+    .word 0        @ 2K120       its own cell, not an FHD rate
+    .word 0        @ 672 240     likewise
 
 option_rates:
     .word 0        @ STOCK
@@ -884,9 +888,12 @@ option_rates:
     .word 0        @ GYRO
     .word 0        @ GYRO-GATE
     .word 0        @ SEL
+    .word 0        @ 2K120       its own cell, not an FHD rate
+    .word 0        @ 672 240     likewise
 
 state_offsets:
     .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
+    .word 44, 48             @ the high-framerate rows
 
 title_text:
     .asciz "FPLAB"
@@ -911,6 +918,8 @@ row_labels:
     .asciz "GYRO";       .space 7
     .asciz "GYRO-GATE";  .space 2
     .asciz "SEL";        .space 8
+    .asciz "2K120";       .space 6
+    .asciz "672 240";     .space 4
 thread_name:
     .asciz "fpLABmn"
     .balign 4

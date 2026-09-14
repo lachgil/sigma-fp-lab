@@ -35,6 +35,8 @@ the preset away and back by hand.
   GYRO       .gcsv + .json beside CinemaDNG clips
   GYRO-GATE  open gate + gyro together
   SEL        read-only: SEL=selector C=cells changed L=cells on M130
+  2K120      M56   2016x1344 at 120 instead of 60   SSD, UNTESTED cadence
+  672 240    M12   2016x672  at 240 instead of 60   SSD, UNTESTED cadence
   FALSE COL  false colour as a LATCH, no button to hold
 
 FALSE COL is the one row that changes no geometry: turn it on and off freely,

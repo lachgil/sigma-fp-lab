@@ -89,6 +89,15 @@
 .equ GRP_5994, 8                /* FHD 59.94 picker cell  */
 .equ GRP_2398, 16               /* FHD 23.976 picker cell */
 .equ GRP_4K,   32               /* 4K picker cell         */
+/* One bit per picker cell the high-framerate options repoint. Each owns a cell
+ * nothing else here touches, so they never conflict with each other or with the
+ * modes above -- but release() still needs a bit to reason with. */
+.equ GRP_H1344, 64              /* the 2016x1344 cell     */
+.equ GRP_H672,  128             /* the 2016x672 cell      */
+
+.equ H1344_ON,  44              /* their state words      */
+.equ H672_ON,   48
+
 .equ CELLS_N, 52                /* cells the last change rewrote  */
 .equ M130_N,    56              /* pairs M130 recorded            */
 .equ M130_SEL,  60              /* the selector it learned        */
@@ -294,7 +303,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #11                    @ ten card rows, then FALSE COL
+    cmp r0, #13                    @ twelve card rows, then FALSE COL
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -320,6 +329,10 @@ do_up:
     cmp r0, #9
     beq show_sel                   @ read-only readout
     cmp r0, #10
+    beq up_h1344                   @ the high-framerate rows need no gyro and
+    cmp r0, #11                    @ hold no shared cell, so they answer here
+    beq up_h672
+    cmp r0, #12
     beq up_false                   @ ours, and needs no gyro and no cells
     ldr r1, [r6, #16]
     cmp r1, #0
@@ -433,6 +446,19 @@ up_gyro:
     bl toggle_gyro
     b redraw
 
+up_h1344:
+    mov r0, #GRP_H1344
+    mov r1, #H1344_ON
+    bl release
+    bl toggle_h1344
+    b redraw
+up_h672:
+    mov r0, #GRP_H672
+    mov r1, #H672_ON
+    bl release
+    bl toggle_h672
+    b redraw
+
 /* FALSE COL. The camera only offers false colour as a button you hold: an
  * assigned function key calls CameraIF vtable +0xCC on press, which posts
  * rec-manager event 0x21, and +0xD0 on release, which posts 0x22. Nothing is
@@ -467,7 +493,7 @@ redraw:
     beq state_stock
     cmp r0, #9
     beq show_sel
-    cmp r0, #10
+    cmp r0, #12
     beq state_false
     cmp r0, #8
     beq state_gate
@@ -1248,6 +1274,49 @@ m98b_done:
  * identical to stock 4K: the CinemaDNG file depth follows the menu's 8/10/12
  * setting, so M6's extra two bits are quantised away. Kept because it is three
  * words and the only path to 14-bit if that recorder limit is ever lifted. */
+/* The high-framerate rows. Each is a SAME-RASTER swap: the picker cell keeps
+ * the resolution it had and only the sensor mode behind it changes, so no
+ * geometry patch is involved and nothing else has to move. That is the same
+ * mechanism as M6 (102 -> 6), applied to the cells fpSup's mode table shows a
+ * faster sibling for.
+ *
+ *   2016x1344  60 -> 120  (139 -> 56)
+ *   2016x672   60 -> 240  (140 -> 12)
+ *   3032x1708  60 -> 120  ( 27 -> 58)   as the standalone fhd120 card did
+ *   2088x1174  60 -> 120  ( 88 -> 103)  as the standalone 2k120 card did
+ *
+ * UNTESTED for cadence. They select the readout; whether the recorder keeps up
+ * depends on the media, and nobody has confirmed the files really run at the
+ * rate the sensor is clocked to.
+ */
+toggle_h1344:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #H1344_ON]
+    eor     r0, r0, #1
+    str     r0, [r6, #H1344_ON]
+    cmp     r0, #0
+    movne   r0, #139
+    movne   r1, #56
+    moveq   r0, #56
+    moveq   r1, #139
+    bl      repoint
+    pop     {r4, r5, r6, pc}
+
+toggle_h672:
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST
+    ldr     r0, [r6, #H672_ON]
+    eor     r0, r0, #1
+    str     r0, [r6, #H672_ON]
+    cmp     r0, #0
+    movne   r0, #140
+    movne   r1, #12
+    moveq   r0, #12
+    moveq   r1, #140
+    bl      repoint
+    pop     {r4, r5, r6, pc}
+
 toggle_m6:
     push    {r4, r5, r6, lr}
     LDA     r6, ST
@@ -1292,6 +1361,7 @@ m130_rates:
     .word 0, 0, 0, 0, 0
 state_offsets:
     .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
+    .word H1344_ON, H672_ON
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
@@ -1300,6 +1370,8 @@ features_table:
     .word 40, GRP_2997|GRP_M130,   toggle_m130f - entry
     .word 28, GRP_5994|GRP_M98,    toggle_m98b - entry
     .word 36, GRP_4K,              toggle_m6 - entry
+    .word H1344_ON, GRP_H1344,     toggle_h1344 - entry
+    .word H672_ON,  GRP_H672,      toggle_h672 - entry
 .equ FEATURE_COUNT, (. - features_table) / 12
 gyro_hooks_table:
     .word ACCEL_SITE, 0xE3A02000, ARM_ACCEL
@@ -1375,6 +1447,14 @@ labels:
     .asciz ">SEL        OFF        "
     .space 8
     .asciz ">SEL        ON         "
+    .space 8
+    .asciz ">2K120      OFF        "
+    .space 8
+    .asciz ">2K120      ON         "
+    .space 8
+    .asciz ">672 240    OFF        "
+    .space 8
+    .asciz ">672 240    ON         "
     .space 8
     .asciz ">FALSE COL  OFF        "
     .space 8

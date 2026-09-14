@@ -219,7 +219,7 @@ class Camera:
         assert not self.draws
 
     def select(self, index):
-        for _ in range(12):   # eleven rows now: ten of the card's, plus FALSE COL
+        for _ in range(14):   # thirteen rows: twelve of the card's, plus FALSE COL
             if self.get(ST) == index:
                 return
             self.press(0x0C)
@@ -641,4 +641,24 @@ c.press(0x0C)
 c.run(PANEL_CORE)
 assert c.get(PANEL_ST + 0x68) == 1, 'a real keypress brings it back'
 print('PASS: the panel stays down after the camera menu, until you ask for it')
+
+# The high-framerate rows. Each is a same-raster swap of one picker cell, so the
+# test is exact: only that cell's id changes, and OFF puts it back byte for byte.
+# Only targets that are NOT already in the picker table can use a symmetric
+# swap: turning 27->58 on and back off would rewrite the three cells that were
+# genuinely 58 into 27. That is why 1708 120 and 1174 120 are not offered, and
+# why this test asserts the exact restore rather than just "something changed".
+for row, stock_id, fast_id, name in ((10, 139, 56, '2K120'), (11, 140, 12, '672 240')):
+    c = Camera()
+    cells_before = {a: c.get(a) for a in SCAN}
+    c.select(row)
+    assert c.press(0x14).startswith('>' + name), f'{name} turns on'
+    changed = {a: c.get(a) for a in SCAN if c.get(a) != cells_before[a]}
+    assert changed, f'{name} must actually repoint something'
+    assert set(changed.values()) == {fast_id}, f'{name} writes only {fast_id}'
+    assert all(cells_before[a] == stock_id for a in changed), \
+        f'{name} touches only cells naming {stock_id}'
+    assert c.press(0x14).startswith('>' + name), f'{name} turns off'
+    assert {a: c.get(a) for a in SCAN} == cells_before, f'{name} restores every cell'
+print('PASS: the high-framerate rows swap exactly one cell each, and restore it')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')
