@@ -28,6 +28,9 @@ OBSERVER = 0xC2F18618
 
 RIGHT, UP, DOWN, OK, MENU, AEL = 0x0C, 0x14, 0x18, 0x1C, 0x0A, 0x24
 REQUEST_SLOT, START_FN, STOP_FN = 0x44F7BA78, 0xC03722E8, 0xC0372330
+CURSOR_WORD, OUR_ROW = 0x44F7CA00, 10
+CLOCK = 0xC002B920
+ST_LAST, ST_PENDING_AT = 0x34, 0x38
 ST_OPEN, ST_PENDING = 0x00, 0x04
 
 
@@ -37,14 +40,19 @@ class KeyGateTests(unittest.TestCase):
                    f'CARD_HANDLE_ADDR={hex(CARD_HANDLE)}')
         self.syms = symbols(SOURCE, defines)
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
-        for address, size in ((0x44F00000, 0x200000), (0xC0200000, 0x600000),
+        for address, size in ((0x44F00000, 0x200000), (0xC0000000, 0x800000),
                               (0x100000, 0x10000)):
             self.uc.mem_map(address, size)
         self.uc.mem_write(CODE, assemble(SOURCE, defines))
         self.seen = []
+        self.now = 100000
         self.uc.hook_add(UC_HOOK_CODE, self._boundary)
 
     def _boundary(self, uc, address, size, _):
+        if address == CLOCK:
+            uc.reg_write(UC_ARM_REG_R0, self.now)
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            return
         if address not in (CARD_HANDLE, STOCK):
             return
         self.seen.append(('card' if address == CARD_HANDLE else 'camera',
@@ -92,35 +100,70 @@ class KeyGateTests(unittest.TestCase):
         self.assertEqual(self.route(RIGHT), ['camera'])
         self.assertEqual(self.word(STATE + ST_OPEN), 0)
 
-    def test_two_rights_open_the_menu(self):
+    def test_two_quick_rights_open_the_menu(self):
         self.route(RIGHT)
+        self.now += 200
         self.assertEqual(self.route(RIGHT), [], 'the second press is ours')
         self.assertEqual(self.word(STATE + ST_OPEN), 1)
 
-    def test_a_lapsed_pending_press_does_not_open_it(self):
+    def test_a_press_and_its_release_do_not_use_up_the_window(self):
+        """Two events per press: counting events closed the window too early."""
         self.route(RIGHT)
-        self.put(STATE + ST_PENDING, 0)          # what the thread does on timeout
+        self.now += 50
+        self.route(RIGHT + 1)
+        self.now += 100
+        self.assertEqual(self.route(RIGHT), [])
+        self.assertEqual(self.word(STATE + ST_OPEN), 1)
+
+    def test_slow_rights_just_pan_the_zoom(self):
+        self.route(RIGHT)
+        self.now += 2000
         self.assertEqual(self.route(RIGHT), ['camera'])
         self.assertEqual(self.word(STATE + ST_OPEN), 0)
+
+    def test_another_key_cancels_a_pending_press(self):
+        self.route(RIGHT)
+        self.now += 50
+        self.route(OK)
+        self.now += 50
+        self.assertEqual(self.route(RIGHT), ['camera'])
+        self.assertEqual(self.word(STATE + ST_OPEN), 0)
+
+    def test_it_closes_itself_after_the_idle_time(self):
+        self.route(RIGHT); self.now += 200; self.route(RIGHT)
+        self.assertEqual(self.word(STATE + ST_OPEN), 1)
+        self.now += 6000
+        self.assertEqual(self.route(OK), ['camera'], 'the key is the camera\'s')
+        self.assertEqual(self.word(STATE + ST_OPEN), 0)
+
+    def test_using_it_keeps_it_open(self):
+        self.route(RIGHT); self.now += 200; self.route(RIGHT)
+        for _ in range(5):
+            self.now += 4000
+            self.route(RIGHT)
+        self.assertEqual(self.word(STATE + ST_OPEN), 1)
 
     def test_closed_menu_leaves_up_to_the_camera(self):
         self.assertEqual(self.route(UP), ['camera'])
 
     def test_open_menu_drives_the_card(self):
         self.put(STATE + ST_OPEN, 1)
+        self.uc.mem_write(STATE + ST_LAST, struct.pack('<I', self.now))
         self.assertEqual(self.route(RIGHT), ['card'])
         self.assertEqual(self.route(UP), ['card'])
 
     def test_open_menu_leaves_the_camera_keys_alone(self):
         self.put(STATE + ST_OPEN, 1)
+        self.uc.mem_write(STATE + ST_LAST, struct.pack('<I', self.now))
         self.assertEqual(self.route(OK), ['camera'])
 
-    def test_menu_and_ael_close_it(self):
+    def test_menu_and_ael_no_longer_close_it(self):
         for key in (MENU, AEL):
             with self.subTest(key=hex(key)):
                 self.put(STATE + ST_OPEN, 1)
-                self.assertEqual(self.route(key), [], 'the closing press is ours')
-                self.assertEqual(self.word(STATE + ST_OPEN), 0)
+                self.uc.mem_write(STATE + ST_LAST, struct.pack('<I', self.now))
+                self.route(key)
+                self.assertEqual(self.word(STATE + ST_OPEN), 1)
 
     def test_the_renderer_runs_on_every_key_and_keeps_the_arguments(self):
         """Repainting happens here now; a clobbered argument froze the camera."""
@@ -144,26 +187,45 @@ class KeyGateTests(unittest.TestCase):
         _, args = self.seen[0]
         self.assertEqual(args, [OBSERVER, OK, 0xAAAA5555, 0x1234ABCD])
 
-    def test_down_latches_false_colour_while_open(self):
-        """DOWN leaves a request for the thread; it never calls firmware here."""
-        self.uc.mem_write(STATE + 0x18, struct.pack('<I', REQUEST_SLOT))
-        self.uc.mem_write(STATE + 0x1C, struct.pack('<I', START_FN))
-        self.uc.mem_write(STATE + 0x20, struct.pack('<I', STOP_FN))
+    def wire_false_colour(self, cursor):
+        for offset, value in ((0x18, REQUEST_SLOT), (0x1C, START_FN),
+                              (0x20, STOP_FN), (0x2C, CURSOR_WORD),
+                              (0x30, OUR_ROW)):
+            self.uc.mem_write(STATE + offset, struct.pack('<I', value))
+        self.uc.mem_write(CURSOR_WORD, struct.pack('<I', cursor))
         self.put(STATE + ST_OPEN, 1)
-        self.assertEqual(self.route(DOWN), [], 'the menu keeps this one')
+        self.uc.mem_write(STATE + ST_LAST, struct.pack('<I', self.now))
+
+    def test_up_on_our_row_latches_false_colour(self):
+        """It toggles like any other row: scroll to it, press UP."""
+        self.wire_false_colour(cursor=OUR_ROW)
+        self.assertEqual(self.route(UP), [], 'the card must not see this one')
         self.assertEqual(self.word(REQUEST_SLOT), START_FN)
-        self.assertEqual(self.word(STATE + 0x24), 1)
-        self.uc.mem_write(REQUEST_SLOT, struct.pack('<I', 0))   # the thread took it
-        self.route(DOWN)
+        self.uc.mem_write(REQUEST_SLOT, struct.pack('<I', 0))
+        self.route(UP)
         self.assertEqual(self.word(REQUEST_SLOT), STOP_FN)
-        self.assertEqual(self.word(STATE + 0x24), 0)
+
+    def test_up_on_a_card_row_still_toggles_the_card(self):
+        self.wire_false_colour(cursor=3)
+        self.assertEqual(self.route(UP), ['card'])
+        self.assertEqual(self.word(REQUEST_SLOT), 0)
+
+    def test_old_down_key_is_no_longer_taken(self):
+        self.wire_false_colour(cursor=OUR_ROW)
+        self.assertEqual(self.route(DOWN), ['camera'])
+
+    def test_down_latches_false_colour_while_open(self):
+        """Superseded: kept to prove DOWN is no longer special-cased."""
+        self.wire_false_colour(cursor=OUR_ROW)
+        self.assertEqual(self.route(DOWN), ['camera'])
 
     def test_down_reaches_the_camera_while_closed(self):
         self.assertEqual(self.route(DOWN), ['camera'])
 
-    def test_down_falls_through_when_no_request_slot_is_wired(self):
+    def test_up_falls_through_when_nothing_is_wired(self):
         self.put(STATE + ST_OPEN, 1)
-        self.assertEqual(self.route(DOWN), ['camera'])
+        self.uc.mem_write(STATE + ST_LAST, struct.pack('<I', self.now))
+        self.assertEqual(self.route(UP), ['card'])
 
     def test_ok_always_reaches_the_camera(self):
         """The press that froze the camera three times, both states."""

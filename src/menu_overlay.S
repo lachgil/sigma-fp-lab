@@ -38,6 +38,8 @@
 .equ MENU_INIT,  20             /*   +20 armed flag                    */
 .equ SETTINGS_OBJ, 0xC0057AE8   /* the settings object every setter takes */
 .equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton at 0xC351FE88 */
+.equ REC_SM,     0xC358CB80     /* rec state machine; +0x144 is its state */
+.equ FC_ROOT,    0xC358E1E8     /* what the false colour handler starts from */
 .equ SET_MOV_FRAMERATE, 0xC005C0B8  /* analysis/menu_setters.json */
 .equ CACHE_FN,   0xC000E91C
 .equ TK_DLY,     0xC01F89C4
@@ -181,6 +183,8 @@ surface_next:
 done:
     bl      apply_setting           @ a queued camera setting, if one is waiting
     bl      apply_camera_call       @ and a queued camera-interface request
+    bl      watch_rec_state         @ note which state the recorder is in
+    bl      repeat_request          @ and, if armed, keep asking for it
     LDA     ip, CACHE_FN            @ CPU writes are only data to the caches
     blx     ip
     mov     r0, #1
@@ -325,12 +329,11 @@ visibility:
     add     r7, r7, #1
     cmp     r7, #ROWS
     blo     1b
-    ldr     r0, [r4, #0x64]
-    str     r6, [r4, #0x64]
-    cmp     r0, r6
-    moveq   r7, #0                  @ r7: did anything move this pass
-    movne   r7, #1
-
+    mov     r7, #0                  @ r7: did anything move this pass. The
+                                    @ comparison happens ONCE, below, after the
+                                    @ latch is folded in: doing it here as well
+                                    @ made every pass look like a change and the
+                                    @ countdown never advanced.
     ldr     r5, [r4, #0x70]         @ the key gate, when there is one
     cmp     r5, #0
     beq     no_gate
@@ -350,6 +353,7 @@ visibility:
     str     r6, [r4, #0x64]
     cmp     r0, r6
     movne   r7, #1
+    moveq   r7, #0
     ldr     r0, [r5]
     ldr     r1, [r4, #0x74]         @ the countdown belongs to THIS opening:
     str     r0, [r4, #0x74]         @ without this it inherits the idle time
@@ -386,6 +390,10 @@ gate_shut:
     b       9f
 
 no_gate:
+    ldr     r0, [r4, #0x64]         @ no gate: compare the signature here instead
+    str     r6, [r4, #0x64]
+    cmp     r0, r6
+    movne   r7, #1
     cmp     r7, #0
     beq     4f
     mov     r0, #0
@@ -449,9 +457,13 @@ apply_camera_call:
     bhs     8f
     mov     r0, #0
     str     r0, [r4, #0x78]         @ clear first: one request, one call
+    LDA     ip, REC_SM              @ what state we were in when we asked
+    ldr     ip, [ip, #0x144]
+    str     ip, [r4, #0x90]
     LDA     ip, CAMERA_IF
     blx     ip                      @ r0 = the camera interface singleton
     blx     r5
+    str     r0, [r4, #0x8C]         @ and what the camera answered
     ldr     r0, [r4, #0x7C]
     add     r0, r0, #1
     str     r0, [r4, #0x7C]
@@ -459,6 +471,89 @@ apply_camera_call:
 8:  mov     r0, #0
     str     r0, [r4, #0x78]
 9:  pop     {r4, r5, pc}
+
+/* Ask for false colour over and over while armed.
+ *
+ * The custom-key dispatcher has two guard functions per entry, so the camera
+ * can simply refuse to run the button's action while recording -- in which case
+ * the request is never posted at all and nothing downstream ever sees it. This
+ * posts it ourselves, on our own thread, which does not go through those guards.
+ *
+ *   +0xC0 armed   +0xC4 how many times we have asked
+ */
+repeat_request:
+    push    {r4, lr}
+    LDA     r4, STATE
+    ldr     r0, [r4, #0xC0]
+    cmp     r0, #0
+    beq     9f
+    ldr     r0, [r4, #0x78]         @ leave any pending request alone
+    cmp     r0, #0
+    bne     9f
+    ldr     r0, [r4, #0xC4]
+    add     r0, r0, #1
+    str     r0, [r4, #0xC4]
+    tst     r0, #7                  @ roughly once a second at ten passes
+    bne     9f
+    LDA     r0, 0xC03722E8
+    str     r0, [r4, #0x78]
+9:  pop     {r4, pc}
+
+/* Which state the rec state machine is in, sampled every pass.
+ *
+ * Assist features are dispatched per state: only the live-view state implements
+ * "start false colour" (vtable +0x6C -> 0xC0394240); every other state points at
+ * a default that returns without doing anything. To make it work while
+ * recording we need to know WHICH state that is, and the shell cannot be asked
+ * during a take -- a command sent then wedges the USB endpoint. So the camera
+ * writes it down for us instead.
+ *
+ *   +0x84 the state right now   +0x88 a bit per state seen
+ *   +0x8C what the last camera request returned   +0x90 the state it was made in
+ *   +0xA0 the false colour gate object while recording, +0xA4/+0xA8/+0xAC its
+ *   three checked fields: +0x44, +0x328, +0x330
+ */
+watch_rec_state:
+    LDA     r0, REC_SM
+    ldr     r1, [r0, #0x144]
+    LDA     r0, STATE
+    str     r1, [r0, #0x84]
+    cmp     r1, #7                  @ the array has eight states; anything else
+    bhi     9f                      @ is a transient value, not a state
+    mov     r2, #1
+    lsl     r2, r2, r1
+    ldr     r3, [r0, #0x88]
+    orr     r3, r3, r2
+    str     r3, [r0, #0x88]
+    LDA     r2, FC_ROOT             @ sample the false colour gate every pass:
+                                    @ the state index does not move when a take
+                                    @ starts, so gating on it saw nothing
+    ldr     r2, [r2, #8]
+    cmp     r2, #0
+    beq     9f
+    ldr     r2, [r2, #4]
+    cmp     r2, #0
+    beq     9f
+    str     r2, [r0, #0xA0]
+    ldr     r3, [r2, #0x44]
+    str     r3, [r0, #0xA4]
+    ldrb    r3, [r2, #0x328]
+    str     r3, [r0, #0xA8]
+    ldrb    r3, [r2, #0x330]
+    str     r3, [r0, #0xAC]
+    ldr     r3, [r2, #0x44]         @ keep the highest +0x44 ever seen, so a
+    ldr     r1, [r0, #0xB0]         @ value that only appears mid-take survives
+    cmp     r3, r1
+    strhi   r3, [r0, #0xB0]
+    ldrb    r3, [r2, #0x328]
+    ldr     r1, [r0, #0xB4]
+    orr     r3, r3, r1
+    str     r3, [r0, #0xB4]
+    ldrb    r3, [r2, #0x330]
+    ldr     r1, [r0, #0xB8]
+    orr     r3, r3, r1
+    str     r3, [r0, #0xB8]
+9:  bx      lr
 
 /* paint_panel(base): the frame, the title, and every row with its value. */
 paint_panel:
@@ -554,9 +649,23 @@ row_loop:
     add     r9, r5, #24
     mov     r0, #ROW_PITCH
     mla     r9, r8, r0, r9
+    LDA     r0, MENU_ST             @ our row highlights like any of the card's
+    ldr     r0, [r0]
+    cmp     r0, #ROWS
+    bne     1f
     mov     r0, #INK
     str     r0, [r10, #0x40]
-    add     r0, r4, #8
+    add     r0, r4, #2
+    sub     r1, r9, #2
+    movw    r2, #(PANEL_W - 4)
+    mov     r3, #ROW_PITCH
+    bl      fill_rect
+    mov     r0, #0
+    str     r0, [r10, #0x40]
+    b       2f
+1:  mov     r0, #INK
+    str     r0, [r10, #0x40]
+2:  add     r0, r4, #8
     mov     r1, r9
     PTR     r2, false_colour_label
     bl      draw_str

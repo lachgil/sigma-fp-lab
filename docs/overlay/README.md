@@ -413,3 +413,48 @@ discovery, all now fixed or removed:
    The overlay no longer uses one: it repaints from the key handler, which is
    the only moment the panel can change, and where the camera's own function-key
    code already runs.
+
+## While recording: false colour and the focus PIP, 2026-09-14
+
+Both are disabled during a take. They fail for different reasons and only one
+of them looks fixable.
+
+**False colour: the request is accepted and has no effect.** Measured on the
+camera with a resident watcher, because the shell cannot be used during a take:
+
+- the rec state machine's state index does NOT change when recording starts. It
+  stays 1, which is the state whose vtable slot +0x6C holds the real handler
+  `0xC0394240`. An earlier reading of "state 4" was a transient value sampled
+  mid-transition; patching state 4's slot achieved nothing, and leaving that
+  patch in place is the likely cause of a crash at record start.
+- the three checks inside the handler all stay permissive for the whole take:
+  the object at `0xC3074BE8` reads `+0x44 = 1`, `+0x328 = 0`, `+0x330 = 0`
+  throughout. The `+0x44 == 2` bail-out never fires.
+- posting event 0x21 once a second from our own thread is accepted every time
+  (returns 1) and produces nothing on screen. Stop recording and false colour
+  comes back by itself.
+
+So nothing on the request path refuses. The remaining explanation is that the
+effect belongs to the standby live-view pipeline, and during a take the monitor
+is fed by the record path instead -- the same split already documented for the
+green preview. That is a missing stage, not a flag, and no amount of asking
+will produce it. Anyone picking this up should start by establishing whether the
+record monitor path has any false-colour or LUT stage at all.
+
+**The focus PIP: cancelled at record start, which is more promising.** Three GUI
+variables mirror it, all going 0 -> 1 when it is up and back on record start:
+`LV_MagnifyStatus`, `CM_AFMAG_MagnifyDisplay`, `CM_MFMAG_MagnifyDisplay`
+(`LV_FocusMode` is a fourth input). The camera's own display condition takes
+exactly those four. Confirmed by the owner: the PIP vanishes the instant
+recording starts.
+
+`LV_MagnifyStatus` is a MIRROR, not a switch: `gui seti LV_MagnifyStatus 1`
+answers OK and reads back 0 immediately. Forcing it will not summon the PIP.
+
+Unfinished: find what clears the magnify state at record start. The variables
+are registered by name through a table (`0xC0575EE0` region registers the `CM_`
+ones), so nothing references those strings directly and an xref on them is
+empty -- the search has to come from the magnify state owner instead. If that
+turns out to be one call in the record-start path, suppressing it is a small
+patch; if magnify is torn down because the live-view path itself is replaced,
+it is the same wall as false colour.
