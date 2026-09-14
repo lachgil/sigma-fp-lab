@@ -7,7 +7,14 @@ with USB unplugged. Screen reads @BANNER@ when loaded.
 The two files are a MATCHED PAIR. The menu code lives in VSHL.BIN and
 AutoRun.txt only loads it, so never mix files from different builds.
 
-RIGHT cycles, UP toggles. Everything boots OFF.
+BEFORE YOU BOOT IT: clear any custom function assigned to UP and to RIGHT
+(Menu -> Custom -> button settings). This card takes both keys for itself the
+moment it loads, so whatever you had mapped there will not fire, and pressing
+them while you are in the camera's own menu also moves our cursor in the
+background. Clearing the mappings avoids surprises until that is fixed.
+
+RIGHT cycles, UP toggles. Everything boots OFF. The panel is drawn top right;
+there is no key to open it, the keys are ours whenever the card is running.
   STOCK      all features off
   OPEN GATE  M117  3032x2012  full sensor area, 2x2 binned   274 MB/s
   M98 30P    M98   3032x2012  same framing, slower readout   274 MB/s

@@ -15,12 +15,30 @@ Extract the zip straight to the card root, so the card holds `AutoRun.txt` and
 a matched pair:** each card has its own `VSHL.BIN` (the menu code lives there,
 `AutoRun.txt` is only the loader), so never mix files between the two zips.
 
+## Before you boot it: clear your UP and RIGHT assignments
+
+This card **takes the UP and RIGHT keys for itself** the whole time it is
+loaded. There is no shortcut to open the menu, the keys are simply ours.
+
+So, in the camera: **Menu -> Custom -> button settings, and clear anything you
+have assigned to UP and to RIGHT.** Whatever is mapped there will not fire while
+the card is in.
+
+**Known bug, being worked on:** because the keys are taken globally, pressing
+UP or RIGHT while you are inside SIGMA's own menu also moves our cursor in the
+background. Nothing is written until you press UP on a row, but it is untidy and
+it is the next thing on the list.
+
 ## What it does
 
-**An on-camera menu.** RIGHT moves down the list, UP turns the highlighted
-option on. Everything starts off. **Stock** turns everything off again. After
+**An on-camera menu, drawn top right.** RIGHT moves down the list, UP turns the
+highlighted option on. Everything starts off. **Stock** turns everything off again. After
 switching an option, change the recording mode away and back once so the camera
 re-latches the geometry, otherwise the current take keeps the old one.
+
+The panel lists every option at once with the current row highlighted. It is
+drawn by our own code into the OSD layer, not by the firmware's one-line debug
+text, which is fixed at the top left and could not be moved.
 
 **Recording modes the stock firmware does not offer:**
 
@@ -55,11 +73,13 @@ Proven on hardware:
 
 Not proven, and where help is wanted:
 
-- **FALSE COL is brand new and untested on a card.** It has only ever run from
-  the USB-deployed overlay, where it worked. On the card it runs from the key
-  path, which is where the camera's own function key runs it, but that has not
-  been through a camera yet. **Test it on the dev card first**, and if the
-  camera locks up, pull the battery: nothing is written to flash.
+- **The drawn panel is new on the card.** It ran for weeks pushed over USB, and
+  it now travels in `VSHL.BIN` like everything else. The offline emulator paints
+  it into a modelled 1024x682 OSD surface and passes, but a model is not a
+  camera. **Test on the dev card first**; if it locks up, pull the battery,
+  nothing is written to flash.
+- **FALSE COL** was confirmed working on a card. It is the one row that changes
+  no geometry, so it needs no preset re-latch.
 
 - **High-fps cadence.** The 120fps experiments hit ~389–441 MB/s and need a fast
   USB-C SSD. Nobody has independently confirmed the recorded files really run at

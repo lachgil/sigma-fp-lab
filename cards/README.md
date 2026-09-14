@@ -6,6 +6,8 @@ scripts in the repo root regenerate them from your own firmware).
 
 ## How to use
 
+1. **Clear any custom function mapped to UP and to RIGHT** (Menu -> Custom ->
+   button settings). The menu card takes both keys for itself while it is loaded.
 1. Confirm your camera is **fp Ver.5.02** (Menu → firmware). Do **not** use these
    on any other version or the fp L.
 2. Format an SD card in the camera. Copy the chosen file to the **card root** and
