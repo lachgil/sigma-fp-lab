@@ -25,8 +25,38 @@ zero, then `blx`es it. Everything FP3K does lives in that binary.
 
 ## What FP3K's payload actually does
 
-It adds **3000x2000 to the camera's own resolution setting** -- a native menu
-entry, not an overlay. From its strings and the addresses it references:
+**It adds a real third entry to the native Resolution list** (UHD / FHD /
+3000x2000), confirmed by photograph of the camera. The recipe is in the shipped
+sources named on line 348 of his handoff, `tools/fp3k_native_menu.S` and
+`tools/fp3k_native_ui.S`, not in `analysis/native-menu-integration.md`, which is
+an earlier "not done yet" analysis and should not be read as the final word.
+
+Three ingredients, all of them RAM writes at install time:
+
+```asm
+/* 1. widen the widget's range: two entries -> three */
+addr r0, UI_RANGE          @ 0xC1A709BC
+mov  r1, #UI_RANGE_THREE   @ 0x00000040   (stock reads 0x0000803F)
+str  r1, [r0]
+
+/* 2. replace the 89-byte list CSV with his own */
+addr r0, 0xC0F8E7EC
+self r1, csv_new
+mov  r2, #89
+5:  ldrb r3,[r1],#1 ; strb r3,[r0],#1 ; subs r2,r2,#1 ; bne 5b
+
+/* 3. hook the resource pack load so the new entry has artwork */
+ui_load: ... if the requested pack is 0xC0D22400 -> ensure_ui_pack
+```
+
+Both values verified in our own image: `0xC1A709BC` reads `0x803F`, and
+`0xC0F8E7EC` is the 89-byte CSV with two rows. So `LIST.BIN` in his AutoRun dump
+was the resolution list all along.
+
+He also installs with a checksum over the payload, verifies every patched word
+reads back, and rolls back if any does not. Worth copying, not just the patch.
+
+For reference, what its payload does touch:
 
 - `MV_Resolution`, `LV_Resolution` -- the GUI variables for the recording and
   live-view resolution lists.
