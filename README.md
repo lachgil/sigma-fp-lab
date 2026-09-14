@@ -62,6 +62,12 @@ what is still missing, is in **[docs/overlay/](docs/overlay/)**.
 [`cards/`](cards/), rename it to `AutoRun.txt` on the SD card root, and cold
 boot. Instructions and what each one does are in [`cards/README.md`](cards/README.md).
 
+**Latest dev builds:** the newest cards, including work that has not been on a
+camera yet, are published as
+[releases](https://github.com/lachgil/sigma-fp-lab/releases) and as zips in
+[`cards/`](cards/). A dev card is a real experiment: read its notes before
+booting it, and expect to pull the battery.
+
 **Build the full menu card yourself** (needs your own firmware copy, see below):
 
 ```sh
