@@ -79,24 +79,26 @@
  * picker holds for any one mode id. */
 .equ LOG_H1708,    0xC0732D00
 .equ LOG_H2088,    0xC0732E00
-/* The row map. Recording modes first, then the display switches, then gyro:
- * the list grew by accident and this is the order it should have had.
+/* The row map. The release card carries only the modes that have recorded on
+ * a camera, plus the display fix open gate needs; everything else is on the
+ * debug card, where whoever is testing it can read what it did.
  *
- * Four rows are dev-only, behind SHOW_SEL, because each is a dead end kept for
- * its evidence rather than for shooting: M98 30P is the same raster as open
- * gate with worse skew, M6 4K measured no visible gain (file depth follows the
- * menu's 8/10/12), 2088 120 is FHD 120's smaller sibling and was never run,
- * and SEL is a readout. state_offsets and the label table follow this order.
+ * Release: Stock, M130, Open Gate, FHD 120, Green Fix.
+ * Debug adds: M130 FAST (line period, same rate), M98 60P and the two other
+ * same-raster swaps (cadence unconfirmed), False Col, Gyro, Gyro-Gate, M98 30P
+ * (Open Gate's raster with more skew), M6 4K (no visible gain) and SEL.
+ *
+ * state_offsets and the label table follow this order exactly.
  */
 .equ ROW_STOCK,  0
 .equ ROW_M130,   1
-.equ ROW_M130F,  2
-.equ ROW_OG,     3
-.equ ROW_M98B,   4
-.equ ROW_H1708,  5
-.equ ROW_H1344,  6
-.equ ROW_H672,   7
-.equ ROW_GREEN,  8
+.equ ROW_OG,     2
+.equ ROW_H1708,  3
+.equ ROW_GREEN,  4
+.equ ROW_M130F,  5
+.equ ROW_M98B,   6
+.equ ROW_H1344,  7
+.equ ROW_H672,   8
 .equ ROW_FALSE,  9
 .equ ROW_GYRO,   10
 .equ ROW_GATE,   11
@@ -107,7 +109,7 @@
 #if SHOW_SEL
 .equ ROW_COUNT,  16
 #else
-.equ ROW_COUNT,  12
+.equ ROW_COUNT,  5
 #endif
 #ifndef OG60_SEL
 /* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at
@@ -1622,16 +1624,16 @@ m130_rates:
 state_offsets:
     .word 0                        @ STOCK, aggregated instead
     .word 8                        @ M130
-    .word 40                       @ M130 FAST
     .word 4                        @ OPEN GATE
-    .word 28                       @ M98 60P
     .word H1708_ON                 @ FHD 120
-    .word H1344_ON                 @ 2K120
-    .word H672_ON                  @ 672 240
     .word GREEN_ON                 @ GREEN FIX
-    .word FC_ON                    @ FALSE COL
-    .word 12                       @ GYRO
-    .word 0                        @ GYRO-GATE, the AND of open gate and gyro
+    .word 40                       @ M130 FAST (dev)
+    .word 28                       @ M98 60P   (dev)
+    .word H1344_ON                 @ 2K120     (dev)
+    .word H672_ON                  @ 672 240   (dev)
+    .word FC_ON                    @ FALSE COL (dev)
+    .word 12                       @ GYRO      (dev)
+    .word 0                        @ GYRO-GATE (dev), open gate AND gyro
     .word 24                       @ M98 30P   (dev)
     .word 36                       @ M6 4K     (dev)
     .word H2088_ON                 @ 2088 120  (dev)
@@ -1698,21 +1700,25 @@ labels:
     .space 8
     .asciz ">M130       ON         "
     .space 8
-    .asciz ">M130 FAST  OFF        "
-    .space 8
-    .asciz ">M130 FAST  ON         "
-    .space 8
     .asciz ">OPEN GATE  OFF        "
     .space 8
     .asciz ">OPEN GATE  ON         "
     .space 8
-    .asciz ">M98 60P    OFF        "
-    .space 8
-    .asciz ">M98 60P    ON         "
-    .space 8
     .asciz ">FHD 120    OFF        "
     .space 8
     .asciz ">FHD 120    ON         "
+    .space 8
+    .asciz ">GREEN FIX  OFF        "
+    .space 8
+    .asciz ">GREEN FIX  ON         "
+    .space 8
+    .asciz ">M130 FAST  OFF        "
+    .space 8
+    .asciz ">M130 FAST  ON         "
+    .space 8
+    .asciz ">M98 60P    OFF        "
+    .space 8
+    .asciz ">M98 60P    ON         "
     .space 8
     .asciz ">2K120      OFF        "
     .space 8
@@ -1721,10 +1727,6 @@ labels:
     .asciz ">672 240    OFF        "
     .space 8
     .asciz ">672 240    ON         "
-    .space 8
-    .asciz ">GREEN FIX  OFF        "
-    .space 8
-    .asciz ">GREEN FIX  ON         "
     .space 8
     .asciz ">FALSE COL  OFF        "
     .space 8

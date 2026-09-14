@@ -55,11 +55,12 @@
 .equ INK,        0xB2           /* what the firmware's own glyphs read back as */
 .equ CELL_W,     12             /* (FONT_W + 1) * 2 */
 .equ ROW_PITCH,  18
-/* Rows, in src/menu.S's order. Four are dev-only, for the same reasons. */
+/* Rows, in src/menu.S's order. The release card carries only the modes that
+ * have recorded on a camera, plus the display fix open gate needs. */
 #if SHOW_SEL
 .equ ROWS,       16
 #else
-.equ ROWS,       12
+.equ ROWS,       5
 #endif
 .equ ROW_GATE,   11
 .equ ROW_SEL,    15
@@ -834,42 +835,42 @@ next_bit:
 cursor_rates:
     .word 0        @ STOCK
     .word 1        @ M130        23.98, so the row means 24p
-    .word 1        @ M130 FAST   23.98
     .word 0        @ OPEN GATE
-    .word 0        @ M98 60P
     .word 0        @ FHD 120     its own cell, not an FHD rate
-    .word 0        @ 2K120       likewise
-    .word 0        @ 672 240     likewise
     .word 0        @ GREEN FIX
-    .word 0        @ FALSE COL
-    .word 0        @ GYRO
-    .word 0        @ GYRO-GATE
-    .word 0        @ M98 30P     (dev)
-    .word 0        @ M6 4K       (dev)
-    .word 0        @ 2088 120    (dev)
-    .word 0        @ SEL         (dev)
+    .word 1        @ M130 FAST   23.98          (dev)
+    .word 0        @ M98 60P                    (dev)
+    .word 0        @ 2K120                      (dev)
+    .word 0        @ 672 240                    (dev)
+    .word 0        @ FALSE COL                  (dev)
+    .word 0        @ GYRO                       (dev)
+    .word 0        @ GYRO-GATE                  (dev)
+    .word 0        @ M98 30P                    (dev)
+    .word 0        @ M6 4K                      (dev)
+    .word 0        @ 2088 120                   (dev)
+    .word 0        @ SEL                        (dev)
 
 option_rates:
     .word 0        @ STOCK
     .word 0        @ M130        follows whatever rate was selected first
-    .word 0        @ M130 FAST   likewise
     .word 3        @ OPEN GATE   FHD 29.97 cell
-    .word 5        @ M98 60P     FHD 59.94 cell
     .word 0        @ FHD 120     its own cell
-    .word 0        @ 2K120       likewise
-    .word 0        @ 672 240     likewise
     .word 0        @ GREEN FIX
-    .word 0        @ FALSE COL
-    .word 0        @ GYRO
-    .word 0        @ GYRO-GATE
-    .word 3        @ M98 30P     (dev) FHD 29.97 cell
-    .word 0        @ M6 4K       (dev) the 4K cell
-    .word 0        @ 2088 120    (dev)
-    .word 0        @ SEL         (dev)
+    .word 0        @ M130 FAST   as M130                    (dev)
+    .word 5        @ M98 60P     FHD 59.94 cell             (dev)
+    .word 0        @ 2K120                                  (dev)
+    .word 0        @ 672 240                                (dev)
+    .word 0        @ FALSE COL                              (dev)
+    .word 0        @ GYRO                                   (dev)
+    .word 0        @ GYRO-GATE                              (dev)
+    .word 3        @ M98 30P     FHD 29.97 cell             (dev)
+    .word 0        @ M6 4K       the 4K cell                (dev)
+    .word 0        @ 2088 120                               (dev)
+    .word 0        @ SEL                                    (dev)
 
 state_offsets:
-    .word 0, 8, 40, 4, 28, 80, 44, 48
-    .word 76, 72, 12, 0, 24, 36, 84, 0
+    .word 0, 8, 4, 80, 76
+    .word 40, 28, 44, 48, 72, 12, 0, 24, 36, 84, 0
 watched_offsets:
     .word 8, 40, 4, 28, 80, 44, 48, 76, 72, 12, 24, 36, 84
 .equ WATCHED_COUNT, (. - watched_offsets) / 4
@@ -882,23 +883,19 @@ value_texts:
     .asciz "ON";  .space 1     @ four-byte slots: the index is a shift, not a walk
     .asciz "--";  .space 1
     .balign 4
-/* Twelve bytes each, so a row index is a multiply rather than a table walk. */
-false_colour_label:
-    .asciz "FALSE COL"
-green_fix_label:
-    .asciz "GREEN FIX"
-    .balign 4
-    .balign 4
+/* Twelve bytes each, so a row index is a multiply rather than a table walk.
+ * In src/menu.S's row order; false colour and the green fix are rows here now,
+ * not two blocks drawn by hand after the loop. */
 row_labels:
     .asciz "STOCK";      .space 6
     .asciz "M130";       .space 7
-    .asciz "M130 FAST";  .space 2
     .asciz "OPEN GATE";  .space 2
-    .asciz "M98 60P";    .space 4
     .asciz "FHD 120";    .space 4
+    .asciz "GREEN FIX";  .space 2
+    .asciz "M130 FAST";  .space 2
+    .asciz "M98 60P";    .space 4
     .asciz "2K120";      .space 6
     .asciz "672 240";    .space 4
-    .asciz "GREEN FIX";  .space 2
     .asciz "FALSE COL";  .space 2
     .asciz "GYRO";       .space 7
     .asciz "GYRO-GATE";  .space 2

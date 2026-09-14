@@ -27,23 +27,23 @@ supports them, but no menu item names them. See **[docs/menu/](docs/menu/)**.
 
 ### 2. Recording modes the fp does not ship
 
-Recording modes first, then the two display switches, then gyro. Four rows are
-**dev-card only** because each is a dead end kept for its evidence rather than
-for shooting. RIGHT moves, UP switches on, **Stock** switches everything off,
-including the display switches.
+The **release card carries four rows and Stock**: the three modes that have
+actually recorded on a camera, plus the display fix Open Gate needs. Everything
+else is on the **debug card**, where whoever is testing it can read what it did.
+RIGHT moves, UP switches on, **Stock** switches everything off.
 
 | Row | Sensor mode | Field of view | Readout | Recorded | Rolling shutter | Rate | Status |
 |---|---|---|---|---|---|---|---|
 | **M130** | M130 | middle 65% (1.53x crop) | **full 1:1** | 3968x2640 | 16.3 ms | 377 MB/s at 23.976 | **sustained on hardware**, two minutes. At 29.97 it needs 471 MB/s and stops after about 5 s |
-| M130 FAST | M130 | middle 65% | full 1:1 | 3968x2640 | **12.1 ms** | as above | line period only; **not** a frame rate |
 | Open Gate | M117 | **the whole sensor** | 2x2 binned | 3032x2012 | 9.2 ms | 274 MB/s | works; greens the preview until Green Fix is on |
-| M98 60P | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 548 MB/s | offline only, expect short bursts |
-| FHD 120 | M58 (from M27) | whole sensor | 2x2 binned | 3032x1708 | | 60 -> **120 fps** | **recorded on hardware**, then overflows after a couple of seconds: a burst, not a take |
-| 2K120 | M56 (from M139) | whole sensor | 2x2 binned | 2016x1344 | | 60 -> 120 fps | the readout is selected; the cadence is unconfirmed |
-| 672 240 | M12 (from M140) | whole sensor, letterboxed | 2x2 binned | 2016x672 | | 60 -> 240 fps | same caveat |
+| FHD 120 | M58 (from M27) | whole sensor | 2x2 binned, 3032x1708 read | 1920x1080, **12-bit** | | 60 -> **120 fps** | **recorded on hardware** at about 389 MB/s, then overflows after a couple of seconds: a burst, not a take |
 | Green Fix | | | | | | | 3:2 preview for the 3:2 modes, ported from FP3K; **never run on a camera** |
-| False Col | | | | | | | latches false colour, which the camera only offers held |
-| Gyro, Gyro-Gate | | | | | | | writes Gyroflow GCSV alongside the take |
+| M130 FAST *(dev)* | M130 | middle 65% | full 1:1 | 3968x2640 | **12.1 ms** | as M130 | line period only; **not** a frame rate |
+| M98 60P *(dev)* | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 548 MB/s | offline only, expect short bursts |
+| 2K120 *(dev)* | M56 (from M139) | whole sensor | 2x2 binned | 2016x1344 | | 60 -> 120 fps | the readout is selected; the cadence is unconfirmed |
+| 672 240 *(dev)* | M12 (from M140) | whole sensor, letterboxed | 2x2 binned | 2016x672 | | 60 -> 240 fps | same caveat |
+| False Col *(dev)* | | | | | | | latches false colour, which the camera only offers held |
+| Gyro, Gyro-Gate *(dev)* | | | | | | | writes Gyroflow GCSV alongside the take |
 | M98 30P *(dev)* | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 274 MB/s | a comparison against Open Gate: same raster, more skew |
 | M6 4K *(dev)* | M6 | 69% x 54% | full 1:1, 14-bit | 4176x2174 | 27.5 ms | 476 MB/s | **no visible gain**: file depth follows the menu's 8/10/12 |
 | 2088 120 *(dev)* | M103 (from M88) | whole sensor | 2x2 binned | 2088x1174 | | 60 -> 120 fps | FHD 120's smaller sibling, never run |
