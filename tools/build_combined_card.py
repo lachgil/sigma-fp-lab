@@ -12,9 +12,10 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 SHELL = ROOT / 'reference/fpSup/fp_usb_shell'
 GYRO = ROOT / 'reference/fpSup/gyro'
-sys.path[:0] = [str(SHELL), str(GYRO)]
+sys.path[:0] = [str(SHELL), str(GYRO), str(ROOT / 'tools')]
 from armasm import assemble, symbols
 import build_base_card as gyro
+import fplab_page
 
 MENU_OFFSET = 0x50000
 # The drawn panel: its code in the pool above the menu, its state in the cave
@@ -41,6 +42,30 @@ NATIVE_CSV_LEN = 89
 NATIVE_PICK = 0xC0732400        # the selection hook, empty in stock
 NATIVE_SITE = 0xC057A6A0        # MV_Resolution selection callback (ARM)
 NATIVE_SITE_STOCK = 0xE92D40F0  # push {r4,r5,r6,r7,lr}, the displaced word
+# The FP LAB row (--fplab-page). Caves verified empty in the stock image at
+# build time; the row itself is generated and checked by tools/fplab_page.py.
+INJECT_CODE = 0xC0793100
+INJECT_STATE = 0xC0793400
+INJECT_TABLE = 0xC0793420
+INJECT_HEADER = 0xC0793500
+INJECT_SITE = 0xC05E6400        # the NBU record interpreter; Thumb
+INJECT_MENU = 0xC0794100
+INJECT_RECORDS = 0xC07A4400
+INJECT_SITE_STOCK = 0x4FF0E92D  # push.w {r4-r11,lr} then the start of vpush
+
+
+def thumb_branch(site: int, target: int) -> int:
+    """A Thumb-2 B.W (T4) at `site` reaching `target`, as one little word."""
+    offset = target - (site + 4)
+    if not -0x800000 <= offset < 0x800000 or offset % 2:
+        raise SystemExit('branch target out of B.W range')
+    sign = (offset >> 24) & 1
+    j1 = (~((offset >> 23) & 1) ^ sign) & 1
+    j2 = (~((offset >> 22) & 1) ^ sign) & 1
+    first = 0xF000 | (sign << 10) | ((offset >> 12) & 0x3FF)
+    second = 0x9000 | (j1 << 13) | (j2 << 11) | ((offset >> 1) & 0x7FF)
+    return first | (second << 16)
+
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
 # 0xC072F000, so the debug and release cards share one address map.
 BOOT = 0xC072F700
@@ -82,6 +107,10 @@ def main():
                              'Resolution list (max 12 characters)')
     parser.add_argument('--ui-probe', action='store_true',
                         help='arm the observation-only GUI append hook at boot')
+    parser.add_argument('--fplab-page', action='store_true',
+                        help='add a real fifth row to Record Settings, built '
+                             'from the stock Resolution row and fed to the NBU '
+                             'interpreter at boot (src/nbuinject.S)')
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
                         help='FieldAngle selector for FHD/59.94 CinemaDNG. '
                              'Default 173, measured on hardware 2026-09-11: the '
@@ -213,6 +242,53 @@ entry:
                              (PROBE_STATE, bytes(0x40), 'gui probe state'),
                              (PROBE_SITE, struct.pack('<I', hw1 | (hw2 << 16)),
                               'gui append hook')])
+        if args.fplab_page:
+            # A real fifth row in Record Settings. The scene's records are
+            # byte-packed, so the row arrives through the interpreter itself:
+            # see src/nbuinject.S and docs/menu/gui-resources.md.
+            plan = fplab_page.build(firmware)
+            payload = {
+                'code': (INJECT_CODE, assemble(ROOT / 'src/nbuinject.S',
+                                               (f'INJECT_STATE={INJECT_STATE:#x}',
+                                                f'INJECT_TABLE={INJECT_TABLE:#x}',
+                                                'INJECT_COUNT=3')), 'scene injector'),
+                'state': (INJECT_STATE, bytes(0x10), 'scene injector state'),
+                'header': (INJECT_HEADER, plan['header'], 'enlarged scene header'),
+                'menu': (INJECT_MENU, plan['menu'], 'Menu declaration, one more child'),
+                'records': (INJECT_RECORDS, plan['body'], 'FP LAB row records'),
+            }
+            table = b''
+            for record, stock, buffer, mode in (
+                    (plan['header_at'], firmware[plan['header_at'] - 0xC0000000:
+                                                 plan['header_at'] - 0xC0000000
+                                                 + plan['header_stock_size']],
+                     payload['header'], 0),
+                    (plan['menu_at'], plan['menu_stock'], payload['menu'], 0),
+                    (plan['tail_at'], firmware[plan['tail_at'] - 0xC0000000:
+                                               plan['tail_at'] - 0xC0000000
+                                               + plan['tail_size']],
+                     payload['records'], 1)):
+                value = 0x811C9DC5
+                for byte in stock:
+                    value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+                table += struct.pack('<6I', record, len(stock), value, mode,
+                                     buffer[0], len(buffer[1]))
+            payload['table'] = (INJECT_TABLE, table, 'scene injector table')
+            for address, blob, why in payload.values():
+                if any(firmware[address - 0xC0000000:
+                                address - 0xC0000000 + len(blob)]):
+                    raise SystemExit(f'{why} cave at {address:#x} is not empty in stock')
+            got = struct.unpack_from('<I', firmware, INJECT_SITE - 0xC0000000)[0]
+            if got != INJECT_SITE_STOCK:
+                raise SystemExit(f'the NBU interpreter starts {got:#x}, '
+                                 f'expected {INJECT_SITE_STOCK:#x}')
+            # The loader copies whole words. The table keeps each buffer's true
+            # length, so the padding is never handed to the interpreter.
+            sections.extend((address, blob + bytes(-len(blob) % 4), why)
+                            for address, blob, why in payload.values())
+            sections.append((INJECT_SITE, struct.pack('<I', thumb_branch(
+                INJECT_SITE, INJECT_CODE)), 'scene injector hook'))
+
         sections.extend([(MENU_OFFSET, menu, 'menu'),
                          (PANEL_OFFSET, panel, 'drawn panel'),
                          (BOOT, assemble(trampoline), 'combined boot'),

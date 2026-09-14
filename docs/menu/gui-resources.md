@@ -1,24 +1,24 @@
 # The GUI resource system, and what it means for a native FP LAB entry
 
-**Source: ijigen's handoff tree, `fp-re-handoff-2026-09-14`, `research/ui/`,
-measured on a live camera 2026-09-14.** Not our work. Recorded here because it
-answers a question this project got wrong, and because two of its results change
-what we should build next. Where a claim is repeated below it is because it was
-re-verified against our own `MAIN_c0000000.bin`.
+Sources: the supplied `fp-re-handoff-2026-09-14` tree, its FP3K technical
+handoff sources, and our offline fp 5.02 native-code experiment below.
+Historical observations from different resource families must not be treated
+as a universal GUI lifecycle contract.
 
 ## Why our "native menus are blocked" conclusion was too broad
 
-`docs/menu/ui.md` and `docs/menu/surface.md` concluded that a new native row is
-impossible: rows are NBU scene objects, and the 303,600 chunks are byte-packed
-with zero gaps. That remains true, and it is still the right answer *for rows*.
+Packed NBU chunks prevent growing a record **in place**. They do not prevent
+adding rows through parser substitution or a correctly rebuilt scene.
+Earlier statements that new rows were impossible were unsupported.
 
-It is the wrong answer for **value lists**, which are a different subsystem:
+Value lists and scene rows are distinct: extending the Resolution CSV does
+not construct an additional Record Settings row.
 
-| Layer | Where | Rebuilt? |
+| Layer | Where | Relevant contract |
 |---|---|---|
-| Sorted string pool | `0xC18C0474` | on demand |
-| Serialised UI records | `0xC1900000` – `0xC2D80000` | interpreted once at startup |
-| Embedded Lua | above `0xC2D80000` | GUI bindings and expressions |
+| NBU string pool | `0xC18C0474` | Existing names use big-endian pool offsets |
+| Serialized scene records | Per-scene NBU chunk streams | Allocation header precedes declarations and components |
+| Runtime objects | Allocated by the native interpreter | Parent links, ID table, components and lifetime must agree |
 
 Records reference strings by **big-endian pool offset**,
 `offset = string address - 0xC18C0474`.
@@ -35,19 +35,18 @@ hard-coded count of 3, and the table is:
 0xC2E4021C  {4, 2}   a third state SIGMA already defines
 ```
 
-Verified in our own image: `[(3,0), (2,1), (4,2)]`. The third display state is
-**stock**, not something a modification adds. What is missing is artwork:
-`qs_resolution`, `set_resolution` and `font_menu_MB_resolution` ship exactly two
-members each, while families that need more have them (`qs_aspect` 7,
-`qs_mode` 7, `qs_iso` 43), and numbering need not be contiguous.
+Verified in our own image: `[(3,0), (2,1), (4,2)]`. The third mapping is
+stock, but does not make enum 4 a safe recording selection. FP3K's working
+third choice also changes list/range data and intercepts selection and
+readback paths. Its extra artwork covers Settings, QS and HUD surfaces.
 
-Their measured runtime-patchability table is worth repeating exactly:
+The handoff's resolution-artwork observations have narrower scope:
 
 | Data | Read when | Runtime patch |
 |---|---|---|
 | pair table `0xC2E4020C` | every evaluation | **works, immediately** |
-| serialised UI records | interpreted once | no effect |
-| parsed element objects | freed with their owner screen | does not persist |
+| tested serialized resolution-artwork arrays | not rebuilt in tested transitions | editing these bytes did not update those arrays |
+| parsed element objects | tied to owner lifetime | a one-time mutation need not survive reconstruction |
 
 ## Icons are LZ4, and encodable
 
@@ -60,11 +59,13 @@ M_resolution_dci4K  @0xC1359724   2896 bytes
 L_resolution_dci4K  @0xC12CA138   3472 bytes
 ```
 
-## The GUI region is Thumb-2, and our hook machinery is ARM
+## Instruction state must be checked at each hook
 
-This is the practical gap in our toolkit. Everything in the GUI area is Thumb-2,
-so `src/*.S` ARM hooks do not apply there. Their technique, which we should
-adopt if we go near it:
+The NBU interpreter at `0xC05E6400` is Thumb-2; the enum mapping getter at
+`0xC06BDA30` is ARM. Do not infer instruction state from a broad GUI address
+range. FP3K enters the Thumb parser through a branch/interworking wrapper,
+executes the displaced prologue, and resumes at `0xC05E6405`.
+Relevant branch rules:
 
 - enter with **`B.W` (T4), not `BL`**, so `lr` still holds the original caller's
   return and the displaced instructions can run unchanged;
@@ -72,41 +73,98 @@ adopt if we go near it:
 - avoid `bl` between local labels: it emits `R_ARM_THM_CALL`, which the
   relocation handler in `armasm.py` does not implement.
 
-## The open question, and why we are well placed to answer it
+## A construction route, executed offline
 
-The resolution array is built **once**, during the startup resource pass, and no
-runtime event rebuilds it. They tried every screen transition with a filtered
-hook armed on the append (`FUN_c05e2ca8`) and got zero hits: Quick Set draw (314
-appends, none matching), `gui scr set 1_03_CINE`, resolution changed away and
-back, MENU open/close, `SetRecMode`, `STILL`/`CINESW`.
+`B1_2_5`, not MainB5, is Record Settings. Its stream begins at
+`0xC196410F` with a 2,948-byte allocation header. That header declares
+238 objects and component/supplemental sizing information. The native
+interpreter's header path at `0xC05E679A` uses those counts before object
+construction.
 
-So a hook has to be armed **before** the resource pass, which is an AutoRun
-timing question they had packaged but not yet run.
+The `Menu` declaration at `0xC196D74B` has object ID `0x59` and capacity
+for six children: four setting-row containers plus `shuttermode` and `Blind`.
+An extra row needs another child slot. The native child vector can request
+reallocation; increasing its declaration capacity avoids that extra request.
 
-**We boot our own payload from AutoRun already**, with a cave, a shell and a
-menu that runs at boot. Arming an observation-only Thumb hook on `0xC05E2CA8`
-from our boot path and reading the log after a cold boot answers it: a hit means
-AutoRun runs before the resource pass and a native third resolution entry is
-reachable; zero hits rules the route out and sends the search earlier.
-
-That is a cheap, read-only experiment, and it is now built:
+Run the local investigation fixture:
 
 ```sh
-.venv/bin/python tools/build_combined_card.py --debug --ui-probe --out builds/uiprobe
-# extract that card, cold boot, settle in live view, then
-.venv/bin/python tools/uiprobe_read.py
+.venv/bin/python analysis/native_row_construction_proof.py
 ```
 
-`src/uiprobe.S` is a 44-byte Thumb hook on `0xC05E2CA8` that counts appends and
-records the first eight element names. It changes nothing. The builder emits it
-as three sections -- code at `0xC0732100` (verified empty in stock), state at
-`0xC0732300`, and the `B.W` word at the hook site -- and the loader writes all
-sections before jumping to our boot, which runs `F_CACHE`, so the site is
-coherent before anything executes it. The branch encoding is checked by
-round-tripping it through the disassembler at build time.
+It executes the **real firmware** record interpreter, object factory,
+parent attachment, name assignment, and sorted ID insertion/lookup:
 
-Result to report back to ijigen either way: a non-zero count means an AutoRun is
-early enough and the native-entry route is open; zero rules it out.
+- Stock: 238 objects, six Menu children.
+- Extended: 249 objects, seven Menu children. The added declaration subtree
+  comes from the 11-object `MainB5/B5_9` jump row, with private IDs
+  `0xF000..0xF00A` and its root parent changed to `0x59`.
+- All 238 original IDs and all 11 new IDs resolve.
+- Negative control: leaving the scene object count at 238 causes the native
+  store at `0xC05E8290` to write past the reserved object-pointer table.
+  This demonstrates a failure mode, not a diagnosis of earlier camera failures.
+
+The fixture models allocation, byte readers, and component-size lookup.
+It parses **declarations only**, not the donor row's components/actions.
+The arena-size numbers therefore exclude component storage. This is not a
+working FP LAB UI, a rendering test, or an installable payload. Exact boundaries
+and results are recorded in `analysis/native_row_construction_proof.json`.
+
+### Connecting this to FP3K's parser hook
+
+FP3K `tools/fp3k_native_ui.S` redirects a record at `0xC05E6400` using
+reader `+36` (stream base) and `+4` (position), retaining `+20` (string pool).
+After interpreting the replacement it restores the original base and resumes
+after the original record. Its bounded synthetic-string resolver provides
+private names without overwriting localization keys.
+
+That establishes the mechanism. The 512-byte scratch in FP3K's version is too
+small for this scene's 2,948-byte header, and one substitution per record
+cannot add records, so `src/nbuinject.S` carries its own buffers and adds an
+injection mode.
+
+## What is built, and how to run it
+
+```sh
+.venv/bin/python tools/nbu_scene.py verify        # header codec, 221 scenes
+.venv/bin/python tools/fplab_page.py verify       # the row, on real firmware
+.venv/bin/python tools/verify_nbuinject.py        # the hook, at the real site
+.venv/bin/python tools/build_combined_card.py --debug --fplab-page \
+    --out builds/fplab-card
+```
+
+| Piece | What it is |
+| --- | --- |
+| `tools/nbu_scene.py` | Allocation-header codec and the graft that adds records with their exact header contribution |
+| `tools/fplab_page.py` | Builds the new row out of stock row `B1_2_5_4` and checks it against the firmware |
+| `tools/native_scene_vm.py` | Runs the firmware's interpreter, object factory and id table offline |
+| `src/nbuinject.S` | 388-byte Thumb/ARM hook at `0xC05E6400`: two guarded replacements and one injected run |
+| `tools/verify_nbuinject.py` | Executes that payload with the interpreter mocked one instruction in |
+
+The card places the payload in caves checked empty in the stock image:
+code `0xC0793100`, state `0xC0793400`, table `0xC0793420`, header
+`0xC0793500`, Menu declaration `0xC0794100`, records `0xC07A4400`.
+Each table entry carries the stock record's length and FNV-1a, so a record
+that does not match byte for byte is left alone and counted at state `+0x0C`.
+
+Current row: a copy of the last Record Settings row, 22 objects, 4,629 bytes
+of records, asking for the next row slot down. Its value list is not copied,
+so Right and OK are dropped with it rather than left pointing at a page that
+does not exist. The focus highlight is missing for the same reason the clips
+are: their header entries are positional per animation group and that mapping
+is not proven.
+
+What the first camera run has to answer: whether the row appears at all,
+where it lands, whether Up/Down reach it, and whether the other four rows and
+their pages still behave. Nothing here has been on a camera yet.
+
+## What the generic boot append probe does not prove
+
+`src/uiprobe.S` observes calls to `0xC05E2CA8` across element families.
+A nonzero total alone does not identify resolution-array construction or prove
+its timing relative to AutoRun. The observed count of 382 and first eight
+names must not be used as that proof. FP3K's current native UI sources also
+support late resource-pack registration during NBU interpretation.
 
 ## Corrections to our own notes
 
