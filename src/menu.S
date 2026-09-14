@@ -20,6 +20,12 @@
 .equ TEXT_FN, 0xC03E4620
 .equ OSD_FN, 0xC03E3D00
 .equ ARMED, 0xC072FA10
+/* False colour: our latch byte, and the two CameraIF methods a held function
+ * key calls. FC_ON is well clear of the composed readout line at +0x40. */
+.equ FC_ON,      0x60
+.equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton */
+.equ FC_START,   0xC03722E8     /* vtable +0xCC: posts event 0x21 */
+.equ FC_STOP,    0xC0372330     /* vtable +0xD0: posts event 0x22 */
 .equ SELS, 0xC072FA20
 .equ PROBE, 0xC072FA30
 .equ GEOM, 0xC072FA40
@@ -194,7 +200,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #10
+    cmp r0, #11                    @ ten card rows, then FALSE COL
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -219,6 +225,8 @@ do_up:
     beq up_m6
     cmp r0, #9
     beq show_sel                   @ read-only readout
+    cmp r0, #10
+    beq up_false                   @ ours, and needs no gyro and no cells
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
@@ -329,12 +337,44 @@ up_m6:
     b redraw
 up_gyro:
     bl toggle_gyro
+    b redraw
+
+/* FALSE COL. The camera only offers false colour as a button you hold: an
+ * assigned function key calls CameraIF vtable +0xCC on press, which posts
+ * rec-manager event 0x21, and +0xD0 on release, which posts 0x22. Nothing is
+ * stored anywhere, which is why it never appeared in a diff of the settings
+ * store. Calling the same two methods ourselves makes it a latch instead.
+ *
+ * This runs in the key path, which is exactly where the camera's own function
+ * key runs it, and it touches no geometry cell -- so unlike every other row it
+ * needs no re-latch, no busy check and no resource release.
+ *
+ * FC_ON is our own byte, not the camera's: there is no camera state to read
+ * back, so the row shows what we last asked for.
+ */
+up_false:
+    push {r4, lr}
+    ldr r0, [r6, #FC_ON]
+    eor r0, r0, #1
+    str r0, [r6, #FC_ON]
+    cmp r0, #0
+    LDA r4, FC_START
+    LDA r0, FC_STOP
+    moveq r4, r0
+    LDA r0, CAMERA_IF
+    blx r0                         @ r0 = the camera interface singleton
+    blx r4
+    pop {r4, lr}
+    b redraw
+
 redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
     cmp r0, #9
     beq show_sel
+    cmp r0, #10
+    beq state_false
     cmp r0, #8
     beq state_gate
     PTR r2, state_offsets
@@ -359,6 +399,9 @@ state_gate:
     ldr r1, [r6, #4]
     ldr r2, [r6, #12]
     and r1, r1, r2
+    b state_text
+state_false:
+    ldr r1, [r6, #FC_ON]           @ what we last asked the camera for
 state_text:
     PTR r4, labels
     add r0, r1, r0, lsl #1
@@ -1138,6 +1181,10 @@ labels:
     .asciz ">SEL        OFF        "
     .space 8
     .asciz ">SEL        ON         "
+    .space 8
+    .asciz ">FALSE COL  OFF        "
+    .space 8
+    .asciz ">FALSE COL  ON         "
     .space 8
 busy_label: .asciz "STOP RECORDING / WAIT   "
 unavailable_label: .asciz "GYRO INIT FAILED       "

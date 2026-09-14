@@ -7,11 +7,13 @@ flashed, and pulling the battery puts the camera back exactly as it was.
 
 | Card | Who it is for |
 |---|---|
-| `cards/AutoRun-menu.txt` | **Everyone.** The on-camera menu, nothing else. |
-| `cards/AutoRun-menu-dev.txt` | Development: same menu plus the USB shell and the `SEL` diagnostics. |
+| `fp-menu-card.zip` | **Everyone.** The on-camera menu, nothing else. |
+| `fp-menu-card-dev.zip` | Development: same menu plus the USB shell and the `SEL` diagnostics. |
 
-Copy the chosen file to the card root as **`AutoRun.txt`**, and copy
-**`VSHL.BIN`** beside it. Cold boot with the card in. Both files are required.
+Extract the zip straight to the card root, so the card holds `AutoRun.txt` and
+`VSHL.BIN`. Cold boot with the card in. **Both files are required, and they are
+a matched pair:** each card has its own `VSHL.BIN` (the menu code lives there,
+`AutoRun.txt` is only the loader), so never mix files between the two zips.
 
 ## What it does
 
@@ -30,6 +32,14 @@ re-latches the geometry, otherwise the current take keeps the old one.
 | M6 | Full-readout 14-bit class mode |
 | Gyro-Gate | Open gate together with the gyro metadata build |
 | SEL | A readout, not a switch (dev card only) |
+| FALSE COL | False colour as a **latch**, not a held button |
+
+**False colour without holding a button.** The camera only exposes false colour
+while an assigned function key is held down: the key calls CameraIF `+0xCC` on
+press (rec-manager event 0x21) and `+0xD0` on release (0x22). Nothing is stored,
+which is why it never showed up in a diff of the settings store. The FALSE COL
+row calls those two methods itself, so it stays on until you turn it off. It
+writes no geometry cell, so unlike every other row it needs no re-latch.
 
 The menu writes the camera's own geometry cells. It refuses to act while the
 camera is busy, and it never changes a recording already in progress.
@@ -44,6 +54,12 @@ Proven on hardware:
 - The standby live-view green fix, on the camera it was fingerprinted against.
 
 Not proven, and where help is wanted:
+
+- **FALSE COL is brand new and untested on a card.** It has only ever run from
+  the USB-deployed overlay, where it worked. On the card it runs from the key
+  path, which is where the camera's own function key runs it, but that has not
+  been through a camera yet. **Test it on the dev card first**, and if the
+  camera locks up, pull the battery: nothing is written to flash.
 
 - **High-fps cadence.** The 120fps experiments hit ~389–441 MB/s and need a fast
   USB-C SSD. Nobody has independently confirmed the recorded files really run at
