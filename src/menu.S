@@ -381,10 +381,17 @@ show_need_sel:
 /* Read-only: whatever selector the probe last saw for an FHD row. Switch the
  * preset to a framerate, read the two hex digits, and that is the number a new
  * option for that framerate has to be built with. */
+/* SHOW_SEL: the two hex numbers after SEL are cell counts, useful when working
+ * on the geometry patches and meaningless to anyone else. The public card is
+ * built with SHOW_SEL=0 and prints the label alone. */
+#ifndef SHOW_SEL
+#define SHOW_SEL 1
+#endif
 show_sel:
     PTR r0, sel_label
     mov r1, #4
     bl compose
+#if SHOW_SEL
     push {r4, lr}
     LDA r0, ST                     @ C: cells the last change rewrote
     ldr r1, [r0, #CELLS_N]
@@ -401,6 +408,7 @@ show_sel:
     add r2, r4, #14
     bl puthex
     pop {r4, lr}
+#endif
 paint:
     bl draw
     mov r0, #1

@@ -686,6 +686,7 @@ row_loop:
     add     r0, r4, #VALUE_X
     mov     r1, r9
     bl      draw_str
+
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 /* row_value(index) -> 0 off, 1 on, 2 not a toggle.

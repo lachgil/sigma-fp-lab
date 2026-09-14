@@ -362,7 +362,13 @@ def main():
         buffers, geometry = surfaces()
         base1 = buffers[1] if len(buffers) > 1 else 0
         base2 = buffers[2] if len(buffers) > 2 else 0
-        for offset in range(0x00, 0x60, 4):
+        # Clear the WHOLE state block, not just the first 0x60. A cold boot
+        # leaves the pool holding garbage, and the menu payload keeps live
+        # fields well past that: +0xC0 is "re-arm false colour", which read as
+        # armed on a fresh place and made our own thread post event 0x21 about
+        # once a second. False colour then could not be switched off from the
+        # camera -- a half-press cleared it and we turned it back on.
+        for offset in range(0x00, 0x180, 4):
             write(state + offset, 0)
             write(menu_state + offset, 0)
         for offset, value in ((ST_BASE0, buffers[0]), (ST_BASE1, base1),
@@ -397,7 +403,13 @@ def main():
         if args.keys:
             # Published last, and only after every pointer it needs is in
             # place: a half-wired handler here is a camera with no buttons.
-            for offset in range(0x00, 0x30, 4):
+            #
+            # The code itself MUST be written first. Publishing hook_entry
+            # without it points the camera's key handler at whatever the pool
+            # happened to hold, and the next button press runs that. It cost a
+            # crash: `--keys` used to publish an address nothing had filled in.
+            place_code(hook_code_at, hook_blob, 'the key gate')
+            for offset in range(0x00, 0x40, 4):
                 write(hook_state + offset, 0)
             write(hook_state + HK_CARD, word(KEY_HANDLER))
             write(hook_state + HK_STOCK, STOCK_KEYS)

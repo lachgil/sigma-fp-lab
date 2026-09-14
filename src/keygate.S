@@ -9,7 +9,7 @@
  *
  *     closed   RIGHT and UP go to the camera. A single RIGHT still pans.
  *     RIGHT x2 in quick succession opens the menu
- *     open     RIGHT cycles, UP toggles, DOWN latches false colour
+ *     open     RIGHT cycles, UP toggles
  *     idle     it closes itself after IDLE_MS with nothing pressed
  *
  * WHERE THIS RUNS MATTERS. An earlier attempt published its own function in the
@@ -139,12 +139,6 @@ is_open:
     beq     swallow
     b       to_stock
 
-/* DOWN, while the menu is open, latches false colour. The camera only offers it
- * as hold-a-button, because the function key posts rec-manager event 0x21 on
- * press and 0x22 on release. Nothing is stored anywhere, which is why it never
- * showed up in a diff of the settings store. All this does is leave the request
- * for the drawing thread to make: posting it from here would mean calling
- * firmware from the key path, and that is what froze the camera before. */
 /* UP on the last row is ours: the card's cursor has one more position than it
  * has options, and that is where the panel draws false colour. Every other row
  * toggles the card's own way, so this one should too -- no special key. */

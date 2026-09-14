@@ -73,7 +73,10 @@ def main():
     if digest != GYRO_DIGEST:
         raise SystemExit('gyro sections differ from verified gyro_og_test example')
     menu_source = ROOT / 'src/menu.S'
-    defines = (f'OG60_SEL={args.og60_sel}',)
+    # The SEL row's two hex counts are a working tool for whoever is editing
+    # the geometry patches. On the public card the label stands alone.
+    defines = (f'OG60_SEL={args.og60_sel}',
+               f'SHOW_SEL={1 if args.debug else 0}')
     menu = assemble(menu_source, defines)
     syms = symbols(menu_source, defines)
     guards = list(struct.iter_unpack('<II', menu[syms['guard_table']:syms['labels']]))

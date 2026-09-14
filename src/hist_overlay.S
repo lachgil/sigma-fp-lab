@@ -124,6 +124,12 @@ hist_spawn:
     mov     r0, #0
     pop     {r4, pc}
 
+/* Next to its only user: `adr` reaches a couple of hundred bytes, and this
+ * string sat at the end of the file until the payload outgrew that. */
+thread_name:
+    .asciz  "fpLABhi"
+    .align  2
+
 .global hist_core
 hist_core:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
@@ -134,8 +140,16 @@ hist_core:
     mov     r0, #0
     str     r0, [r10]
     ldr     r0, [r10, #0x5C]        @ switched off: the thread still runs, so
-    cmp     r0, #0                  @ whatever else it draws keeps updating
-    beq     idle
+    ldr     r1, [r10, #0x68]        @ whatever else it draws keeps updating
+    str     r0, [r10, #0x68]
+    cmp     r0, #0
+    bne     1f
+    cmp     r1, #0                  @ just turned off: the last plot is still
+    movne   r2, #4                  @ sitting in whichever buffers we painted,
+    strne   r2, [r10, #0x60]        @ so owe them each a wipe
+    b       hist_off
+1:  mov     r0, #0                  @ drawing normally again
+    str     r0, [r10, #0x64]
 
     LDA     r4, DETECTION
     ldr     r5, [r4]                @ pixels
@@ -280,6 +294,23 @@ painted:
     mov     r0, #0
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
+/* Off, with a wipe still owed. Runs the same surface walk as a normal pass but
+ * with "clear only" set, so hist_paint blanks its rectangle and draws nothing.
+ * Four passes, because the layer rotates buffers and the host may have measured
+ * three of them. */
+hist_off:
+    ldr     r0, [r10, #0x60]
+    cmp     r0, #0
+    beq     idle
+    sub     r0, r0, #1
+    str     r0, [r10, #0x60]
+    mov     r0, #1
+    str     r0, [r10, #0x64]
+    ldr     r6, [r10, #0x2C]
+    cmp     r6, #0
+    bne     override_surfaces
+    b       idle                    @ no override: nothing measured to wipe
+
 idle:
     mov     r0, #1
     str     r0, [r10]
@@ -336,6 +367,10 @@ clear_row:
     subs    r2, r2, #1
     bne     clear_row
 
+    ldr     r0, [r10, #0x64]        @ clear only: the rectangle is blank now,
+    cmp     r0, #0                  @ which is the whole job when switched off.
+    movne   r0, #0                  @ the flag stays set for the whole walk --
+    popne   {r4, r5, r6, r7, r8, r9, r10, pc}  @ every buffer needs the wipe
     add     r3, r10, #BIN_OFF
     mov     r2, #0
 bar_loop:
@@ -376,6 +411,3 @@ bar_next:
 paint_refuse:
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
-thread_name:
-    .asciz  "fpLABhi"
-    .align  2
