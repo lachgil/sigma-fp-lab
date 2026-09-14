@@ -79,6 +79,36 @@
  * picker holds for any one mode id. */
 .equ LOG_H1708,    0xC0732D00
 .equ LOG_H2088,    0xC0732E00
+/* The row map. Recording modes first, then the display switches, then gyro:
+ * the list grew by accident and this is the order it should have had.
+ *
+ * Four rows are dev-only, behind SHOW_SEL, because each is a dead end kept for
+ * its evidence rather than for shooting: M98 30P is the same raster as open
+ * gate with worse skew, M6 4K measured no visible gain (file depth follows the
+ * menu's 8/10/12), 2088 120 is FHD 120's smaller sibling and was never run,
+ * and SEL is a readout. state_offsets and the label table follow this order.
+ */
+.equ ROW_STOCK,  0
+.equ ROW_M130,   1
+.equ ROW_M130F,  2
+.equ ROW_OG,     3
+.equ ROW_M98B,   4
+.equ ROW_H1708,  5
+.equ ROW_H1344,  6
+.equ ROW_H672,   7
+.equ ROW_GREEN,  8
+.equ ROW_FALSE,  9
+.equ ROW_GYRO,   10
+.equ ROW_GATE,   11
+.equ ROW_M98A,   12
+.equ ROW_M6,     13
+.equ ROW_H2088,  14
+.equ ROW_SEL,    15
+#if SHOW_SEL
+.equ ROW_COUNT,  16
+#else
+.equ ROW_COUNT,  12
+#endif
 #ifndef OG60_SEL
 /* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at
  * FHD/29.97 and AD (173) at FHD/59.94, which is the framerate-tracking
@@ -323,7 +353,7 @@ handle:
     beq do_up
     ldr r0, [r6]
     add r0, r0, #1
-    cmp r0, #16                    @ fourteen card rows, FALSE COL, GREEN FIX
+    cmp r0, #ROW_COUNT             @ see the row map above
     moveq r0, #0
     str r0, [r6]
     b redraw
@@ -332,38 +362,40 @@ do_up:
     cmp r0, #0
     bne show_busy
     ldr r0, [r6]
-    cmp r0, #0
+    cmp r0, #ROW_STOCK
     beq stock
-    cmp r0, #1
-    beq up_og
-    cmp r0, #2
-    beq up_m98a
-    cmp r0, #3
+    cmp r0, #ROW_M130
     beq up_m130
-    cmp r0, #4
+    cmp r0, #ROW_M130F
     beq up_m130f
-    cmp r0, #5
+    cmp r0, #ROW_OG
+    beq up_og
+    cmp r0, #ROW_M98B
     beq up_m98b
-    cmp r0, #6
-    beq up_m6
-    cmp r0, #9
-    beq show_sel                   @ read-only readout
-    cmp r0, #10
-    beq up_h1344                   @ the high-framerate rows need no gyro and
-    cmp r0, #11                    @ hold no shared cell, so they answer here
+    cmp r0, #ROW_H1708
+    beq up_h1708                   @ the high-framerate rows need no gyro and
+    cmp r0, #ROW_H1344             @ hold no shared cell, so they answer here
+    beq up_h1344
+    cmp r0, #ROW_H672
     beq up_h672
-    cmp r0, #12
-    beq up_h1708
-    cmp r0, #13
-    beq up_h2088
-    cmp r0, #14
-    beq up_false                   @ ours, and needs no gyro and no cells
-    cmp r0, #15
+    cmp r0, #ROW_GREEN
     beq up_green                   @ display only: no cells, no gyro
+    cmp r0, #ROW_FALSE
+    beq up_false                   @ ours, and needs no gyro and no cells
+#if SHOW_SEL
+    cmp r0, #ROW_M98A
+    beq up_m98a
+    cmp r0, #ROW_M6
+    beq up_m6
+    cmp r0, #ROW_H2088
+    beq up_h2088
+    cmp r0, #ROW_SEL
+    beq show_sel                   @ read-only readout
+#endif
     ldr r1, [r6, #16]
     cmp r1, #0
     beq show_unavailable
-    cmp r0, #7
+    cmp r0, #ROW_GYRO
     beq up_gyro
     mov r0, #GRP_2997              @ Gyro-Gate owns the 29.97 cell
     mov r1, #4
@@ -421,7 +453,15 @@ stock:
     cmp r0, #0
     beq 2f
     bl toggle_m6
-2:  ldr r0, [r6, #12]
+2:  ldr r0, [r6, #FC_ON]           @ ours too: the row says everything is off
+    cmp r0, #0
+    beq 3f
+    bl toggle_false
+3:  ldr r0, [r6, #GREEN_ON]
+    cmp r0, #0
+    beq 4f
+    bl toggle_green
+4:  ldr r0, [r6, #12]
     cmp r0, #0
     beq redraw
     bl toggle_gyro
@@ -562,7 +602,13 @@ up_h2088:
  * back, so the row shows what we last asked for.
  */
 up_false:
-    push {r4, lr}
+    bl toggle_false
+    b redraw
+
+/* Callable, so Stock can put it back too. */
+toggle_false:
+    push {r4, r5, r6, lr}
+    LDA r6, ST
     ldr r0, [r6, #FC_ON]
     eor r0, r0, #1
     str r0, [r6, #FC_ON]
@@ -573,8 +619,7 @@ up_false:
     LDA r0, CAMERA_IF
     blx r0                         @ r0 = the camera interface singleton
     blx r4
-    pop {r4, lr}
-    b redraw
+    pop {r4, r5, r6, pc}
 
 /* GREEN FIX. The 3:2 modes green the standby preview, because the display
  * accessor keeps handing out stock 16:9 geometry. src/greenfix.S returns a 3:2
@@ -590,7 +635,12 @@ up_false:
  * gate, M98 and M130, and is wrong for M6 4K -- which is why it is a switch.
  */
 up_green:
+    bl toggle_green
+    b redraw
+
+toggle_green:
     push {r4, r5, r6, lr}          @ four: the cache call needs 8-byte alignment
+    LDA r6, ST
     ldr r0, [r6, #GREEN_ON]
     eor r0, r0, #1
     str r0, [r6, #GREEN_ON]
@@ -602,36 +652,33 @@ up_green:
     str r1, [r4]
     LDA r3, F_CACHE
     blx r3
-    pop {r4, r5, r6, lr}
-    b redraw
+    pop {r4, r5, r6, pc}
 
 redraw:
     ldr r0, [r6]
     cmp r0, #0
     beq state_stock
-    cmp r0, #9
+    cmp r0, #ROW_SEL
     beq show_sel
-    cmp r0, #14
-    beq state_false
-    cmp r0, #15
-    beq state_green
-    cmp r0, #8
+    cmp r0, #ROW_GATE
     beq state_gate
     PTR r2, state_offsets
     ldr r1, [r2, r0, lsl #2]
     ldr r1, [r6, r1]
     b state_text
 state_stock:
-    PTR r2, state_offsets
-    mov r3, #9
+    /* On only when nothing of ours is. Every row that owns a state word,
+     * walked from one table, so a new row cannot be forgotten here. */
+    PTR r2, watched_offsets
+    movw r3, #:lower16:WATCHED_COUNT
     mov r1, #0
-1:  ldr r0, [r2, r3, lsl #2]
+1:  ldr r0, [r2], #4
     ldr r0, [r6, r0]
     orr r1, r1, r0
     subs r3, r3, #1
     bne 1b
-    ldr r0, [r6, #12]
-    orrs r1, r1, r0
+    ldr r0, [r6]
+    cmp r1, #0
     moveq r1, #1
     movne r1, #0
     b state_text
@@ -640,11 +687,6 @@ state_gate:
     ldr r2, [r6, #12]
     and r1, r1, r2
     b state_text
-state_false:
-    ldr r1, [r6, #FC_ON]           @ what we last asked the camera for
-    b state_text
-state_green:
-    ldr r1, [r6, #GREEN_ON]        @ armed means our branch is at the site
 state_text:
     PTR r4, labels
     add r0, r1, r0, lsl #1
@@ -1576,9 +1618,29 @@ m130_rates:
     .word 176, 0x1a5c, 0x238c, 0x6d, 0x71     @ FHD 23.976, M109 / M113
     .word 180, 0x1948, 0x2217, 0x7d, 0x7f     @ FHD 25,     M125 / M127
     .word 0, 0, 0, 0, 0
+/* One word per row, in the row map's order. */
 state_offsets:
-    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
-    .word H1344_ON, H672_ON, H1708_ON, H2088_ON
+    .word 0                        @ STOCK, aggregated instead
+    .word 8                        @ M130
+    .word 40                       @ M130 FAST
+    .word 4                        @ OPEN GATE
+    .word 28                       @ M98 60P
+    .word H1708_ON                 @ FHD 120
+    .word H1344_ON                 @ 2K120
+    .word H672_ON                  @ 672 240
+    .word GREEN_ON                 @ GREEN FIX
+    .word FC_ON                    @ FALSE COL
+    .word 12                       @ GYRO
+    .word 0                        @ GYRO-GATE, the AND of open gate and gyro
+    .word 24                       @ M98 30P   (dev)
+    .word 36                       @ M6 4K     (dev)
+    .word H2088_ON                 @ 2088 120  (dev)
+    .word 0                        @ SEL       (dev), a readout
+/* Every state word Stock has to see as off, whatever the build. */
+watched_offsets:
+    .word 8, 40, 4, 28, H1708_ON, H1344_ON, H672_ON
+    .word GREEN_ON, FC_ON, 12, 24, 36, H2088_ON
+.equ WATCHED_COUNT, (. - watched_offsets) / 4
 /* state offset, the resources it holds, and its toggle -- see release(). */
 features_table:
     .word 4,  GRP_2997,            toggle_og - entry
@@ -1632,14 +1694,6 @@ labels:
     .space 8
     .asciz ">STOCK      ON         "
     .space 8
-    .asciz ">OPEN GATE  OFF        "
-    .space 8
-    .asciz ">OPEN GATE  ON         "
-    .space 8
-    .asciz ">M98 30P    OFF        "
-    .space 8
-    .asciz ">M98 30P    ON         "
-    .space 8
     .asciz ">M130       OFF        "
     .space 8
     .asciz ">M130       ON         "
@@ -1648,25 +1702,17 @@ labels:
     .space 8
     .asciz ">M130 FAST  ON         "
     .space 8
+    .asciz ">OPEN GATE  OFF        "
+    .space 8
+    .asciz ">OPEN GATE  ON         "
+    .space 8
     .asciz ">M98 60P    OFF        "
     .space 8
     .asciz ">M98 60P    ON         "
     .space 8
-    .asciz ">M6 4K      OFF        "
+    .asciz ">FHD 120    OFF        "
     .space 8
-    .asciz ">M6 4K      ON         "
-    .space 8
-    .asciz ">GYRO       OFF        "
-    .space 8
-    .asciz ">GYRO       ON         "
-    .space 8
-    .asciz ">GYRO-GATE  OFF        "
-    .space 8
-    .asciz ">GYRO-GATE  ON         "
-    .space 8
-    .asciz ">SEL        OFF        "
-    .space 8
-    .asciz ">SEL        ON         "
+    .asciz ">FHD 120    ON         "
     .space 8
     .asciz ">2K120      OFF        "
     .space 8
@@ -1676,21 +1722,37 @@ labels:
     .space 8
     .asciz ">672 240    ON         "
     .space 8
-    .asciz ">FHD 120    OFF        "
+    .asciz ">GREEN FIX  OFF        "
     .space 8
-    .asciz ">FHD 120    ON         "
-    .space 8
-    .asciz ">2088 120   OFF        "
-    .space 8
-    .asciz ">2088 120   ON         "
+    .asciz ">GREEN FIX  ON         "
     .space 8
     .asciz ">FALSE COL  OFF        "
     .space 8
     .asciz ">FALSE COL  ON         "
     .space 8
-    .asciz ">GREEN FIX  OFF        "
+    .asciz ">GYRO       OFF        "
     .space 8
-    .asciz ">GREEN FIX  ON         "
+    .asciz ">GYRO       ON         "
+    .space 8
+    .asciz ">GYRO-GATE  OFF        "
+    .space 8
+    .asciz ">GYRO-GATE  ON         "
+    .space 8
+    .asciz ">M98 30P    OFF        "
+    .space 8
+    .asciz ">M98 30P    ON         "
+    .space 8
+    .asciz ">M6 4K      OFF        "
+    .space 8
+    .asciz ">M6 4K      ON         "
+    .space 8
+    .asciz ">2088 120   OFF        "
+    .space 8
+    .asciz ">2088 120   ON         "
+    .space 8
+    .asciz ">SEL        OFF        "
+    .space 8
+    .asciz ">SEL        ON         "
     .space 8
 busy_label: .asciz "STOP RECORDING / WAIT   "
 unavailable_label: .asciz "GYRO INIT FAILED       "

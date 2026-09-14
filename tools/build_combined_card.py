@@ -174,9 +174,11 @@ def main():
     menu_source = ROOT / 'src/menu.S'
     # The panel is assembled first: the menu has to be told where menu_core
     # lands in the pool, and baking that in from the real symbol is what stops
-    # the two drifting apart into a branch to nowhere.
+    # the two drifting apart into a branch to nowhere. Both sources take the
+    # same SHOW_SEL, so the row map cannot differ between them.
     panel_source = ROOT / 'src/menu_overlay.S'
-    panel_defines = (f'STATE_ADDR={PANEL_STATE:#x}',)
+    panel_defines = (f'STATE_ADDR={PANEL_STATE:#x}',
+                     f'SHOW_SEL={1 if args.debug else 0}')
     panel = assemble(panel_source, panel_defines)
     panel_syms = symbols(panel_source, panel_defines)
     panel_core = PANEL_OFFSET + panel_syms['menu_core']

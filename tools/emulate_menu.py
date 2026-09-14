@@ -19,9 +19,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # cells moved. Against the public card (SHOW_SEL=0) they would read C=00 L=00
 # for work that really happened.
 CARD = ROOT / 'builds/combined-debug'
-if not (CARD / 'VSHL.BIN').exists():
-    subprocess.run([sys.executable, str(ROOT / 'tools' / 'build_combined_card.py'),
-                    '--out', str(CARD), '--debug'], check=True, capture_output=True)
+# Built every run, not cached: a stale card here means these checks pass
+# against code that is no longer in the tree, which is exactly what happened
+# when the row order changed and this kept testing the old one.
+subprocess.run([sys.executable, str(ROOT / 'tools' / 'build_combined_card.py'),
+                '--out', str(CARD), '--debug'], check=True, capture_output=True)
 RAW = (CARD / 'VSHL.BIN').read_bytes()
 MANIFEST = json.loads((CARD / 'manifest.json').read_text())
 SYMS = MANIFEST['menu_symbols']
@@ -129,6 +131,7 @@ class Camera:
         self.draws = []
         self.composites = 0
         self.native = []
+        self.false_colour = []         # True for each "on", False for each "off"
         self.uc.hook_add(UC_HOOK_CODE, self.boundary)
         self.sel60 = sel60
         self.run(POOL + 0x8000 + 16 + 8 * len(SECTIONS), r0=POOL + 0x8000)
@@ -148,7 +151,12 @@ class Camera:
                  0xC0058340, 0xC03E4620, 0xC03E3D00, 0xC0265800,
                  0xC03E5698, 0xC03E56D8, SURFACE_VFN,
                  0xC036E108, 0xC036E1B8,
-                 0xC0057AE8, 0xC005C0B8}
+                 0xC0057AE8, 0xC005C0B8,
+                 # False colour: the CameraIF singleton and the two methods a
+                 # held function key calls. Modelled because Stock now has to
+                 # let go of the latch as well, and an unmodelled call here
+                 # faulted the moment it did.
+                 0xC0370CF8, 0xC03722E8, 0xC0372330}
         if address not in known:
             return
         assert uc.reg_read(UC_ARM_REG_SP) % 8 == 0, hex(address)
@@ -189,6 +197,10 @@ class Camera:
         elif address == SURFACE_VFN:
             value = SURFACE_DESC        # drawable -> backbuffer descriptor
             self.panel_fetches += 1
+        elif address == 0xC0370CF8:     # the CameraIF singleton
+            value = 0x52000000
+        elif address in (0xC03722E8, 0xC0372330):
+            self.false_colour.append(address == 0xC03722E8)
         uc.reg_write(UC_ARM_REG_R0, value)
         uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
@@ -275,7 +287,7 @@ def cells(addresses):
 
 
 # Each option, one key event, and the exact cells/canvas it is supposed to own.
-c.select(1)
+c.select(3)
 assert c.press(0x14) == '>OPEN GATE  ON'
 assert c.features() == (1, 0, 0, 0, 0, 0, 0)
 assert cells(OG_CELLS) == (0x75,) * len(OG_CELLS) and c.get(0xC0B59A28) == 0x00041C70
@@ -284,7 +296,7 @@ assert c.geom(0) == BINNED and cells(UNITY) == (0x400,) * 4
 assert c.press(0x14) == '>OPEN GATE  OFF'
 c.assert_stock()
 
-c.select(2)
+c.select(12)
 assert c.press(0x14) == '>M98 30P    ON'
 assert c.features() == (0, 0, 0, 1, 0, 0, 0)
 assert cells(OG_CELLS) == (0x62,) * len(OG_CELLS) and c.get(M98_VMAX) == 0x00041516
@@ -296,7 +308,7 @@ c.assert_stock()
 # id from whatever the camera actually put in the live table. Baking either in
 # is what made three hardware runs record stock files or corner-boxed frames.
 c.put(0xC072FA30, 0)            # nothing probed yet
-c.select(3)
+c.select(1)
 assert c.press(0x14) == 'SEL=00 RATE UNKNOWN', 'must refuse without a selector'
 c.assert_stock()
 
@@ -310,7 +322,7 @@ for probe, ids, vmax, rate in [(175, (0x6A, 0x6F), 0x04201517, 'FHD 29.97'),
     live = tuple(a for a in SCAN if FWWORD(a) in ids)
     others = tuple(a for a in SCAN if FWWORD(a) in (0x1B, 0x66) )
     before = {a: FWWORD(a) for a in live}
-    c.select(3)
+    c.select(1)
     assert c.press(0x14) == '>M130       ON', rate
     assert cells(live) == (0x82,) * len(live), rate
     assert cells(others) == tuple(FWWORD(a) for a in others), 'other rates untouched'
@@ -320,9 +332,9 @@ for probe, ids, vmax, rate in [(175, (0x6A, 0x6F), 0x04201517, 'FHD 29.97'),
     # The raw_zoom scaler for THIS rate's profile must go to unity: leaving it
     # at 0x640 is what recorded a 1.5625x-shrunken frame in the corner.
     assert cells(zoom_cells(probe)) == (0x400,) * 4, rate
-    c.select(9)
+    c.select(15)
     assert c.press(0x14).endswith('L=%02X' % len(live)), 'L tallies the active id'
-    c.select(3)
+    c.select(1)
     assert cells(zoom_cells(175 if probe != 175 else 176)) != (0x400,) * 4 \
         or probe == 175, 'only the selected profile is touched'
     assert c.press(0x14) == '>M130       OFF'
@@ -334,7 +346,7 @@ for probe, ids, vmax, rate in [(175, (0x6A, 0x6F), 0x04201517, 'FHD 29.97'),
 # must refuse and show it, not guess a rate.
 c = Camera()
 c.put(0xC072FA30, 0x9C)
-c.select(3)
+c.select(1)
 assert c.press(0x14) == 'SEL=9C RATE UNKNOWN'
 c.assert_stock()
 print('PASS: M130 follows the selected preset, whatever selector and mode id it uses')
@@ -342,7 +354,7 @@ print('PASS: M130 follows the selected preset, whatever selector and mode id it 
 c = Camera()
 # FAST takes the second column, so the rate holds at the shorter line period.
 c.put(0xC072FA30, 176)
-c.select(4)
+c.select(2)
 assert c.press(0x14) == '>M130 FAST  ON'
 assert c.get(M130_HMAX) == 0x014A014A and c.get(M130_VMAX) == 0x0420238C
 assert c.get(M130_HMAX) >> 16 == 0x014A
@@ -351,7 +363,7 @@ assert c.get(M130_HMAX) == 0x01BD01BD and c.get(M130_VMAX) == 0x04201014
 c.assert_stock()
 print('PASS: FAST holds the rate at line period 330 with no runtime division')
 
-c.select(5)
+c.select(4)
 assert c.press(0x14) == '>M98 60P    ON'
 assert c.features() == (0, 0, 0, 0, 1, 0, 0)
 assert cells(HF_CELLS) == (0x62,) * len(HF_CELLS) and c.get(M98_VMAX) == 0x00040A8A
@@ -362,7 +374,7 @@ c.assert_stock()
 
 # M6 shares the 4K raster, so it must stay a picker-only swap: no hook, no
 # canvas, no timing rewrite.
-c.select(6)
+c.select(13)
 assert c.press(0x14) == '>M6 4K      ON'
 assert c.features() == (0, 0, 0, 0, 0, 1, 0)
 assert cells(K4_CELLS) == (0x06,) * len(K4_CELLS)
@@ -371,13 +383,13 @@ assert cells(zoom_cells(175)) == (0x640,) * 4
 assert c.press(0x14) == '>M6 4K      OFF'
 c.assert_stock()
 
-c.select(7)
+c.select(10)
 assert c.press(0x14) == '>GYRO       ON'
 assert [c.get(a) for a in HOOKS] == ON
 assert c.press(0x14) == '>GYRO       OFF'
 c.assert_stock()
 
-c.select(8)
+c.select(11)
 assert c.press(0x14) == '>GYRO-GATE  ON'
 assert c.features() == (1, 0, 1, 0, 0, 0, 0)
 assert [c.get(a) for a in HOOKS] == ON and c.geom(0) == BINNED
@@ -388,11 +400,11 @@ print('PASS: each option owns exactly its cells, canvas and timing entry')
 # Everything that shares the 29.97 picker cell must hand it over, not stack.
 c.put(0xC072FA30, 175)          # M130 needs a known preset to apply at all
 for first, second, expected, cell, canvas in [
-        (1, 2, (0, 0, 0, 1, 0, 0, 0), 0x62, BINNED),      # Open Gate -> M98 30P
-        (2, 3, (0, 1, 0, 0, 0, 0, 0), 0x82, FULL130),     # M98 30P -> M130
-        (3, 1, (1, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Open Gate
-        (3, 8, (1, 0, 1, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Gyro-Gate
-        (8, 3, (0, 1, 1, 0, 0, 0, 0), 0x82, FULL130)]:    # Gyro-Gate -> M130
+        (3, 12, (0, 0, 0, 1, 0, 0, 0), 0x62, BINNED),     # Open Gate -> M98 30P
+        (12, 1, (0, 1, 0, 0, 0, 0, 0), 0x82, FULL130),    # M98 30P -> M130
+        (1, 3, (1, 0, 0, 0, 0, 0, 0), 0x75, BINNED),      # M130 -> Open Gate
+        (1, 11, (1, 0, 1, 0, 0, 0, 0), 0x75, BINNED),     # M130 -> Gyro-Gate
+        (11, 1, (0, 1, 1, 0, 0, 0, 0), 0x82, FULL130)]:   # Gyro-Gate -> M130
     c.select(first)
     c.press(0x14)
     c.select(second)
@@ -406,8 +418,8 @@ for first, second, expected, cell, canvas in [
     c.press(0x14)
     c.assert_stock()
 # M98 has one timing entry, so its two rates cannot both be live.
-c.select(2); c.press(0x14)
-c.select(5); c.press(0x14)
+c.select(12); c.press(0x14)
+c.select(4); c.press(0x14)
 assert c.features() == (0, 0, 0, 0, 1, 0, 0)
 assert cells(OG_CELLS) == (0x6A,) * len(OG_CELLS) and c.get(M98_VMAX) == 0x00040A8A
 c.select(0); c.press(0x14)
@@ -416,16 +428,16 @@ print('PASS: shared cell and shared timing entry both hand over cleanly')
 
 # Independent cells: M130 at 29.97, M98 at 59.94 and M6 at 4K coexist, each
 # with its own selector and canvas -- the per-slot geometry this needs.
-c.select(3); c.press(0x14)
-c.select(5); c.press(0x14)
-c.select(6); c.press(0x14)
+c.select(1); c.press(0x14)
+c.select(4); c.press(0x14)
+c.select(13); c.press(0x14)
 assert c.features() == (0, 1, 0, 0, 1, 1, 0)
 assert (c.get(0xC072FA20), c.get(0xC072FA24)) == (175, 173)
 assert c.geom(0) == FULL130 and c.geom(1) == BINNED
 assert cells(OG_CELLS) == (0x82,) * len(OG_CELLS) and cells(HF_CELLS) == (0x62,) * len(HF_CELLS)
 assert cells(K4_CELLS) == (0x06,) * len(K4_CELLS)
 # Releasing one must not take the shared cells or the other's canvas.
-c.select(3); c.press(0x14)
+c.select(1); c.press(0x14)
 assert c.features() == (0, 0, 0, 0, 1, 1, 0)
 assert c.geom(0) == (0, 0, 0, 0) and c.geom(1) == BINNED
 # Each profile owns its own scaler now: releasing the 29.97 one must not take
@@ -443,7 +455,7 @@ c = Camera()
 c.put(0xC072FA30, 176)
 q24 = tuple(a for a in SCAN if FWWORD(a) in (0x6D, 0x71))
 assert len(q24) == 5, len(q24)
-c.select(3)
+c.select(1)
 assert c.press(0x14) == '>M130       ON'
 assert cells(q24) == (0x82,) * len(q24), 'every 23.976 cell, not three of five'
 assert c.get(ST + 52) == len(q24), 'the count SEL reports'
@@ -456,7 +468,7 @@ c = Camera()
 c.put(0xC072FA30, 176)
 stray = q24[0]
 c.put(stray, 0x82)
-c.select(3)
+c.select(1)
 assert c.press(0x14) == '>M130       ON'
 assert c.get(ST + 52) == len(q24), 'the stray is counted, not skipped'
 assert c.press(0x14) == '>M130       OFF'
@@ -466,7 +478,7 @@ assert all(c.get(a) != 0x82 for a in SCAN), 'nothing still names M130'
 # every time the geometry row is built, so whatever resets them loses.
 c = Camera()
 c.put(0xC072FA30, 176)
-c.select(3); c.press(0x14)
+c.select(1); c.press(0x14)
 n = c.get(0xC072FA80)
 listed = tuple(c.get(0xC072FA80 + 4 + i * 4) for i in range(n))
 assert n == len(q24) and set(listed) == set(q24), (n, [hex(x) for x in listed])
@@ -478,7 +490,7 @@ print('PASS: every cell of the selected rate is repointed and restored')
 # Every independent live/busy signal must block a change without touching hooks.
 for label, end, width in [('busy_words', 'busy_bytes', 4), ('busy_bytes', 'guard_table', 1)]:
     for (address,) in struct.iter_unpack('<I', MENU[SYMS[label]:SYMS[end]]):
-        c.select(7)
+        c.select(10)
         c.uc.mem_write(address, b'\x01' + b'\0' * (width - 1))
         assert c.press(0x14) == 'STOP RECORDING / WAIT'
         assert c.features() == (0, 0, 0, 0, 0, 0, 0)
@@ -493,7 +505,7 @@ for failed in (1, 5, 9):
     c = Camera(fail_allocation=failed)
     assert c.get(ST + 16) == 0
     c.assert_stock()
-    c.select(7)
+    c.select(10)
     assert c.press(0x14) == 'GYRO INIT FAILED'
     assert c.features() == (0, 0, 0, 0, 0, 0, 0)
 print('PASS: allocation failures do not arm gyro or falsely enable its menu state')
@@ -508,7 +520,7 @@ print('PASS: mismatched firmware refuses initialization before allocating/arming
 # what the probe saw instead of rewriting geometry for a guess.
 c = Camera(sel60=0)
 c.put(0xC072FA30, 0xAD)
-c.select(5)
+c.select(4)
 assert c.press(0x14) == 'SEL=AD RATE UNKNOWN'
 c.assert_stock()
 print('PASS: an unmeasured selector refuses and shows the probed value')
@@ -532,7 +544,7 @@ assert c.features()[0] == 0, 'switching it off must turn Open Gate off'
 c.assert_stock()
 
 # The menu keeps control while the switch is untouched.
-c.select(1)
+c.select(3)
 assert c.press(0x14) == '>OPEN GATE  ON'
 c.press(0x0D); c.press(0x0D)
 assert c.features()[0] == 1, 'an unmoved switch must not undo the menu'
@@ -599,7 +611,7 @@ print('PASS: the panel is spawned, placed, and paints its own rectangle')
 # the re-latch, and without it you had to switch the preset by hand.
 c = Camera()
 assert c.get(PANEL_ST + 0x54) == 1, 'follow is armed on the card'
-c.select(1)
+c.select(3)
 c.press(0x14)
 c.run(POOL + MANIFEST['panel_offset'] + MANIFEST['panel_symbols']['menu_core'])
 assert c.features()[0] == 1, 'Open Gate is on'
@@ -648,7 +660,7 @@ print('PASS: the panel stays down after the camera menu, until you ask for it')
 # swap: turning 27->58 on and back off would rewrite the three cells that were
 # genuinely 58 into 27. That is why 1708 120 and 1174 120 are not offered, and
 # why this test asserts the exact restore rather than just "something changed".
-for row, stock_id, fast_id, name in ((10, 139, 56, '2K120'), (11, 140, 12, '672 240')):
+for row, stock_id, fast_id, name in ((6, 139, 56, '2K120'), (7, 140, 12, '672 240')):
     c = Camera()
     cells_before = {a: c.get(a) for a in SCAN}
     c.select(row)
@@ -666,8 +678,8 @@ print('PASS: the high-framerate rows swap exactly one cell each, and restore it'
 # 119.88). A symmetric swap would rewrite those stock cells on the way back,
 # which is why they had no row until now: these journal every address they
 # touch, so OFF has to restore the table byte for byte.
-for row, stock_id, fast_id, log, name in ((12, 27, 58, 0xC0732D00, 'FHD 120'),
-                                          (13, 88, 103, 0xC0732E00, '2088 120')):
+for row, stock_id, fast_id, log, name in ((5, 27, 58, 0xC0732D00, 'FHD 120'),
+                                          (14, 88, 103, 0xC0732E00, '2088 120')):
     c = Camera()
     cells_before = {a: c.get(a) for a in SCAN}
     assert fast_id in cells_before.values(), f'{fast_id} is in the stock picker'
@@ -693,7 +705,7 @@ print('PASS: the journalled 120 fps rows restore the picker exactly, and Stock c
 GREEN_SITE, GREEN_STOCK, GREEN_CODE = 0xC0437E98, 0xE92D4030, 0xC0794240
 c = Camera()
 assert c.get(GREEN_SITE) == GREEN_STOCK, 'the accessor starts stock'
-c.select(15)
+c.select(8)
 assert c.press(0x14) == '>GREEN FIX  ON'
 assert c.get(ST + 76) == 1
 branch = 0xEA000000 | (((GREEN_CODE - GREEN_SITE - 8) >> 2) & 0xFFFFFF)
@@ -703,4 +715,21 @@ assert c.get(ST + 76) == 0
 assert c.get(GREEN_SITE) == GREEN_STOCK, 'off: the stock instruction is back'
 c.assert_stock()
 print('PASS: GREEN FIX arms and disarms the display accessor, and nothing else')
+
+# Stock has to mean Stock, including the two switches that are ours and own no
+# cells. Both were left armed by Stock until the rows were reordered.
+c = Camera()
+for row in (8, 9):                      # GREEN FIX, FALSE COL
+    c.select(row)
+    c.press(0x14)
+assert c.get(ST + 76) == 1 and c.get(ST + 72) == 1
+assert c.false_colour[-1] is True, 'the row asks the camera to start it'
+c.select(0)
+assert c.press(0x14) == '>STOCK      ON'
+assert c.get(ST + 76) == 0, 'Stock disarms the green fix'
+assert c.get(ST + 72) == 0, 'Stock lets go of false colour'
+assert c.false_colour[-1] is False, 'and asks the camera to stop it'
+assert c.get(GREEN_SITE) == GREEN_STOCK, 'and the accessor is stock again'
+c.assert_stock()
+print('PASS: Stock clears our own switches too, not just the picker cells')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')

@@ -55,9 +55,16 @@
 .equ INK,        0xB2           /* what the firmware's own glyphs read back as */
 .equ CELL_W,     12             /* (FONT_W + 1) * 2 */
 .equ ROW_PITCH,  18
-.equ ROWS,       14     /* ten original rows, two 120s, two 240/120 swaps */
+/* Rows, in src/menu.S's order. Four are dev-only, for the same reasons. */
+#if SHOW_SEL
+.equ ROWS,       16
+#else
+.equ ROWS,       12
+#endif
+.equ ROW_GATE,   11
+.equ ROW_SEL,    15
 .equ PANEL_W,    192
-.equ PANEL_H,    (24 + (ROWS + 2) * ROW_PITCH + 6)   /* two rows are ours */
+.equ PANEL_H,    (24 + ROWS * ROW_PITCH + 6)
 .equ VALUE_X,    132
 .equ PERIOD_MS,  150
 .equ PRIORITY,   20
@@ -683,89 +690,12 @@ row_loop:
     cmp     r8, #ROWS
     blo     row_loop
 
-    /* One row that is ours rather than the card's: false colour, which the
-     * camera itself only offers as a button you hold down. */
-    add     r9, r5, #24
-    mov     r0, #ROW_PITCH
-    mla     r9, r8, r0, r9
-    LDA     r0, MENU_ST             @ our row highlights like any of the card's
-    ldr     r0, [r0]
-    cmp     r0, #ROWS
-    bne     1f
-    mov     r0, #INK
-    str     r0, [r10, #0x40]
-    add     r0, r4, #2
-    sub     r1, r9, #2
-    movw    r2, #(PANEL_W - 4)
-    mov     r3, #ROW_PITCH
-    bl      fill_rect
-    mov     r0, #0
-    str     r0, [r10, #0x40]
-    b       2f
-1:  mov     r0, #INK
-    str     r0, [r10, #0x40]
-2:  add     r0, r4, #8
-    mov     r1, r9
-    PTR     r2, false_colour_label
-    bl      draw_str
-    /* Where the latch lives depends on who is driving. Pushed over USB, the
-     * key gate owns it (+0x70 -> gate+0x24). On a card there is no gate: the
-     * menu owns the row itself and keeps its answer at MENU_ST+FC_ON, which is
-     * why this row read OFF forever on the first card build. */
-    ldr     r1, [r10, #0x70]
-    cmp     r1, #0
-    ldrne   r0, [r1, #0x24]
-    beq     4f
-    b       5f
-4:  LDA     r1, MENU_ST
-    ldr     r0, [r1, #MENU_FC_ON]
-5:  cmp     r0, #0
-    movne   r0, #1
-    moveq   r0, #0
-    mov     r1, #4
-    mul     r0, r0, r1
-    PTR     r2, value_texts
-    add     r2, r2, r0
-    add     r0, r4, #VALUE_X
-    mov     r1, r9
-    bl      draw_str
-
-    /* And the second of ours: the green fix, which is display-only and so has
-     * no camera state to read back either -- the row shows what the menu last
-     * armed, at MENU_ST+MENU_GREEN_ON. */
-    add     r9, r9, #ROW_PITCH
-    LDA     r0, MENU_ST
-    ldr     r0, [r0]
-    cmp     r0, #(ROWS + 1)
-    bne     6f
-    mov     r0, #INK
-    str     r0, [r10, #0x40]
-    add     r0, r4, #2
-    sub     r1, r9, #2
-    movw    r2, #(PANEL_W - 4)
-    mov     r3, #ROW_PITCH
-    bl      fill_rect
-    mov     r0, #0
-    str     r0, [r10, #0x40]
-    b       7f
-6:  mov     r0, #INK
-    str     r0, [r10, #0x40]
-7:  add     r0, r4, #8
-    mov     r1, r9
-    PTR     r2, green_fix_label
-    bl      draw_str
-    LDA     r1, MENU_ST
-    ldr     r0, [r1, #MENU_GREEN_ON]
-    cmp     r0, #0
-    movne   r0, #1
-    moveq   r0, #0
-    mov     r1, #4
-    mul     r0, r0, r1
-    PTR     r2, value_texts
-    add     r2, r2, r0
-    add     r0, r4, #VALUE_X
-    mov     r1, r9
-    bl      draw_str
+    /* False colour and the green fix used to be drawn here by hand, after the
+     * loop. They are rows in the map now, with their own state words, so the
+     * loop draws them like everything else. The USB key gate's own latch at
+     * +0x70 is no longer consulted: on a card there is no gate, and the menu
+     * owns both switches.
+     */
 
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
@@ -775,10 +705,10 @@ row_loop:
 row_value:
     push    {r4, r5, r6, lr}
     LDA     r5, MENU_ST
-    cmp     r0, #9
+    cmp     r0, #ROW_SEL
     moveq   r0, #2
     beq     9f
-    cmp     r0, #8
+    cmp     r0, #ROW_GATE
     bne     1f
     ldr     r0, [r5, #4]
     ldr     r1, [r5, #12]
@@ -788,15 +718,14 @@ row_value:
     b       9f
 1:  cmp     r0, #0
     bne     2f
-    PTR     r4, state_offsets       @ Stock: on only when nothing else is
-    mov     r6, #1
+    PTR     r4, watched_offsets     @ Stock: on only when nothing else is
+    movw    r6, #:lower16:WATCHED_COUNT
     mov     r1, #0
-3:  ldr     r2, [r4, r6, lsl #2]
+3:  ldr     r2, [r4], #4
     ldr     r2, [r5, r2]
     orr     r1, r1, r2
-    add     r6, r6, #1
-    cmp     r6, #8
-    blo     3b
+    subs    r6, r6, #1
+    bne     3b
     cmp     r1, #0
     moveq   r0, #1
     movne   r0, #0
@@ -901,41 +830,49 @@ next_bit:
  * moment it is toggled, so 23.98 has to be in place first: that is what makes
  * the M130 rows mean 24p, which is the only M130 that sustains -- 29.97 needs
  * 471 MB/s and stops after about five seconds. */
+/* All in the row map's order, which src/menu.S owns. */
 cursor_rates:
     .word 0        @ STOCK
-    .word 0        @ OPEN GATE
-    .word 0        @ M98 30P
-    .word 1        @ M130        23.98
+    .word 1        @ M130        23.98, so the row means 24p
     .word 1        @ M130 FAST   23.98
+    .word 0        @ OPEN GATE
     .word 0        @ M98 60P
-    .word 0        @ M6 4K
+    .word 0        @ FHD 120     its own cell, not an FHD rate
+    .word 0        @ 2K120       likewise
+    .word 0        @ 672 240     likewise
+    .word 0        @ GREEN FIX
+    .word 0        @ FALSE COL
     .word 0        @ GYRO
     .word 0        @ GYRO-GATE
-    .word 0        @ SEL
-    .word 0        @ 2K120       its own cell, not an FHD rate
-    .word 0        @ 672 240     likewise
-    .word 0        @ FHD 120     its own cell
-    .word 0        @ 2088 120    likewise
+    .word 0        @ M98 30P     (dev)
+    .word 0        @ M6 4K       (dev)
+    .word 0        @ 2088 120    (dev)
+    .word 0        @ SEL         (dev)
 
 option_rates:
     .word 0        @ STOCK
-    .word 3        @ OPEN GATE   FHD 29.97 cell
-    .word 3        @ M98 30P     FHD 29.97 cell
     .word 0        @ M130        follows whatever rate was selected first
     .word 0        @ M130 FAST   likewise
+    .word 3        @ OPEN GATE   FHD 29.97 cell
     .word 5        @ M98 60P     FHD 59.94 cell
-    .word 0        @ M6 4K       the 4K cell, not an FHD rate
+    .word 0        @ FHD 120     its own cell
+    .word 0        @ 2K120       likewise
+    .word 0        @ 672 240     likewise
+    .word 0        @ GREEN FIX
+    .word 0        @ FALSE COL
     .word 0        @ GYRO
     .word 0        @ GYRO-GATE
-    .word 0        @ SEL
-    .word 0        @ 2K120       its own cell, not an FHD rate
-    .word 0        @ 672 240     likewise
-    .word 0        @ FHD 120     its own cell
-    .word 0        @ 2088 120    likewise
+    .word 3        @ M98 30P     (dev) FHD 29.97 cell
+    .word 0        @ M6 4K       (dev) the 4K cell
+    .word 0        @ 2088 120    (dev)
+    .word 0        @ SEL         (dev)
 
 state_offsets:
-    .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
-    .word 44, 48, 80, 84     @ the high-framerate rows
+    .word 0, 8, 40, 4, 28, 80, 44, 48
+    .word 76, 72, 12, 0, 24, 36, 84, 0
+watched_offsets:
+    .word 8, 40, 4, 28, 80, 44, 48, 76, 72, 12, 24, 36, 84
+.equ WATCHED_COUNT, (. - watched_offsets) / 4
 
 title_text:
     .asciz "FPLAB"
@@ -954,19 +891,21 @@ green_fix_label:
     .balign 4
 row_labels:
     .asciz "STOCK";      .space 6
-    .asciz "OPEN GATE";  .space 2
-    .asciz "M98 30P";    .space 4
     .asciz "M130";       .space 7
     .asciz "M130 FAST";  .space 2
+    .asciz "OPEN GATE";  .space 2
     .asciz "M98 60P";    .space 4
-    .asciz "M6 4K";      .space 6
+    .asciz "FHD 120";    .space 4
+    .asciz "2K120";      .space 6
+    .asciz "672 240";    .space 4
+    .asciz "GREEN FIX";  .space 2
+    .asciz "FALSE COL";  .space 2
     .asciz "GYRO";       .space 7
     .asciz "GYRO-GATE";  .space 2
+    .asciz "M98 30P";    .space 4
+    .asciz "M6 4K";      .space 6
+    .asciz "2088 120";   .space 3
     .asciz "SEL";        .space 8
-    .asciz "2K120";       .space 6
-    .asciz "672 240";     .space 4
-    .asciz "FHD 120";     .space 4
-    .asciz "2088 120";    .space 3
 thread_name:
     .asciz "fpLABmn"
     .balign 4
