@@ -41,11 +41,11 @@ import subprocess
 import sys
 import time
 
-ROOT = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'reference/fpSup/fp_usb_shell'))
 from armasm import assemble, symbols                            # noqa: E402
 
-SOURCE = ROOT / 'src/payloads/hist_overlay.S'
+SOURCE = ROOT / 'src/hist_overlay.S'
 POOL_PTR = 0xC3757A7C           # [0] = the pool the AutoRun asked for at boot
 CODE_OFF = 0x30000              # clear of the loader window, gyro and the menu
 STATE_OFF = 0x31000

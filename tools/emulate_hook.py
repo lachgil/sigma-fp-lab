@@ -15,7 +15,7 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM
 from unicorn.arm_const import (UC_ARM_REG_R0, UC_ARM_REG_R4, UC_ARM_REG_R5,
                                UC_ARM_REG_SP, UC_ARM_REG_LR)
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / "reference" / "fpSup" / "fp_usb_shell"))
 from armasm import assemble
 

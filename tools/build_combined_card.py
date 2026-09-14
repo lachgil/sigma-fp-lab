@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 SHELL = ROOT / 'reference/fpSup/fp_usb_shell'
 GYRO = ROOT / 'reference/fpSup/gyro'
 sys.path[:0] = [str(SHELL), str(GYRO)]
@@ -72,7 +72,7 @@ def main():
                                    for a, b, _ in sections)).hexdigest()
     if digest != GYRO_DIGEST:
         raise SystemExit('gyro sections differ from verified gyro_og_test example')
-    menu_source = ROOT / 'src/payloads/menu.S'
+    menu_source = ROOT / 'src/menu.S'
     defines = (f'OG60_SEL={args.og60_sel}',)
     menu = assemble(menu_source, defines)
     syms = symbols(menu_source, defines)

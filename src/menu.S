@@ -1,8 +1,8 @@
 .syntax unified
 .arm
 .text
-#include "../../reference/fpSup/gyro/ring_task.inc.S"
-#include "../../reference/fpSup/gyro/imu_stream.inc.S"
+#include "../reference/fpSup/gyro/ring_task.inc.S"
+#include "../reference/fpSup/gyro/imu_stream.inc.S"
 /* fpLAB: RIGHT selects, UP toggles. Stock clears every feature.
  * Options: Stock, Open Gate (M117), M98 30P, M130 30P, M130 FAST, M130 24P,
  * M98 60P, M6 4K, Gyro, Gyro-Gate (linked Open Gate + gyro), and a read-only

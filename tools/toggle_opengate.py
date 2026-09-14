@@ -19,7 +19,7 @@ import struct
 import subprocess
 import sys
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 PATCHES = {
     0xC0BE5888: (0x6A, 0x75, "picker slot7 mode (106<->117)"),
     0xC0BE5A28: (0x6A, 0x75, "picker table2"),

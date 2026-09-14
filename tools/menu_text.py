@@ -26,7 +26,7 @@ import struct
 import subprocess
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 IMAGE = ROOT / "analysis" / "MAIN_c0000000.bin"
 LOAD = 0xC0000000
 

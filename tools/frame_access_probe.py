@@ -11,7 +11,7 @@ import json, struct, hashlib
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_CODE
 from unicorn.arm_const import *
-fw=(Path(__file__).resolve().parent/'analysis'/'MAIN_c0000000.bin').read_bytes()
+fw=(Path(__file__).resolve().parent.parent/'analysis'/'MAIN_c0000000.bin').read_bytes()
 assert hashlib.sha256(fw).hexdigest()=='92a8ee993f6c3d66c251e88d45a2ccd5135c6cf7342717784321c2ed506e2fb4'
 u=Uc(UC_ARCH_ARM,UC_MODE_ARM)
 u.mem_map(0xC0000000,0x4000000); u.mem_write(0xC0000000,fw)

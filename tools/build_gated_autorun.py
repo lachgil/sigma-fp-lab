@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 
-HERE = pathlib.Path(__file__).resolve().parent
+HERE = pathlib.Path(__file__).resolve().parent.parent
 REF = HERE / "reference" / "fpSup"
 SHELL_DIR = REF / "fp_usb_shell"
 SHELL_BUILDER = SHELL_DIR / "build_autorun.py"

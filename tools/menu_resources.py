@@ -19,7 +19,7 @@ LOAD = 0xC0000000
 BASE = 0xD22400
 NBU_BASE = 0x18C0460
 NBU_END = 0x2D8CEF8
-IMAGE = Path(__file__).resolve().parent / 'analysis' / 'MAIN_c0000000.bin'
+IMAGE = Path(__file__).resolve().parent.parent / 'analysis' / 'MAIN_c0000000.bin'
 
 
 @dataclass(frozen=True)

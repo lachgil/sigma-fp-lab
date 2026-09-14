@@ -36,7 +36,7 @@ def mem_read(address: int, count: int) -> bytes:
 def shl(*args: str) -> str:
     return menu_text.shl(*args)
 
-ROOT = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 JOURNAL = ROOT / "analysis" / "native_row_backup.json"
 DRAW_TEXT_LOCALIZED = 0x40000011
 

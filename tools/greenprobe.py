@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 MANAGER = 0xC375D840          # geometry manager singleton
 LIVE_PTR = MANAGER + 0x0C     # [M+0x0c] -> live/record-monitor node (dynamic)
 SEL_OFF = 0x00               # node+0x00 = selector (175 == open gate)

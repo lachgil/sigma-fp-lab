@@ -1,4 +1,4 @@
-# Running our own code on the fp
+# Reading the image, and drawing on the screen
 
 The goal is firmware extensibility: native controls, custom functions, image
 analysis and sensor information. More sensor-mode experiments are not the current
@@ -256,7 +256,7 @@ cadence; the true write-complete interrupt is upstream and was not identified.
 
 ## A live overlay drawn by our own code, 2026-09-14
 
-`src/payloads/hist_overlay.S` runs inside the camera, RAM only, deployed by
+`src/hist_overlay.S` runs inside the camera, RAM only, deployed by
 `hist_deploy.py` over the USB shell:
 
 ```sh
@@ -301,7 +301,7 @@ Verified run: pixels `0x4483C340`, 320x180, 57,600 samples, status 1, and
 reading the presented buffer back, **all 256 bar heights equal the payload's own
 bins** with the baseline row present.
 
-![The histogram on the camera's own screen](docs/osd_histogram.png)
+![The histogram on the camera's own screen](../osd_histogram.png)
 
 That is a read-back of the buffer the camera presented, not a mock-up. The
 payload's full state and bins stay in the unpublished `analysis/` folder.

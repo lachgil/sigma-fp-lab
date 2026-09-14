@@ -136,7 +136,7 @@ Single-press RIGHT/UP menu confirmed pleasant on the camera:
 
 ## Combined boot card (2026-09-11, offline verified)
 
-`src/payloads/menu.S` is now the combined controller. Build:
+`src/menu.S` is now the combined controller. Build:
 `.venv/bin/python build_combined_card.py`; execute the packaged ARM:
 `.venv/bin/python emulate_menu.py`. Installation is in README.md.
 

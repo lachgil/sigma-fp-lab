@@ -29,7 +29,7 @@ import struct
 
 from menu_text import mem_read, shl
 
-ROOT = pathlib.Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 JOURNAL = ROOT / "analysis" / "oversample_state.json"
 
 # Full-width 16:9 readouts, 12-bit, one per framerate. These are the modes stock

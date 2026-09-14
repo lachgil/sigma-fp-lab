@@ -30,7 +30,7 @@ scripts in the repo root regenerate them from your own firmware).
 - **Open gate works and files are correct.** The green tint is a record-time
   **monitor** artifact, not in your footage. The standby green fix
   (`opengate-greenfix`) is verified in firmware but needs a per-camera fingerprint
-  match to engage; see [`../GREEN-HOOK.md`](../GREEN-HOOK.md).
+  match to engage; see [the green preview notes](../docs/display/green.md).
 - **High-fps is experimental.** M58/M103 are 2×2-binned (softer) sensor modes.
   Use a fast SSD, keep clips short, and verify your own files.
 - These are RAM-only and reversible, but RAM changes can still spoil a take.
@@ -39,5 +39,5 @@ scripts in the repo root regenerate them from your own firmware).
 - fp Ver.5.02 only. There is no runtime firmware-version guard in the file; using
   the wrong version is on you.
 
-See the repo root [`STATUS.md`](../STATUS.md) and [`MODE-MAP.md`](../MODE-MAP.md)
+See [docs/status.md](../docs/status.md) and [docs/modes/map.md](../docs/modes/map.md)
 for the full picture and the current mode-unlock work.

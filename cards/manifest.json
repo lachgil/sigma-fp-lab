@@ -2,13 +2,13 @@
   "purpose": "Offline SIGMA fp research only; no camera deployment",
   "inputs": [
     {
-      "source": "/home/lgeeh/Downloads/FP__V502.bin",
+      "source": "FP__V502.bin",
       "copy": "inputs/FP__V502.bin",
       "bytes": 25692160,
       "sha256": "c9fa76f32f523bb2dc9a3fbda39418c31573cab6a1aa5c56d28c371862066ed8"
     },
     {
-      "source": "/home/lgeeh/Downloads/AutoRun (1).txt",
+      "source": "AutoRun (1).txt",
       "copy": "inputs/AutoRun (1).txt",
       "bytes": 32768,
       "sha256": "032e2562e86d12db3085bac14b3ceab0abd71dc13e018e5d7542e145679ea790"

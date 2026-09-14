@@ -1,39 +1,48 @@
 #!/usr/bin/env bash
-# Build the combined card, run the offline checks, then publish to the NAS.
-# Nothing is published unless the build and both emulations pass.
+# Build the combined card, run the offline checks, then copy the files out.
+# Nothing is copied unless the build and both emulations pass.
 #
-#   ./publish_card.sh                 # build, verify, publish
-#   ./publish_card.sh --og60-sel 0    # any build_combined_card.py argument
+#   FP_CARD_DEST=/run/media/you/SDCARD ./tools/publish_card.sh
+#   FP_CARD_DEST=/mnt/somewhere/fp     ./tools/publish_card.sh --og60-sel 0
+#
+# FP_CARD_DEST is wherever the card files should land: the mounted SD card, or
+# a folder you copy from later. Any build_combined_card.py argument is passed
+# through. Nothing here is specific to one machine.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
-NAS="${FP_CARD_DEST:-/run/user/1000/gvfs/smb-share:server=192.168.1.40,share=media/fp/card}"
+DEST="${FP_CARD_DEST:-}"
 PY=.venv/bin/python
 OUT=builds/combined-menu
 
-$PY build_combined_card.py "$@"
-$PY emulate_hook.py > /dev/null
-$PY emulate_menu.py > /dev/null
+if [ -z "$DEST" ]; then
+    echo "set FP_CARD_DEST to the destination folder (the mounted card, say)" >&2
+    exit 2
+fi
+
+$PY tools/build_combined_card.py "$@"
+$PY tools/emulate_hook.py > /dev/null
+$PY tools/emulate_menu.py > /dev/null
 echo "checks   : geometry hook + packaged menu binary pass"
 
-# The share is gvfs, so it can be absent without the mount failing loudly.
-if [ ! -d "$(dirname "$NAS")" ]; then
-    echo "dest     : $NAS not mounted -- open the share in the file manager first" >&2
+# A network share can be absent without the copy failing loudly.
+if [ ! -d "$(dirname "$DEST")" ]; then
+    echo "dest     : $DEST is not there -- mount it first" >&2
     exit 1
 fi
-mkdir -p "$NAS"
+mkdir -p "$DEST"
 
 # Written in place, so a half-copied VSHL.BIN beside a new AutoRun.txt is the
 # failure to avoid: copy to a temp name on the same share, then move.
 for f in AutoRun.txt VSHL.BIN manifest.json; do
-    cp "$OUT/$f" "$NAS/.$f.new"
-    mv "$NAS/.$f.new" "$NAS/$f"
+    cp "$OUT/$f" "$DEST/.$f.new"
+    mv "$DEST/.$f.new" "$DEST/$f"
 done
 sync
 
 for f in AutoRun.txt VSHL.BIN; do
     a=$(sha256sum "$OUT/$f" | cut -d' ' -f1)
-    b=$(sha256sum "$NAS/$f" | cut -d' ' -f1)
+    b=$(sha256sum "$DEST/$f" | cut -d' ' -f1)
     if [ "$a" != "$b" ]; then
         echo "verify   : $f differs on the share -- do NOT copy it to the card" >&2
         exit 1
@@ -79,6 +88,6 @@ done
     echo
     echo "AutoRun.txt sha256 $(sha256sum "$OUT/AutoRun.txt" | cut -d' ' -f1)"
     echo "VSHL.BIN    sha256 $(sha256sum "$OUT/VSHL.BIN" | cut -d' ' -f1)"
-} > "$NAS/README.txt"
+} > "$DEST/README.txt"
 sync
-echo "dest     : $NAS (README.txt written)"
+echo "dest     : $DEST (README.txt written)"

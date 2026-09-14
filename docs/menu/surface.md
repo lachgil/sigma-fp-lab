@@ -3,7 +3,7 @@
 Offline map of every named setting the firmware's own shell can drive, built for
 the next stage: manipulating menu items rather than recording modes.
 
-Generated into [`analysis/menu_setters.json`](analysis/menu_setters.json).
+Generated into `analysis/menu_setters.json` (generated locally, not published).
 The original setter analysis below is distinct from native UI resources.
 Some setters and text writes have now been exercised on hardware; read the
 dated evidence before treating a stored value as an observable UI change.

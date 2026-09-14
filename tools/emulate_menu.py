@@ -13,7 +13,7 @@ import subprocess
 import sys
 from build_combined_card import parse_vbin
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 CARD = ROOT / 'builds/combined-menu'
 RAW = (CARD / 'VSHL.BIN').read_bytes()
 MANIFEST = json.loads((CARD / 'manifest.json').read_text())
@@ -55,7 +55,7 @@ BUILT_SEL60 = 173      # build_combined_card.py's measured default
 def build(sel60):
     """Rebuild the card with a measured 59.94 selector baked in."""
     out = ROOT / 'builds/combined-menu-sel'
-    subprocess.run([sys.executable, str(ROOT / 'build_combined_card.py'),
+    subprocess.run([sys.executable, str(ROOT / 'tools' / 'build_combined_card.py'),
                     '--out', str(out), '--og60-sel', str(sel60)],
                    check=True, capture_output=True)
     raw = (out / 'VSHL.BIN').read_bytes()

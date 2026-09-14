@@ -1,3 +1,9 @@
+import pathlib
+import sys
+
+# the host tools live in tools/, one level up from here
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'tools'))
+
 import contextlib
 import hashlib
 import io
