@@ -27,6 +27,17 @@ PROBE_CODE = 0xC0732100         # empty in stock firmware, verified at build tim
 PROBE_STATE = 0xC0732300
 PROBE_SITE = 0xC05E2CA8         # FUN_c05e2ca8, the element append; Thumb
 PROBE_RESUME = PROBE_SITE + 4 + 1
+# A third entry in the camera's own Resolution list (--native-entry).
+# Mechanism from Vitaly Li's FP3K (tools/fp3k_native_menu.S in his handoff):
+# widen the widget's range word, and replace the 89-byte list CSV in place.
+# The CSV fits three rows only because the Popup column is dropped, rows use
+# \n rather than \r\n, and the third row's TEXT is literal text instead of a
+# string id -- which is also why the label needs no artwork.
+NATIVE_CSV = 0xC0F8E7EC
+NATIVE_RANGE = 0xC1A709BC
+NATIVE_RANGE_THREE = 0x40
+NATIVE_STOCK_RANGE = 0x803F
+NATIVE_CSV_LEN = 89
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
 # 0xC072F000, so the debug and release cards share one address map.
 BOOT = 0xC072F700
@@ -62,6 +73,10 @@ def main():
                         help='keep the USB shell in, so the camera can be asked '
                              'what it is actually doing. Same payload either '
                              'way; the SSD cannot be used while USB is the host')
+    parser.add_argument('--native-entry', metavar='LABEL', nargs='?',
+                        const='OG 3032x2012',
+                        help='add LABEL as a third entry in the native '
+                             'Resolution list (max 12 characters)')
     parser.add_argument('--ui-probe', action='store_true',
                         help='arm the observation-only GUI append hook at boot')
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
@@ -132,6 +147,31 @@ entry:
     add r0, r0, r1
     bx r0
 ''')
+        if args.native_entry:
+            label = args.native_entry.encode('ascii')
+            stock = firmware[NATIVE_CSV - 0xC0000000:
+                             NATIVE_CSV - 0xC0000000 + NATIVE_CSV_LEN]
+            if not stock.startswith(b'\xef\xbb\xbfNO,TEXT,Popup,IMAGE,'):
+                raise SystemExit('the Resolution list CSV is not where expected')
+            got = struct.unpack_from('<I', firmware, NATIVE_RANGE - 0xC0000000)[0]
+            if got != NATIVE_STOCK_RANGE:
+                raise SystemExit(f'range word is {got:#x}, expected '
+                                 f'{NATIVE_STOCK_RANGE:#x}')
+            csv = (b'\xef\xbb\xbf' + b'NO,TEXT,IMAGE,Enabled,Enabled2\r\n'
+                   + b'1,0313,blank,1,2\n' + b'2,0314,blank,1,2\n'
+                   + b'3,' + label + b',,1,2\n')
+            if len(csv) != NATIVE_CSV_LEN:
+                raise SystemExit(f'label must make the CSV exactly '
+                                 f'{NATIVE_CSV_LEN} bytes; {len(label)} '
+                                 f'characters gives {len(csv)}')
+            # The loader copies whole words, and the table is packed with three
+            # bytes of padding before the next one: carry them through unchanged.
+            tail = firmware[NATIVE_CSV - 0xC0000000 + NATIVE_CSV_LEN:
+                            NATIVE_CSV - 0xC0000000 + NATIVE_CSV_LEN + 3]
+            sections.extend([
+                (NATIVE_CSV, csv + tail, 'native resolution list'),
+                (NATIVE_RANGE, struct.pack('<I', NATIVE_RANGE_THREE),
+                 'native resolution range')])
         if args.ui_probe:
             # Thumb, so it cannot share the ARM assembler's defaults, and the
             # hook word is emitted as its own one-word section: the loader
