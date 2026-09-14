@@ -32,6 +32,7 @@
  *   +0x3C stop request  +0x40 resident passes  +0x44 resident exited
  *   +0x48 attach result +0x4C create result
  *   +0x58 optional second renderer, called after each pass, 0 for none
+ *   +0x5C draw the histogram at all; 0 leaves the screen to the second one
  *   +0x80 thread holder +0xC0 body object      +0xC4 body vtable
  *   +0x100 the 256 bins
  *
@@ -132,6 +133,9 @@ hist_core:
     str     r0, [r10, #0x28]
     mov     r0, #0
     str     r0, [r10]
+    ldr     r0, [r10, #0x5C]        @ switched off: the thread still runs, so
+    cmp     r0, #0                  @ whatever else it draws keeps updating
+    beq     idle
 
     LDA     r4, DETECTION
     ldr     r5, [r4]                @ pixels
@@ -271,6 +275,12 @@ surface_next:
 painted:
     LDA     ip, CACHE_FN            @ CPU writes are only data to the caches
     blx     ip
+    mov     r0, #1
+    str     r0, [r10]
+    mov     r0, #0
+    pop     {r4, r5, r6, r7, r8, r9, r10, pc}
+
+idle:
     mov     r0, #1
     str     r0, [r10]
     mov     r0, #0

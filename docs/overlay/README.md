@@ -372,3 +372,44 @@ A module ABI remains a design proposal. Before exporting frame callbacks it need
 format/stride metadata, ownership and release rules, task-context restrictions and
 failure behavior. Native menu return navigation also needs a real fix. Pixel
 access is not the only missing piece, and a stable plugin SDK has not been built.
+
+## False colour, latched instead of held, 2026-09-14
+
+The camera only offers false colour as a button you hold. It is not a stored
+setting at all, which is why turning it on moved nothing: not `pic_false_color_on`,
+not `CM_FalseColor`, and not one byte in a 128 KB diff of the settings store.
+
+The function key calls **CameraIF vtable +0xCC** (`0xC03722E8`), which posts
+rec-manager event **0x21** (`INTR_START_FALSE_COLOR`); releasing calls **+0xD0**
+(`0xC0372330`), posting **0x22**. The request is built on the stack and posted
+through `0xC03A0798`, so nothing persistent is written anywhere. Event numbering
+is cross-checked: the neighbouring custom-key entry (AP preview) emits 0x1F/0x20
+from the adjacent slots. `SetFalseColorType` (`0xC005DBA0`) is a separate thing --
+it picks the style, gray/half/stop, and cannot switch the effect on.
+
+`gui send INTR_START_FALSE_COLOR` returns OK and does nothing: those strings are
+log-parser text with no code pointing at them.
+
+**Confirmed on hardware:** posting 0x21 from our own code turned false colour on.
+That makes it a latch rather than a hold, which is what a menu row needs.
+
+## What froze the camera, and what did not
+
+Four hard freezes, record light on and nothing responding. Causes, in order of
+discovery, all now fixed or removed:
+
+1. **Clobbering a handler argument.** Our key hook held a forwarding address in
+   r2, one of the handler's own arguments. Pressing OK drove the camera into
+   record and hung it. A second version counted events in r0, same class of bug.
+   `tests/test_keyhook.py` and `tests/test_keygate.py` now check that r0-r3
+   survive every path, for every key -- routing tests pass with the bug present.
+2. **Publishing our own function in the observer vtable at `0xC091EA38`.** That
+   slot belongs to a C++ observer whose contract we do not have. Replaced by
+   patching the card's own handler entry to branch to a gate, which runs in the
+   same context with the same registers.
+3. **Creating a pool thread from the key handler.** That handler runs in the
+   camera's UI path; a blocking call there takes the whole camera down.
+4. **Creating a pool thread at all** is the remaining suspect for two USB stalls.
+   The overlay no longer uses one: it repaints from the key handler, which is
+   the only moment the panel can change, and where the camera's own function-key
+   code already runs.

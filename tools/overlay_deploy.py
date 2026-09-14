@@ -59,6 +59,11 @@ CODE_OFF = 0x30000              # clear of the loader window, gyro and the menu
 STATE_OFF = 0x31000
 MENU_STATE_OFF = 0x32000
 MENU_CODE_OFF = 0x33000
+HOOK_CODE_OFF = 0x34000
+HOOK_STATE_OFF = 0x35000
+HOOK_SOURCE = ROOT / 'src/keyhook.S'
+KEY_HANDLER = 0xC091EA38        # where the card publishes its key handler
+STOCK_KEYS = 0xC0265800         # the camera's own
 ECHO_SLOT = 0xC0BAC2F8          # command table entry 17, echo's handler pointer
 ECHO_ORIG = 0xC03D99A0
 CACHE_FN = 0xC000E91C           # freshly written pool code is data until this runs
@@ -76,6 +81,7 @@ ST_ATTACH, ST_CREATE = 0x48, 0x4C
 ST_BASE1, ST_BASE2 = 0x50, 0x54
 ST_BODYOBJ, ST_VTABLE = 0xC0, 0xC4
 ST_SECOND = 0x58                # the menu renderer, called on the same thread
+ST_HIST_ON = 0x5C               # draw the histogram at all
 
 # and menu_overlay.S's own block
 MN_STATUS, MN_PASSES, MN_STOP = 0x00, 0x04, 0x08
@@ -83,6 +89,13 @@ MN_BASE0, MN_BASE1, MN_BASE2 = 0x1C, 0x20, 0x24
 MN_STRIDE, MN_SURFH, MN_X, MN_Y = 0x28, 0x2C, 0x30, 0x34
 MN_CURSOR, MN_MENUINIT = 0x38, 0x44
 MN_SET_FN, MN_SET_VALUE, MN_SET_DONE = 0x48, 0x4C, 0x50
+MN_FOLLOW = 0x54                # 1 = an option that turns on selects its rate
+MN_IDLE = 0x58                  # passes of no change before the panel hides
+MN_GATE = 0x70                  # address of the key hook's open flag
+
+# keyhook.S's block
+HK_EVENTS, HK_CARD, HK_STOCK, HK_OPEN = 0x00, 0x04, 0x08, 0x0C
+HK_OPENS, HK_LASTKEY, HK_SPAWN, HK_SPAWNS = 0x1C, 0x20, 0x24, 0x28
 
 # analysis/menu_setters.json, the rows worth reaching from a keypress
 SETTERS = {
@@ -252,10 +265,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=('surfaces', 'place', 'once', 'start',
-                                            'status', 'stop', 'clear', 'set'))
+                                            'status', 'stop', 'clear', 'set',
+                                            'unhook'))
     parser.add_argument('--setting', choices=sorted(SETTERS),
                         help='which camera setting `set` changes')
     parser.add_argument('--value', type=int, help='the value `set` writes')
+    parser.add_argument('--no-histogram', action='store_true',
+                        help='place the menu panel only, and leave the rest of '
+                             'the screen alone')
+    parser.add_argument('--keys', action='store_true',
+                        help="take over the key handler: AEL opens and closes "
+                             "the panel, and RIGHT/UP are the camera's again "
+                             "whenever it is closed")
+    parser.add_argument('--hide-after', type=int, default=25, metavar='PASSES',
+                        help='hide the panel after this many passes with nothing '
+                             'moving, roughly a fifth of a second each; 0 keeps '
+                             'it up permanently')
+    parser.add_argument('--follow', action='store_true',
+                        help='let an option that turns on select its recording '
+                             'rate (place/start only)')
     parser.add_argument('--x', type=int, default=PLOT_X)
     parser.add_argument('--y', type=int, default=PLOT_Y)
     parser.add_argument('--panel-x', type=int, default=PANEL_X)
@@ -265,6 +293,7 @@ def main():
     base = pool()
     code_at, state = base + CODE_OFF, base + STATE_OFF
     menu_code_at, menu_state = base + MENU_CODE_OFF, base + MENU_STATE_OFF
+    hook_code_at, hook_state = base + HOOK_CODE_OFF, base + HOOK_STATE_OFF
 
     if args.command == 'clear':
         for _ in range(3):
@@ -282,8 +311,22 @@ def main():
     entry, body, spawn = (code_at + syms[n] for n in ('hist_entry', 'hist_body',
                                                       'hist_spawn'))
     menu_blob, menu_syms = build(MENU_SOURCE, menu_state)
+    hook_blob, hook_syms = build(HOOK_SOURCE, hook_state)
+    hook_entry = hook_code_at + hook_syms['keyhook']
     menu_entry = menu_code_at + menu_syms['menu_entry']
     menu_core = menu_code_at + menu_syms['menu_core']
+
+    if args.command == 'unhook':
+        published = word(KEY_HANDLER)
+        original = word(hook_state + HK_CARD)
+        if published != hook_entry:
+            print(f'the key handler is {published:#010x}, not ours; leaving it')
+            return 0
+        if not (0x40000000 <= original < 0x50000000 or original == STOCK_KEYS):
+            raise SystemExit(f'refusing to publish {original:#010x}')
+        write(KEY_HANDLER, original)
+        print(f"key handler back to {original:#010x}; AEL is the camera's again")
+        return 0
 
     if args.command == 'stop':
         write(state + ST_STOP, 1)
@@ -328,19 +371,42 @@ def main():
                               (ST_PLOTX, args.x), (ST_PLOTY, args.y),
                               (ST_BODYOBJ, state + ST_VTABLE),
                               (ST_VTABLE + 0xC, body),
-                              (ST_SECOND, menu_core)):
+                              (ST_SECOND, menu_core),
+                              (ST_HIST_ON, 0 if args.no_histogram else 1)):
             write(state + offset, value)
         for offset, value in ((MN_BASE0, buffers[0]), (MN_BASE1, base1),
                               (MN_BASE2, base2),
                               (MN_STRIDE, geometry[0]), (MN_SURFH, geometry[1]),
-                              (MN_X, args.panel_x), (MN_Y, args.panel_y)):
+                              (MN_X, args.panel_x), (MN_Y, args.panel_y),
+                              (MN_FOLLOW, 1 if args.follow else 0),
+                              (MN_IDLE, max(0, args.hide_after)),
+                              (MN_GATE, hook_state + HK_OPEN if args.keys else 0)):
             write(menu_state + offset, value)
         print(f'histogram {code_at:#010x} ({len(blob)} bytes), state {state:#010x}')
         print(f'menu      {menu_code_at:#010x} ({len(menu_blob)} bytes),'
               f' state {menu_state:#010x}')
         print(f'surfaces  {", ".join(f"{b:#010x}" for b in buffers)}')
+        print('histogram ' + ('off' if args.no_histogram else
+                              f'on at {args.x},{args.y}'))
         print(f'placed    plot at {args.x},{args.y}'
               f'   panel at {args.panel_x},{args.panel_y}')
+        print('hide      ' + (f'after {args.hide_after} idle passes; any key'
+                              ' brings it back' if args.hide_after else 'never'))
+        print('follow    ' + ('on: turning an option on selects its rate'
+                              if args.follow else 'off: the camera is only read'))
+        if args.keys:
+            # Published last, and only after every pointer it needs is in
+            # place: a half-wired handler here is a camera with no buttons.
+            for offset in range(0x00, 0x30, 4):
+                write(hook_state + offset, 0)
+            write(hook_state + HK_CARD, word(KEY_HANDLER))
+            write(hook_state + HK_STOCK, STOCK_KEYS)
+            call_once(CACHE_FN, 'cache maintenance')
+            write(KEY_HANDLER, hook_entry)
+            print(f'keys      AEL opens and closes the panel; RIGHT/UP are the'
+                  f" camera's while it is closed\n"
+                  f'          chaining to {word(hook_state + HK_CARD):#010x};'
+                  f' `unhook` puts it back')
         return 0
 
     if args.command == 'set':
@@ -374,6 +440,11 @@ def main():
             raise SystemExit('run `place` first')
         if word(state + ST_SECOND) != menu_core:
             raise SystemExit('the menu renderer is not wired up; run `place`')
+
+        # Spawned from the borrowed shell handler. Doing it from the key hook
+        # instead froze the camera outright -- record light on, no UI, no
+        # buttons, no USB -- because that handler runs in the camera's own UI
+        # path and a blocking call there takes everything with it.
         call_once(spawn, 'spawn')
         time.sleep(1.0)
         first = word(state + ST_LIVE)

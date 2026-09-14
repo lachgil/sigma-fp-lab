@@ -25,6 +25,11 @@
  *   +0x30 panel x       +0x34 panel y
  *   +0x38 cursor last seen                   +0x3C current base (scratch)
  *   +0x48 queued property function           +0x4C its value  +0x50 writes done
+ *   +0x54 follow arming  +0x58 idle passes before hiding
+ *   +0x5C idle passes    +0x64 last signature   +0x68 what this pass does
+ *   +0x6C cursor last seen  +0x70 the key gate's state block, or 0
+ *   +0x74 whether the gate was open last pass
+ *   +0x100.. last seen row states
  *   +0x40 current colour (scratch)           +0x44 menu init status seen
  *   +0x80 thread holder +0xC0 body object    +0xC4 body vtable
  */
@@ -32,6 +37,8 @@
 .equ MENU_ST,    0xC072FB00     /* menu.S's own state block; read only */
 .equ MENU_INIT,  20             /*   +20 armed flag                    */
 .equ SETTINGS_OBJ, 0xC0057AE8   /* the settings object every setter takes */
+.equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton at 0xC351FE88 */
+.equ SET_MOV_FRAMERATE, 0xC005C0B8  /* analysis/menu_setters.json */
 .equ CACHE_FN,   0xC000E91C
 .equ TK_DLY,     0xC01F89C4
 .equ XT_CREATE,  0xC036E108
@@ -41,7 +48,7 @@
 .equ ROW_PITCH,  18
 .equ ROWS,       10
 .equ PANEL_W,    192
-.equ PANEL_H,    (24 + ROWS * ROW_PITCH + 6)
+.equ PANEL_H,    (24 + (ROWS + 1) * ROW_PITCH + 6)   /* the extra row is ours */
 .equ VALUE_X,    132
 .equ PERIOD_MS,  150
 .equ PRIORITY,   20
@@ -128,6 +135,12 @@ menu_core:
     movne   r0, #0x30
     bne     refuse
 
+    bl      follow_options          @ the cursor or an option moved: follow it
+    bl      visibility              @ decide whether the panel shows at all
+    ldr     r0, [r10, #0x68]
+    cmp     r0, #0
+    beq     done                    @ idle and already hidden: nothing to draw
+
     ldr     r7, [r10, #0x28]        @ stride
     ldr     r8, [r10, #0x2C]        @ surface height
     ldr     r5, [r10, #0x30]        @ panel x
@@ -154,13 +167,20 @@ surface_loop:
     cmp     r0, r1
     movhs   r0, #0x34
     bhs     refuse
-    bl      paint_panel
+    ldr     r1, [r10, #0x68]
+    cmp     r1, #2
+    bne     3f
+    bl      clear_panel             @ the pass that hides it
+    b       surface_next
+3:  bl      paint_panel
 surface_next:
     add     r9, r9, #4
     cmp     r9, #0x24
     bls     surface_loop
 
+done:
     bl      apply_setting           @ a queued camera setting, if one is waiting
+    bl      apply_camera_call       @ and a queued camera-interface request
     LDA     ip, CACHE_FN            @ CPU writes are only data to the caches
     blx     ip
     mov     r0, #1
@@ -213,6 +233,232 @@ apply_setting:
 8:  mov     r0, #0
     str     r0, [r4, #0x48]
 9:  pop     {r4, r5, r6, pc}
+
+/* An option that has just been switched ON selects the recording preset its
+ * cell belongs to, so the camera lands on the right rate without the usual
+ * "switch the preset away and back" dance. Two things make this safe:
+ *
+ *   - it reacts to a TRANSITION in menu.S's own state, and menu.S refuses to
+ *     toggle anything while recording or while the writer is busy, so a change
+ *     we can see is one the card already allowed;
+ *   - it queues the write through apply_setting, which is the camera's own
+ *     property call, and only acts when the request slot is free.
+ *
+ * Rows with a zero in the table are left alone. M130 is one of them on purpose:
+ * it repoints whichever rate is selected AT THE MOMENT it is toggled, so moving
+ * the rate afterwards would leave the two disagreeing. Choosing the rate first
+ * belongs in menu.S, not in a poller that necessarily runs after the fact.
+ *
+ *   +0x54 armed: 0 leaves the camera alone entirely
+ *   +0x60 .. +0x84 the state each row was last seen in
+ */
+follow_options:
+    push    {r4, r5, r6, r7, r8, lr}
+    LDA     r4, STATE
+    ldr     r0, [r4, #0x54]
+    cmp     r0, #0
+    beq     9f
+    LDA     r5, MENU_ST
+    ldr     r0, [r5]                @ the cursor, for the rows that must be
+    ldr     r1, [r4, #0x6C]         @ set up BEFORE they are switched on
+    str     r0, [r4, #0x6C]
+    cmp     r0, r1
+    beq     0f
+    cmp     r0, #ROWS
+    bhs     0f
+    PTR     r7, cursor_rates
+    ldr     r7, [r7, r0, lsl #2]
+    cmp     r7, #0
+    beq     0f
+    ldr     r1, [r4, #0x48]
+    cmp     r1, #0
+    bne     0f
+    str     r7, [r4, #0x4C]
+    LDA     r7, SET_MOV_FRAMERATE
+    str     r7, [r4, #0x48]
+0:  mov     r6, #0
+1:  mov     r0, r6
+    bl      row_value
+    cmp     r0, #1                  @ only a real ON counts as a transition
+    moveq   r0, #1
+    movne   r0, #0
+    add     r7, r4, #0x100          @ clear of the thread holder at +0x80
+    ldr     r8, [r7, r6, lsl #2]
+    str     r0, [r7, r6, lsl #2]
+    cmp     r0, #1
+    bne     2f
+    cmp     r8, #0
+    bne     2f                      @ already on last pass: nothing to do
+    PTR     r7, option_rates
+    ldr     r0, [r7, r6, lsl #2]
+    cmp     r0, #0
+    beq     2f
+    ldr     r1, [r4, #0x48]
+    cmp     r1, #0
+    bne     2f                      @ a request is already waiting; leave it
+    str     r0, [r4, #0x4C]
+    LDA     r0, SET_MOV_FRAMERATE
+    str     r0, [r4, #0x48]
+2:  add     r6, r6, #1
+    cmp     r6, #ROWS
+    blo     1b
+9:  pop     {r4, r5, r6, r7, r8, pc}
+
+/* Show the panel while the menu is being used and get out of the way when it
+ * is not. Any change to the cursor or to an option's state brings it back, so
+ * pressing RIGHT or UP is all it takes -- no key hook, and nothing to hold down.
+ *
+ *   +0x58 idle passes before hiding, 0 to stay up permanently
+ *   +0x5C passes since the last change   +0x64 what the menu looked like then
+ *   +0x68 this pass: 0 nothing, 1 paint, 2 clear once
+ */
+visibility:
+    push    {r4, r5, r6, r7, lr}
+    LDA     r4, STATE
+    LDA     r5, MENU_ST
+    ldr     r6, [r5]                @ a signature of everything we display
+    mov     r7, #0
+1:  mov     r0, r7
+    bl      row_value
+    add     r6, r6, r0, lsl #4
+    add     r6, r6, r7
+    add     r7, r7, #1
+    cmp     r7, #ROWS
+    blo     1b
+    ldr     r0, [r4, #0x64]
+    str     r6, [r4, #0x64]
+    cmp     r0, r6
+    moveq   r7, #0                  @ r7: did anything move this pass
+    movne   r7, #1
+
+    ldr     r5, [r4, #0x70]         @ the key gate, when there is one
+    cmp     r5, #0
+    beq     no_gate
+
+    /* The gate opens the menu; closing it on idle is ours, because the gate
+     * has no clock and we are the thing that runs regularly. The same pass
+     * ages the double-press window. */
+    ldr     r0, [r5, #8]
+    add     r0, r0, #1
+    str     r0, [r5, #8]
+    cmp     r0, #2
+    movhs   r1, #0
+    strhs   r1, [r5, #4]            @ the window has passed
+    ldr     r0, [r5, #0x24]         @ the latch belongs in the signature too
+    add     r6, r6, r0, lsl #8
+    ldr     r0, [r4, #0x64]
+    str     r6, [r4, #0x64]
+    cmp     r0, r6
+    movne   r7, #1
+    ldr     r0, [r5]
+    ldr     r1, [r4, #0x74]         @ the countdown belongs to THIS opening:
+    str     r0, [r4, #0x74]         @ without this it inherits the idle time
+    cmp     r0, r1                  @ from before the menu was opened and
+    movne   r6, #0                  @ closes again on the very next pass
+    strne   r6, [r4, #0x5C]
+    cmp     r0, #0
+    beq     gate_shut
+    cmp     r7, #0
+    beq     2f
+    mov     r0, #0                  @ something moved: restart the countdown
+    str     r0, [r4, #0x5C]
+    b       3f
+2:  ldr     r0, [r4, #0x5C]
+    add     r0, r0, #1
+    str     r0, [r4, #0x5C]
+    ldr     r1, [r4, #0x58]
+    cmp     r1, #0
+    beq     3f                      @ no timeout configured: stay up
+    cmp     r0, r1
+    blo     3f
+    mov     r0, #0
+    str     r0, [r5]                @ idle for long enough: close it
+    b       gate_shut
+3:  mov     r0, #1
+    str     r0, [r4, #0x68]
+    b       9f
+gate_shut:
+    ldr     r0, [r4, #0x68]         @ exactly one clearing pass, then nothing
+    cmp     r0, #1
+    moveq   r0, #2
+    movne   r0, #0
+    str     r0, [r4, #0x68]
+    b       9f
+
+no_gate:
+    cmp     r7, #0
+    beq     4f
+    mov     r0, #0
+    str     r0, [r4, #0x5C]
+    mov     r0, #1
+    str     r0, [r4, #0x68]
+    b       9f
+4:  ldr     r0, [r4, #0x58]
+    cmp     r0, #0
+    moveq   r0, #1
+    streq   r0, [r4, #0x68]
+    beq     9f
+    ldr     r1, [r4, #0x5C]
+    add     r1, r1, #1
+    str     r1, [r4, #0x5C]
+    cmp     r1, r0
+    movlo   r0, #1
+    strlo   r0, [r4, #0x68]
+    blo     9f
+    moveq   r0, #2
+    streq   r0, [r4, #0x68]
+    movhi   r0, #0
+    strhi   r0, [r4, #0x68]
+9:  pop     {r4, r5, r6, r7, pc}
+
+/* clear_panel(base): take our rectangle back off the screen, nothing else. */
+clear_panel:
+    push    {r4, lr}
+    LDA     r4, STATE
+    str     r0, [r4, #0x3C]
+    mov     r0, #0
+    str     r0, [r4, #0x40]
+    ldr     r0, [r4, #0x30]
+    ldr     r1, [r4, #0x34]
+    movw    r2, #PANEL_W
+    movw    r3, #PANEL_H
+    bl      fill_rect
+    pop     {r4, pc}
+
+/* A request posted through the camera's own interface object, the way a
+ * function key does it. False colour is the reason this exists: it is not a
+ * stored setting at all, which is why nothing showed up in a diff of the
+ * settings store while it was switched on. Holding an assigned button calls
+ * CameraIF vtable +0xCC, which posts rec-manager event 0x21 (start), and
+ * releasing calls +0xD0, which posts 0x22 (stop).
+ *
+ *   +0x78 the CameraIF method to call, 0 when there is nothing to do
+ *   +0x7C how many have been made
+ */
+apply_camera_call:
+    push    {r4, r5, lr}
+    LDA     r4, STATE
+    ldr     r5, [r4, #0x78]
+    cmp     r5, #0
+    beq     9f
+    LDA     r0, 0xC0000000          @ only ever call into the firmware image
+    cmp     r5, r0
+    blo     8f
+    LDA     r0, 0xC2000000
+    cmp     r5, r0
+    bhs     8f
+    mov     r0, #0
+    str     r0, [r4, #0x78]         @ clear first: one request, one call
+    LDA     ip, CAMERA_IF
+    blx     ip                      @ r0 = the camera interface singleton
+    blx     r5
+    ldr     r0, [r4, #0x7C]
+    add     r0, r0, #1
+    str     r0, [r4, #0x7C]
+    b       9f
+8:  mov     r0, #0
+    str     r0, [r4, #0x78]
+9:  pop     {r4, r5, pc}
 
 /* paint_panel(base): the frame, the title, and every row with its value. */
 paint_panel:
@@ -302,6 +548,35 @@ row_loop:
     add     r8, r8, #1
     cmp     r8, #ROWS
     blo     row_loop
+
+    /* One row that is ours rather than the card's: false colour, which the
+     * camera itself only offers as a button you hold down. */
+    add     r9, r5, #24
+    mov     r0, #ROW_PITCH
+    mla     r9, r8, r0, r9
+    mov     r0, #INK
+    str     r0, [r10, #0x40]
+    add     r0, r4, #8
+    mov     r1, r9
+    PTR     r2, false_colour_label
+    bl      draw_str
+    ldr     r0, [r10, #0x70]        @ the key gate holds the latch
+    cmp     r0, #0
+    ldrne   r0, [r0, #0x24]
+    movne   r0, #1
+    moveq   r0, #2
+    ldr     r1, [r10, #0x70]
+    cmp     r1, #0
+    ldrne   r1, [r1, #0x24]
+    cmp     r1, #0
+    moveq   r0, #0
+    mov     r1, #4
+    mul     r0, r0, r1
+    PTR     r2, value_texts
+    add     r2, r2, r0
+    add     r0, r4, #VALUE_X
+    mov     r1, r9
+    bl      draw_str
     pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 /* row_value(index) -> 0 off, 1 on, 2 not a toggle.
@@ -427,6 +702,39 @@ next_bit:
 .balign 4
 /* menu.S's own cursor-to-state-offset table, mirrored. Stock and Gyro-Gate and
  * SEL are computed instead, so their entries here are never read. */
+/* The recording rate each option's cell lives in, as SetMovFramerate takes it.
+ * Measured on this camera by stepping the value and reading the screen:
+ *   1 = 23.98, 2 = 25, 3 = 29.97, 4 = 50, 5 = 59.94.
+ * 0 means "leave the camera alone". */
+/* Rates that must be selected BEFORE the option is switched on, applied when
+ * the cursor lands on the row. M130 repoints whichever rate is live at the
+ * moment it is toggled, so 23.98 has to be in place first: that is what makes
+ * the M130 rows mean 24p, which is the only M130 that sustains -- 29.97 needs
+ * 471 MB/s and stops after about five seconds. */
+cursor_rates:
+    .word 0        @ STOCK
+    .word 0        @ OPEN GATE
+    .word 0        @ M98 30P
+    .word 1        @ M130        23.98
+    .word 1        @ M130 FAST   23.98
+    .word 0        @ M98 60P
+    .word 0        @ M6 4K
+    .word 0        @ GYRO
+    .word 0        @ GYRO-GATE
+    .word 0        @ SEL
+
+option_rates:
+    .word 0        @ STOCK
+    .word 3        @ OPEN GATE   FHD 29.97 cell
+    .word 3        @ M98 30P     FHD 29.97 cell
+    .word 0        @ M130        follows whatever rate was selected first
+    .word 0        @ M130 FAST   likewise
+    .word 5        @ M98 60P     FHD 59.94 cell
+    .word 0        @ M6 4K       the 4K cell, not an FHD rate
+    .word 0        @ GYRO
+    .word 0        @ GYRO-GATE
+    .word 0        @ SEL
+
 state_offsets:
     .word 0, 4, 24, 8, 40, 28, 36, 12, 0, 0
 
@@ -439,6 +747,9 @@ value_texts:
     .asciz "--";  .space 1
     .balign 4
 /* Twelve bytes each, so a row index is a multiply rather than a table walk. */
+false_colour_label:
+    .asciz "FALSE COL"
+    .balign 4
 row_labels:
     .asciz "STOCK";      .space 6
     .asciz "OPEN GATE";  .space 2

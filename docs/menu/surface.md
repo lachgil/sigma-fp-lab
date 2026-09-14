@@ -460,3 +460,47 @@ path, and the two should not be confused while bisecting.
 5. For the tone curve, establish first whether the change is to the monitor
    path or `SetToneControlMode` -- asking whoever did it is faster than
    bisecting, since CinemaDNG itself carries no curve.
+
+## Adding a native row: what was tried on hardware, 2026-09-14
+
+Four routes were tested on the camera. **None of them put a new row on screen**,
+and the negative results are worth more than the attempts.
+
+**Relocating a page does not work: the directory pointer is cached at boot.**
+Each scene's payload offset is one big-endian word in the directory (MainB5 at
+`0xC18EC768`, MainB1 at `0xC18EC7E8`, offset from the NBU base). A byte-identical
+127 KB copy of MainB5 was assembled in our own RAM with an on-camera memcpy and
+the word repointed at it: every Shooting page still rendered normally. That
+looked like success and was not -- an identical copy renders the same whether it
+is read or ignored. The decisive test came later: with a page relocated, an
+edit *inside our copy* changed nothing on screen. The camera is still drawing
+from the original. Do not repeat the identical-copy test and call it proof.
+
+**A rebuilt page with an extra row is structurally accepted.** Two were built and
+verified byte for byte in camera memory: MainB5 with 226 objects (up from 215)
+and MainB1 with 231 (up from 231-16). Container child count, header object count
+and the per-record census were all updated, and the loader did not complain.
+That work is sound; it is simply never read, for the reason above.
+
+**Pages are six fixed slots, not a list.** Row objects carry an absolute y in
+their `0x10004` objectBase: 0, 81, 162, 243, 324, 405. `_STILL` and `_CINE` rows
+are ALTERNATES for one slot, chosen by condition, which is why a page with nine
+children shows four to six rows depending on the mode. A cloned row inherits the
+y of whatever it was cloned from and lands exactly on top of it, invisible.
+
+**An in-place scene edit did not show either.** With everything back at stock
+addresses, `B1_5`'s drawText key at `0xC202C19C` was changed to another string,
+read back correct, and the menu closed and reopened: the row kept its old name.
+That contradicts the 2026-09-12 Zebra rename, which is recorded here as having
+worked on `MainB5`. Something differs between those two cases -- scene, record,
+or what is cached when -- and it is NOT established which.
+
+**Unexplored, and the better lead:** the menu has a second resource layer. 195
+`.cvm` list resources are named exactly after rows (`../MenuB12/data/ListB12/
+B1_5_1.cvm`, `B1_2_4_1.cvm`, ...). The NBU scene looks like the frame -- slots,
+cursor, animation -- while these lists plausibly carry the items. The row-title
+edit that worked may have been a title, not an item.
+
+**If this is picked up again**, the two live options are: decode the `.cvm` layer
+first, or patch the directory word from the card at boot, before the UI caches
+it, which is the only way a relocated page could ever be read.

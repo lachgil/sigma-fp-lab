@@ -44,6 +44,41 @@ def movwt_xrefs(target):
             if imm == thi and rd in reg_low and reg_low[rd][0] == tlo:
                 results.append((reg_low[rd][1], BASE + o))
     return results
+def movwt_xrefs_thumb(target):
+    """The same scan for Thumb-2 MOVW/MOVT (T3), on 2-byte alignment.
+
+    Whole subsystems here are Thumb -- the GUI and its Lua engine among them --
+    and scanning only ARM makes their strings look unreferenced. That cost a
+    wrong conclusion once: the Lua expression templates were reported as having
+    no reference anywhere in the image, when in fact the code that builds them
+    is Thumb.
+    """
+    tlo = target & 0xFFFF
+    thi = (target >> 16) & 0xFFFF
+    reg_low = {}
+    results = []
+
+    def decode(hw1, hw2):
+        # T3: 1111 0 i 10 x100 imm4 | 0 imm3 rd imm8
+        rd = (hw2 >> 8) & 0xF
+        imm = (((hw1 >> 10) & 1) << 11) | (((hw2 >> 12) & 7) << 8) | (hw2 & 0xFF)
+        return rd, imm | (((hw1 & 0xF) << 12))
+
+    n = len(IMG) & ~1
+    for o in range(0, n - 2, 2):
+        hw1 = struct.unpack_from("<H", IMG, o)[0]
+        if (hw1 & 0xFBF0) not in (0xF240, 0xF2C0):
+            continue
+        hw2 = struct.unpack_from("<H", IMG, o + 2)[0]
+        if hw2 & 0x8000:
+            continue
+        rd, imm = decode(hw1, hw2)
+        if (hw1 & 0xFBF0) == 0xF240:        # movw
+            reg_low[rd] = (imm, BASE + o)
+        elif imm == thi and rd in reg_low and reg_low[rd][0] == tlo:
+            results.append((reg_low[rd][1], BASE + o))
+    return results
+
 
 if __name__ == "__main__":
     cmd = sys.argv[1]
