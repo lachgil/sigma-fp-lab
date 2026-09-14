@@ -47,19 +47,24 @@ Start with [STATUS.md](STATUS.md), reviewed 2026-09-11.
   it is not yet a native menu customization interface.
   The separate shell setter map has 281 candidates, 274 resolved property
   functions; it must not be mistaken for the native UI dispatch table.
-- **Open Gate on a native menu item:** Open Gate now follows the camera's own
-  **Playback -> Slideshow -> Slideshow Settings -> Repeat** switch
-  (`0xC31ADA36`), so it can be turned on with the normal buttons instead of the
-  RIGHT/UP hijack. Measured on hardware: both the camera's menu and
-  `menu SetSlideshowRepeat` write that byte. Edge-triggered, so the OSD menu
-  still works and neither source undoes the other; refused while recording.
-  The cost is slideshow looping, and only while the card is loaded.
-- **Running our own code:** [PLATFORM.md](PLATFORM.md) is the inventory for
-  anyone who wants to build on the camera rather than reverse it -- what is
-  proven (boot from card, key hook, on-screen text, resident thread, ~195
-  settings, native menu binding), the one missing piece (access to the image
-  data, with two traced routes), and the small module ABI that follows once it
-  lands.
+- **Native Repeat control:** the payload watches edges of
+  **Playback -> Slideshow -> Slideshow Settings -> Repeat** (`0xC31ADA36`)
+  on key events to drive Open Gate. The menu and shell setter were observed
+  changing that byte. RIGHT/UP controls remain; this is not a new native page.
+  Busy changes defer until a later key event. Real slideshow looping is not
+  disabled, and an untouched Repeat value does not override an OSD change.
+- **Firmware extensibility:** [PLATFORM.md](PLATFORM.md) separates demonstrated
+  building blocks from proposed interfaces. It maps the QR reader's asynchronous
+  lifecycle, frame descriptor, conversion and ownership limits, ijigen's
+  grayscale detection feed, and our independently resolved slot-2 accessor.
+  **Our own code now reads the image and draws on the screen:**
+  `src/payloads/hist_overlay.S` bins the 320x180 detection feed inside the
+  camera and paints a histogram into the OSD layer from its own thread, RAM
+  only, deployed with `hist_deploy.py`. The camera's built-in histogram is
+  better and the fp already has false colour: the point is the programmable
+  path, not the plot. The feed has no frame lock, so a plot can straddle two
+  frames. `frame_access_probe.py` separately exercises original
+  firmware instructions offline, not hardware concurrency or an SDK.
 - **Darkness/playback:** unverified hypotheses and explicit experiments, not fixes.
 
 ## Combined menu card
