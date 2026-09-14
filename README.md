@@ -86,6 +86,54 @@ unplugged. The screen reads `fpLAB MENU` when it has loaded.
 .venv/bin/python tools/hist_deploy.py stop
 ```
 
+## How you can help
+
+**The one thing worth your time: shoot M130 24P and grade it.**
+
+Of everything here, M130 24P is the mode this project actually unlocked. It is
+the fp recording **3968x2640, full 1:1 readout, no binning at all**, 12-bit
+CinemaDNG at 23.976 to an SSD, and it holds: a two-minute take with correct
+full frames. Open Gate came down the fpSup/FP3K line; M6 4K measured no real
+gain because file depth follows the menu's 8/10/12 setting. This one is ours,
+and it has been tested by one person on one camera.
+
+What we cannot do alone is tell you whether the **footage** is good. That needs
+other eyes, other lenses and a real grade.
+
+How to try it:
+
+1. Card: [`cards/fp-menu-card.zip`](cards/) (or a
+   [release](https://github.com/lachgil/sigma-fp-lab/releases)). Both files at
+   the card root, cold boot.
+2. Attach a fast USB-C SSD **before** power-on. 377 MB/s sustained.
+3. On camera: **CinemaDNG -> FHD -> 23.976p**, 12-bit.
+4. In the card's menu (RIGHT to move, UP to turn on): **M130 24P**. Then switch
+   the recording preset away and back once so the camera re-latches.
+5. Roll. Load the CinemaDNG in DaVinci Resolve, and grade it like you would any
+   other clip.
+
+What to report, in an [issue](https://github.com/lachgil/sigma-fp-lab/issues):
+
+- Does Resolve open the clip and play it, and does its frame rate read 23.976?
+- How long did it record before it stopped, and on which SSD?
+- How does it hold up graded: highlight roll-off, noise at ISO 400 to 3200,
+  colour against the same scene shot in stock UHD.
+- Aliasing and moire against stock FHD, which is 2x2 binned. This is where a
+  full 1:1 readout should show its worth.
+- Anything that looks wrong in the frame: banding, a green cast, partial rows.
+- Frame-accurate audio sync is not part of this; CinemaDNG here is video only.
+
+Also useful: **negative results.** A mode that refuses, a card that does not
+boot, a camera that behaves differently from the one it was developed on. Those
+are findings, not noise. Say which firmware (it must read Ver.5.02), which
+card, and what the screen showed.
+
+If you want to work on the code, the offline checks under
+[Building from source](#building-from-source) run without a camera, and
+[`docs/status.md`](docs/status.md) lists what is open. Please keep camera
+claims separated from emulator claims, the way the docs here try to: say how
+each thing is known.
+
 ## Layout
 
 | Folder | What is in it |
