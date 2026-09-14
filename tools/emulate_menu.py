@@ -14,7 +14,14 @@ import sys
 from build_combined_card import parse_vbin
 
 ROOT = Path(__file__).resolve().parent.parent
-CARD = ROOT / 'builds/combined-menu'
+# The DEBUG card, deliberately. The patching is identical in both builds; only
+# the SEL row differs, and these checks read its two hex counts to prove which
+# cells moved. Against the public card (SHOW_SEL=0) they would read C=00 L=00
+# for work that really happened.
+CARD = ROOT / 'builds/combined-debug'
+if not (CARD / 'VSHL.BIN').exists():
+    subprocess.run([sys.executable, str(ROOT / 'tools' / 'build_combined_card.py'),
+                    '--out', str(CARD), '--debug'], check=True, capture_output=True)
 RAW = (CARD / 'VSHL.BIN').read_bytes()
 MANIFEST = json.loads((CARD / 'manifest.json').read_text())
 SYMS = MANIFEST['menu_symbols']
@@ -24,6 +31,18 @@ CODE = POOL + 0x50000
 ST = 0xC072FB00
 RETURN = 0x46000000
 STACK = 0x46010000
+# The display the drawn panel paints into. A real 1024x682 8-bit OSD surface,
+# sized like the one the camera reports, so a panel that writes outside its own
+# rectangle faults here instead of on the camera.
+DRAWABLE = 0x48000000       # drawable object; +0 vtable, vtable+0x10 fetches
+DRAW_VTABLE = 0x48000100
+SURFACE_VFN = 0x48000200    # stubbed "getBackbuffer"
+SURFACE_DESC = 0x48000300   # {.., base at +4, geometry at +8}
+SURFACE_GEOM = 0x48000400   # {width, height}
+# The panel refuses any base outside 0xC4000000..0xC8000000, so the modelled
+# surface has to live where a real OSD buffer does.
+SURFACE = 0xC4100000
+SURFACE_W, SURFACE_H = 1024, 682
 HOOKS = [0xC050D4C8, 0xC03790B8, 0xC038C484, 0xC0058310]
 OFF = [0xE3A02000, 0xE5DB25CE, 0xE3500000, 0xE1A05001]
 SCAN = range(0xC0BE5700, 0xC0BE5D00, 4)
@@ -53,10 +72,16 @@ BUILT_SEL60 = 173      # build_combined_card.py's measured default
 
 
 def build(sel60):
-    """Rebuild the card with a measured 59.94 selector baked in."""
+    """Rebuild the card with a measured 59.94 selector baked in.
+
+    Built with `--debug`, so the SEL row still carries its two hex counts: the
+    checks below read them to prove which cells moved. The public card compiles
+    those counts out (SHOW_SEL=0) and would report C=00 L=00 for work it really
+    did, which is a difference in the readout, not in the patching.
+    """
     out = ROOT / 'builds/combined-menu-sel'
     subprocess.run([sys.executable, str(ROOT / 'tools' / 'build_combined_card.py'),
-                    '--out', str(out), '--og60-sel', str(sel60)],
+                    '--out', str(out), '--og60-sel', str(sel60), '--debug'],
                    check=True, capture_output=True)
     raw = (out / 'VSHL.BIN').read_bytes()
     syms = json.loads((out / 'manifest.json').read_text())['menu_symbols']
@@ -72,7 +97,8 @@ class Camera:
             RAW, SECTIONS, MENU, SYMS = build(sel60)
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         for address, size in [(0xC0000000, 0x4000000), (POOL, 0x100000),
-                              (RETURN, 0x20000), (0x47000000, 0x100000)]:
+                              (RETURN, 0x20000), (0x47000000, 0x100000),
+                              (0x48000000, 0x10000), (SURFACE, 0x100000)]:
             self.uc.mem_map(address, size)
         self.uc.mem_write(0xC0000000, FW)
         self.uc.mem_write(POOL + 0x8000, RAW)
@@ -84,6 +110,14 @@ class Camera:
         self.fail_allocation = fail_allocation
         self.allocations = 0
         self.next_allocation = 0x47000000
+        # The drawable the panel is handed on every key press.
+        self.put(DRAWABLE, DRAW_VTABLE)
+        self.put(DRAW_VTABLE + 0x10, SURFACE_VFN)
+        self.put(SURFACE_DESC + 4, SURFACE)
+        self.put(SURFACE_DESC + 8, SURFACE_GEOM)
+        self.put(SURFACE_GEOM, SURFACE_W)
+        self.put(SURFACE_GEOM + 4, SURFACE_H)
+        self.panel_fetches = 0
         self.draws = []
         self.composites = 0
         self.native = []
@@ -98,8 +132,13 @@ class Camera:
         self.uc.mem_write(address, struct.pack('<I', value))
 
     def boundary(self, uc, address, size, _):
+        # 0xC03E5698/0xC03E56D8 are the display handle and its drawable, which
+        # the drawn panel asks for on every key. Modelled rather than skipped:
+        # the panel writes real bytes into whatever surface it is handed, so
+        # letting it run is the only way this catches a bad write offline.
         known = {0xC001CF78, 0xC001D038, 0xC001D2B8, 0xC000E91C,
-                 0xC0058340, 0xC03E4620, 0xC03E3D00, 0xC0265800}
+                 0xC0058340, 0xC03E4620, 0xC03E3D00, 0xC0265800,
+                 0xC03E5698, 0xC03E56D8, SURFACE_VFN}
         if address not in known:
             return
         assert uc.reg_read(UC_ARM_REG_SP) % 8 == 0, hex(address)
@@ -123,6 +162,13 @@ class Camera:
         elif address == 0xC0265800:
             self.native.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1)))
             value = 1
+        elif address == 0xC03E5698:
+            value = DRAWABLE            # the display handle
+        elif address == 0xC03E56D8:
+            value = DRAWABLE            # handle -> drawable
+        elif address == SURFACE_VFN:
+            value = SURFACE_DESC        # drawable -> backbuffer descriptor
+            self.panel_fetches += 1
         uc.reg_write(UC_ARM_REG_R0, value)
         uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
@@ -151,7 +197,7 @@ class Camera:
         assert not self.draws
 
     def select(self, index):
-        for _ in range(10):
+        for _ in range(12):   # eleven rows now: ten of the card's, plus FALSE COL
             if self.get(ST) == index:
                 return
             self.press(0x0C)

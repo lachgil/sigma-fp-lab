@@ -17,6 +17,11 @@ from armasm import assemble, symbols
 import build_base_card as gyro
 
 MENU_OFFSET = 0x50000
+# The drawn panel: its code in the pool above the menu, its state in the cave
+# above the menu's. It used to be pushed over USB by tools/overlay_deploy.py;
+# the card carries it now, which is the only way it exists without a cable.
+PANEL_OFFSET = 0x52000
+PANEL_STATE = 0xC072FC00
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
 # 0xC072F000, so the debug and release cards share one address map.
 BOOT = 0xC072F700
@@ -73,10 +78,19 @@ def main():
     if digest != GYRO_DIGEST:
         raise SystemExit('gyro sections differ from verified gyro_og_test example')
     menu_source = ROOT / 'src/menu.S'
+    # The panel is assembled first: the menu has to be told where menu_core
+    # lands in the pool, and baking that in from the real symbol is what stops
+    # the two drifting apart into a branch to nowhere.
+    panel_source = ROOT / 'src/menu_overlay.S'
+    panel_defines = (f'STATE_ADDR={PANEL_STATE:#x}',)
+    panel = assemble(panel_source, panel_defines)
+    panel_syms = symbols(panel_source, panel_defines)
+    panel_core = PANEL_OFFSET + panel_syms['menu_core']
     # The SEL row's two hex counts are a working tool for whoever is editing
     # the geometry patches. On the public card the label stands alone.
     defines = (f'OG60_SEL={args.og60_sel}',
-               f'SHOW_SEL={1 if args.debug else 0}')
+               f'SHOW_SEL={1 if args.debug else 0}',
+               f'PANEL_OFF={panel_core:#x}')
     menu = assemble(menu_source, defines)
     syms = symbols(menu_source, defines)
     guards = list(struct.iter_unpack('<II', menu[syms['guard_table']:syms['labels']]))
@@ -108,11 +122,13 @@ entry:
     bx r0
 ''')
         sections.extend([(MENU_OFFSET, menu, 'menu'),
+                         (PANEL_OFFSET, panel, 'drawn panel'),
                          (BOOT, assemble(trampoline), 'combined boot'),
                          (ROW, assemble(ROOT / 'src/rowpatch_gated.S'), 'gated geometry')])
         spans = [(a, a + len(b), why) for a, b, why in sections]
         # Include runtime state and loader/file/job reservations, not just code.
         spans += [(STATE, STATE + 0x100, 'menu state'),
+                  (PANEL_STATE, PANEL_STATE + 0x180, 'panel state'),
                   (0xC072FA00, 0xC072FAC0, 'geometry state, selectors, probe, canvases, keep list'),
                   (0x7000, 0x28000, 'loader read window'),
                   (0x42000, 0x43000, 'gyro file object'),

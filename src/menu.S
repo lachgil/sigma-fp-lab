@@ -21,11 +21,25 @@
 .equ OSD_FN, 0xC03E3D00
 .equ ARMED, 0xC072FA10
 /* False colour: our latch byte, and the two CameraIF methods a held function
- * key calls. FC_ON is well clear of the composed readout line at +0x40. */
-.equ FC_ON,      0x60
+ * key calls. FC_ON sits in the gap between NATIVE_LAST (68) and M130_PAIRS
+ * (0x60) -- it was at 0x60 for one build, on top of M130's saved restore
+ * pairs, which the menu emulator caught before it reached a camera. */
+.equ FC_ON,      72
 .equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton */
 .equ FC_START,   0xC03722E8     /* vtable +0xCC: posts event 0x21 */
 .equ FC_STOP,    0xC0372330     /* vtable +0xD0: posts event 0x22 */
+/* The drawn panel: its own state block, where it sits, and where its code
+ * lands in the pool. PANEL_OFF is the pool offset of menu_core, supplied by
+ * the card builder so the two cannot drift. */
+.equ PANEL_ST,   0xC072FC00
+.equ PANEL_X,    780
+.equ PANEL_Y,    60
+.equ POOL_PTR,   0xC3757A7C
+.equ DRAW_LOCK,  0xC03E5698
+.equ DRAW_OBJ,   0xC03E56D8
+#ifndef PANEL_OFF
+#define PANEL_OFF 0
+#endif
 .equ SELS, 0xC072FA20
 .equ PROBE, 0xC072FA30
 .equ GEOM, 0xC072FA40
@@ -93,6 +107,11 @@ boot:
 1:  str r0, [r2], #4
     subs r1, r1, #1
     bne 1b
+    LDA r2, PANEL_ST               @ and the panel's, all of it. A block that
+    mov r1, #96                    @ comes up holding whatever was there reads
+3:  str r0, [r2], #4               @ as armed flags nobody set: that is exactly
+    subs r1, r1, #1                @ how false colour once turned itself on
+    bne 3b                         @ once a second and could not be switched off
     PTR r4, guard_table
     movw r5, #:lower16:GUARD_COUNT
 2:  ldmia r4!, {r0, r1}
@@ -542,11 +561,90 @@ draw_loop:
     subs r5, r5, #1
     bne draw_loop
     add sp, sp, #16
+    bl panel                       @ and the drawn panel, which is the real one
     pop {r4, r5, r6, pc}
 safe_ret:
     bx lr
 s_one: .asciz "1"
 .balign 4
+
+/* The drawn panel, on the card.
+ *
+ * The line above goes through the firmware's text handler, which renders into a
+ * rectangle it hardcodes at 0,0, 384x32 -- one row, top left, no say in it.
+ * src/menu_overlay.S carries its own font and writes bytes into the OSD layer,
+ * so it can draw the whole list wherever we want. It used to be reachable only
+ * by pushing it over USB. It now travels in VSHL.BIN like everything else.
+ *
+ * It reads this menu's state block and never writes it, so the two cannot
+ * disagree: RIGHT and UP still do all the work here.
+ *
+ * Its code sits at PANEL_OFF in the same pool as this menu, and its own state
+ * block is PANEL_ST. The layer rotates three buffers and only the camera's UI
+ * chooses which is live, so each visit records the buffer it was handed and the
+ * renderer paints every one it has seen -- painting only the current one is
+ * what made an overlay vanish the moment the UI presented another.
+ */
+panel:
+    push {r4, r5, r6, r7, r8, lr}
+    mov r8, sp                     @ AAPCS wants SP eight-byte aligned at every
+    bic sp, sp, #7                 @ call into the firmware, and this routine is
+                                   @ reached from several depths of the menu --
+                                   @ so align here rather than audit each path
+    LDA r4, POOL_PTR
+    ldr r4, [r4]
+    cmp r4, #0
+    beq panel_out                 @ no pool: nothing to call
+    movw r5, #:lower16:PANEL_OFF
+    movt r5, #:upper16:PANEL_OFF
+    add r5, r5, r4                @ menu_core, in the pool
+
+    LDA r6, PANEL_ST
+    ldr r0, [r6, #0x30]           @ first visit: place it and let it stay up
+    cmp r0, #0
+    bne 1f
+    mov r0, #PANEL_X
+    str r0, [r6, #0x30]
+    mov r0, #PANEL_Y
+    str r0, [r6, #0x34]
+1:
+    LDA r0, DRAW_LOCK             @ the same pair the histogram payload uses,
+    blx r0                        @ and the same context: the camera draws its
+    LDA r1, DRAW_OBJ              @ own menus from the key path too
+    blx r1
+    cmp r0, #0
+    beq panel_out
+    mov r7, r0
+    ldr r1, [r7]
+    ldr r1, [r1, #0x10]           @ getBackbuffer
+    mov r0, r7
+    blx r1
+    cmp r0, #0
+    beq panel_out
+    ldr r2, [r0, #4]              @ surface base
+    ldr r1, [r0, #8]
+    cmp r1, #0
+    beq panel_out
+    ldr r3, [r1]                  @ width, which is also the stride
+    str r3, [r6, #0x28]
+    ldr r3, [r1, #4]              @ height
+    str r3, [r6, #0x2C]
+
+    mov r3, #0x1C                 @ remember this base if it is new
+2:  ldr r0, [r6, r3]
+    cmp r0, r2
+    beq 3f                        @ already known
+    cmp r0, #0
+    streq r2, [r6, r3]
+    beq 3f
+    add r3, r3, #4
+    cmp r3, #0x24
+    bls 2b
+3:
+    blx r5
+panel_out:
+    mov sp, r8
+    pop {r4, r5, r6, r7, r8, pc}
 
 
 /* Compose a readout line at ST+0x40 from a 24-byte template in r0, patching the
