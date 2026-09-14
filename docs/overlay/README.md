@@ -514,6 +514,28 @@ by a call in the record path that could be suppressed; magnification is a
 sensor readout mode, and during a take the sensor is running the record profile
 (122 for FHD/29.97, 127 for FHD/25). Nothing in the GUI layer can re-create it.
 
+### Confirmed on the camera, same day
+
+Read over the USB shell in standby, then with the focus PIP up (MF ring), with
+no patches loaded. MovSig manager `0xC375BA2C` -> core, param = `[core+4]`,
+selector = `[param+0]`, cached flags = `[param+0x168]`, MovSig kind word =
+`0xC3033A88` (snapshot `+0x23C`):
+
+| state | param | selector | flags | kind | `gui geti LV_MagnifyStatus` |
+| --- | --- | --- | --- | --- | --- |
+| standby | `0xC375E480` | 5 | `0x2` | 0 | 0 |
+| PIP up | `0xC375E5F8` | **23 (0x17)** | **`0x20`** | **2** | **1** |
+
+Every predicted edge holds. 0x17 is inside the MF-magnify range 0x11-0x1C, so
+bit 5 sets; `0xC042A570` maps bit 5 to kind 2; the observer publishes 1 because
+`observer+8` (the auto-magnify latch, zoom state 3/5) is clear -- manual
+magnification, so 1 and not 2. The param object is a NEW allocation, not a
+mutated flag.
+
+The clincher is the param's geometry sub-object (`[param+4]` = `0xC375E654`):
+**6064 x 2022** while the PIP is up, against the record profile's raster. The
+loupe is the sensor running a different mode, exactly as the static read said.
+
 Two levers remain, both one-word, both unverified on hardware, both risky
 because the selector also chooses the readout:
 
