@@ -7,9 +7,15 @@ with USB unplugged. Screen reads @BANNER@ when loaded.
 The two files are a MATCHED PAIR. The menu code lives in VSHL.BIN and
 AutoRun.txt only loads it, so never mix files from different builds.
 
-UP and RIGHT belong to this card WHILE YOU ARE IN LIVE VIEW. In the camera's
-own menu and in playback they are the camera's, so you can navigate normally and
-anything you have mapped to them still works there.
+FIRST: make sure UP and RIGHT are UNMAPPED (Menu -> Custom -> button settings).
+This card uses both keys while you are in live view, so anything assigned to
+them will not fire. In the camera's own menu and in playback they stay the
+camera's, so you navigate normally there.
+
+The modes here are not our discovery: the loader, the USB shell, the gyro build
+and the sensor mode table all come from ijigen/fpSup
+(github.com/ijigen/fpSup). The standby green fix builds on FP3K's display
+accessor. This card is a menu around their work.
 
 RIGHT cycles, UP toggles. Everything boots OFF. The panel is drawn top right;
 there is no key to open it, the keys are ours whenever the card is running.

@@ -34,6 +34,7 @@
  *   +0x80 thread holder
  *   +0xC0 re-arm false colour   +0xC4 how many times we have asked
  *   +0x140 body object        +0x144 body vtable (+0xC of it is the body)
+ *   +0x160 background palette index behind the panel, 0 = transparent
  */
 .equ STATE,      STATE_ADDR
 .equ MENU_ST,    0xC072FB00     /* menu.S's own state block; read only */
@@ -593,7 +594,12 @@ paint_panel:
     ldr     r4, [r10, #0x30]        @ panel x
     ldr     r5, [r10, #0x34]        @ panel y
 
-    mov     r0, #0                  @ clear the panel, and nothing outside it
+    /* Background. 0 leaves the layer transparent, which is what this always
+     * did; any other value is a palette index painted behind the rows. Which
+     * index is an opaque black is not derivable from the image -- the OSD is
+     * one byte per pixel into a palette we do not have -- so it is a state
+     * word that can be swept live over the shell rather than a guess. */
+    ldr     r0, [r10, #0x160]       @ background palette index, 0 = transparent
     str     r0, [r10, #0x40]
     mov     r0, r4
     mov     r1, r5
