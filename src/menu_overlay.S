@@ -153,6 +153,11 @@ menu_core:
     ldr     r0, [r0]
     cmp     r0, #UI_LIVEVIEW
     beq     1f
+    ldr     r1, [r10, #0x58]        @ leave the countdown EXPIRED, not frozen:
+    add     r1, r1, #1              @ otherwise coming back from the camera's
+    str     r1, [r10, #0x5C]        @ menu re-shows the panel with time still
+                                    @ on the clock, which looks like it opened
+                                    @ itself. A real change brings it back.
     ldr     r0, [r10, #0x68]        @ exactly one clearing pass, as when hiding
     cmp     r0, #1
     moveq   r0, #2

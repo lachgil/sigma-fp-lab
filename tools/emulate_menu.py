@@ -623,5 +623,22 @@ for state, what in ((5, "the camera's menu"), (4, 'playback'), (0, 'no screen'))
 c.put(UI_STATE, UI_LIVEVIEW)
 c.press(0x0C)
 assert c.get(ST) == moved + 1, 'and back in live view the keys are ours again'
-print('PASS: UP and RIGHT are ours in live view only, not in menu or playback')
+# Leaving the camera's menu must not bring our panel back on its own. The
+# countdown is left expired while hidden, so only a real change re-shows it.
+c = Camera()
+c.press(0x0C)                       # a change: the panel is up, clock reset
+PANEL_CORE = POOL + MANIFEST['panel_offset'] + MANIFEST['panel_symbols']['menu_core']
+c.run(PANEL_CORE)
+assert c.get(PANEL_ST + 0x68) == 1, 'panel is showing after a keypress'
+c.put(UI_STATE, 5)                  # into SIGMA's menu
+c.run(PANEL_CORE)
+c.run(PANEL_CORE)
+assert c.get(PANEL_ST + 0x68) == 0, 'and hidden while the camera owns the screen'
+c.put(UI_STATE, UI_LIVEVIEW)        # and back out
+c.run(PANEL_CORE)
+assert c.get(PANEL_ST + 0x68) == 0, 'it must NOT reappear by itself on return'
+c.press(0x0C)
+c.run(PANEL_CORE)
+assert c.get(PANEL_ST + 0x68) == 1, 'a real keypress brings it back'
+print('PASS: the panel stays down after the camera menu, until you ask for it')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')
