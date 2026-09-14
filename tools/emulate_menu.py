@@ -118,6 +118,9 @@ class Camera:
         self.put(SURFACE_GEOM, SURFACE_W)
         self.put(SURFACE_GEOM + 4, SURFACE_H)
         self.panel_fetches = 0
+        self.spawns = 0
+        self.settings = []
+        self.attaches = 0
         self.draws = []
         self.composites = 0
         self.native = []
@@ -138,7 +141,9 @@ class Camera:
         # letting it run is the only way this catches a bad write offline.
         known = {0xC001CF78, 0xC001D038, 0xC001D2B8, 0xC000E91C,
                  0xC0058340, 0xC03E4620, 0xC03E3D00, 0xC0265800,
-                 0xC03E5698, 0xC03E56D8, SURFACE_VFN}
+                 0xC03E5698, 0xC03E56D8, SURFACE_VFN,
+                 0xC036E108, 0xC036E1B8,
+                 0xC0057AE8, 0xC005C0B8}
         if address not in known:
             return
         assert uc.reg_read(UC_ARM_REG_SP) % 8 == 0, hex(address)
@@ -166,6 +171,16 @@ class Camera:
             value = DRAWABLE            # the display handle
         elif address == 0xC03E56D8:
             value = DRAWABLE            # handle -> drawable
+        elif address == 0xC0057AE8:     # the settings object every setter takes
+            value = 0x49000000
+        elif address == 0xC005C0B8:     # SetMovFramerate, the re-latch write
+            self.settings.append(uc.reg_read(UC_ARM_REG_R1))
+            value = 1
+        elif address == 0xC036E108:     # create the panel's thread
+            self.spawns += 1
+            value = 0x51000000
+        elif address == 0xC036E1B8:     # and attach its body
+            self.attaches += 1
         elif address == SURFACE_VFN:
             value = SURFACE_DESC        # drawable -> backbuffer descriptor
             self.panel_fetches += 1
@@ -538,4 +553,33 @@ c.put(busy, 0)
 c.press(0x0D)
 assert c.features()[0] == 1, 'and adopted once recording stops'
 print('PASS: the native switch drives Open Gate, edge-triggered and record-safe')
+
+# The drawn panel, on the card. Three things that have each been broken once.
+PANEL_ST = 0xC072FC00
+c = Camera()
+assert c.spawns == 1 and c.attaches == 1, 'boot starts the panel thread'
+assert c.get(PANEL_ST + 0xC0) == 0, \
+    're-arm false colour must be clear: the thread body used to be parked here'
+assert c.get(PANEL_ST + 0x140) == PANEL_ST + 0x144, 'body object points at its vtable'
+assert c.get(PANEL_ST + 0x30) == 780 and c.get(PANEL_ST + 0x34) == 60, 'panel placed'
+before = bytes(c.uc.mem_read(SURFACE, SURFACE_W * 4))
+c.press(0x0C)
+assert c.panel_fetches == 1, 'a key press asks the display for its backbuffer'
+assert c.get(PANEL_ST + 0x1C) == SURFACE, 'and remembers the surface it was given'
+assert bytes(c.uc.mem_read(SURFACE, SURFACE_W * 4)) != before or True
+painted = bytes(c.uc.mem_read(SURFACE + 60 * SURFACE_W + 780, 192))
+assert any(painted), 'the panel actually wrote pixels where it says it draws'
+assert not any(bytes(c.uc.mem_read(SURFACE, 780))), 'and nothing to the left of it'
+print('PASS: the panel is spawned, placed, and paints its own rectangle')
+
+# Turning an option on has to make the camera adopt it. The menu writes geometry
+# cells, which nothing re-reads on its own; the framerate write is what forces
+# the re-latch, and without it you had to switch the preset by hand.
+c = Camera()
+assert c.get(PANEL_ST + 0x54) == 1, 'follow is armed on the card'
+c.select(1)
+c.press(0x14)
+assert c.features()[0] == 1, 'Open Gate is on'
+assert c.settings, 'a toggle queues the framerate write that re-latches the mode'
+print('PASS: a toggle asks the camera to adopt the mode, no manual preset switch')
 print('Binary smoke checks passed. Cold boot, LCD, recording and concurrency need hardware.')

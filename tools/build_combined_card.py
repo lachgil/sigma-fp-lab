@@ -86,11 +86,15 @@ def main():
     panel = assemble(panel_source, panel_defines)
     panel_syms = symbols(panel_source, panel_defines)
     panel_core = PANEL_OFFSET + panel_syms['menu_core']
+    panel_spawn = PANEL_OFFSET + panel_syms['menu_spawn']
+    panel_body = PANEL_OFFSET + panel_syms['menu_body']
     # The SEL row's two hex counts are a working tool for whoever is editing
     # the geometry patches. On the public card the label stands alone.
     defines = (f'OG60_SEL={args.og60_sel}',
                f'SHOW_SEL={1 if args.debug else 0}',
-               f'PANEL_OFF={panel_core:#x}')
+               f'PANEL_OFF={panel_core:#x}',
+               f'PANEL_SPAWN_OFF={panel_spawn:#x}',
+               f'PANEL_BODY_OFF={panel_body:#x}')
     menu = assemble(menu_source, defines)
     syms = symbols(menu_source, defines)
     guards = list(struct.iter_unpack('<II', menu[syms['guard_table']:syms['labels']]))

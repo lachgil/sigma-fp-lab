@@ -36,7 +36,15 @@ highlighted option on. Everything starts off. **Stock** turns everything off aga
 switching an option, change the recording mode away and back once so the camera
 re-latches the geometry, otherwise the current take keeps the old one.
 
-The panel lists every option at once with the current row highlighted. It is
+The panel lists every option at once with the current row highlighted. It has
+its own thread, so it repaints about seven times a second, hides itself after
+roughly four seconds of nothing changing, and reappears on the next key. It also
+notices changes made anywhere else in the camera rather than only on a keypress.
+
+**Turning an option on now makes the camera adopt it.** The menu writes geometry
+cells, and nothing re-reads those on its own, which is why earlier builds needed
+you to switch the recording preset away and back. Each option now also selects
+the framerate it needs, and that write is what forces the re-latch. It is
 drawn by our own code into the OSD layer, not by the firmware's one-line debug
 text, which is fixed at the top left and could not be moved.
 
@@ -73,6 +81,11 @@ Proven on hardware:
 
 Not proven, and where help is wanted:
 
+- **The panel's thread, the auto re-latch and the FALSE COL readout are new.**
+  The offline emulator models the OSD surface, the display calls, the task
+  creation and the framerate write, and asserts the panel really paints at
+  780,60 and that a toggle really queues the re-latch. A model is still not a
+  camera.
 - **The drawn panel is new on the card.** It ran for weeks pushed over USB, and
   it now travels in `VSHL.BIN` like everything else. The offline emulator paints
   it into a modelled 1024x682 OSD surface and passes, but a model is not a

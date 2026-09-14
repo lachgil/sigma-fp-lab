@@ -40,6 +40,17 @@
 #ifndef PANEL_OFF
 #define PANEL_OFF 0
 #endif
+#ifndef PANEL_SPAWN_OFF
+#define PANEL_SPAWN_OFF 0
+#endif
+#ifndef PANEL_BODY_OFF
+#define PANEL_BODY_OFF 0
+#endif
+.equ PANEL_IDLE, 25            /* passes of no change before it hides; the
+                                * panel's thread runs every 150 ms, so this is
+                                * about four seconds. Counted in passes, which
+                                * is why it never expired when only a key press
+                                * could advance it. */
 .equ SELS, 0xC072FA20
 .equ PROBE, 0xC072FA30
 .equ GEOM, 0xC072FA40
@@ -158,6 +169,44 @@ boot_disable:
     str r1, [r0]                   @ publish only after all code/state is ready
     mov r0, #1
     str r0, [r6, #20]
+
+    /* The panel's own thread, last of all: the menu is armed above, so the
+     * first pass has real state to draw.
+     *
+     * Without it the panel only repaints when a key is pressed, and its idle
+     * countdown is measured in passes -- so it could never hide by itself, and
+     * it could not notice a setting changed anywhere else in the camera. The
+     * thread paints every 150 ms from the surfaces the key path discovered.
+     */
+    LDA r4, POOL_PTR
+    ldr r4, [r4]
+    cmp r4, #0
+    beq 5f
+    LDA r7, PANEL_ST
+    mov r0, #PANEL_X
+    str r0, [r7, #0x30]
+    mov r0, #PANEL_Y
+    str r0, [r7, #0x34]
+    mov r0, #PANEL_IDLE
+    str r0, [r7, #0x58]
+    mov r0, #1                     @ follow: turning an option on also selects
+    str r0, [r7, #0x54]            @ the framerate it needs, which is the write
+                                   @ that makes the camera re-latch. Without it
+                                   @ a toggle changes cells nothing has read yet
+                                   @ and you must switch the preset by hand.
+    add r0, r7, #0x144             @ a body object whose vtable is the next word
+    str r0, [r7, #0x140]
+    movw r0, #:lower16:PANEL_BODY_OFF
+    movt r0, #:upper16:PANEL_BODY_OFF
+    add r0, r0, r4
+    str r0, [r7, #0x150]           @ vtable +0xC: the thread body
+    LDA r3, F_CACHE
+    blx r3
+    movw r0, #:lower16:PANEL_SPAWN_OFF
+    movt r0, #:upper16:PANEL_SPAWN_OFF
+    add r0, r0, r4
+    blx r0
+5:
     pop {r4, r5, r6, r7, r8, pc}
 boot_refused:
     mov r0, #2
@@ -599,15 +648,7 @@ panel:
     movt r5, #:upper16:PANEL_OFF
     add r5, r5, r4                @ menu_core, in the pool
 
-    LDA r6, PANEL_ST
-    ldr r0, [r6, #0x30]           @ first visit: place it and let it stay up
-    cmp r0, #0
-    bne 1f
-    mov r0, #PANEL_X
-    str r0, [r6, #0x30]
-    mov r0, #PANEL_Y
-    str r0, [r6, #0x34]
-1:
+    LDA r6, PANEL_ST              @ placed and sized at boot
     LDA r0, DRAW_LOCK             @ the same pair the histogram payload uses,
     blx r0                        @ and the same context: the camera draws its
     LDA r1, DRAW_OBJ              @ own menus from the key path too

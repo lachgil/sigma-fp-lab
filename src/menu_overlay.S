@@ -31,11 +31,14 @@
  *   +0x74 whether the gate was open last pass
  *   +0x100.. last seen row states
  *   +0x40 current colour (scratch)           +0x44 menu init status seen
- *   +0x80 thread holder +0xC0 body object    +0xC4 body vtable
+ *   +0x80 thread holder
+ *   +0xC0 re-arm false colour   +0xC4 how many times we have asked
+ *   +0x140 body object        +0x144 body vtable (+0xC of it is the body)
  */
 .equ STATE,      STATE_ADDR
 .equ MENU_ST,    0xC072FB00     /* menu.S's own state block; read only */
 .equ MENU_INIT,  20             /*   +20 armed flag                    */
+.equ MENU_FC_ON, 72             /*   +72 the menu's own false-colour latch */
 .equ SETTINGS_OBJ, 0xC0057AE8   /* the settings object every setter takes */
 .equ CAMERA_IF,  0xC0370CF8     /* -> the CameraIF singleton at 0xC351FE88 */
 .equ REC_SM,     0xC358CB80     /* rec state machine; +0x144 is its state */
@@ -113,7 +116,11 @@ menu_spawn:
     blx     ip
     str     r0, [r4, #0x18]
     add     r0, r4, #0x80
-    add     r1, r4, #0xC0           @ the ADDRESS of the body object word
+    add     r1, r4, #0x140          @ the ADDRESS of the body object word.
+                                    @ NOT +0xC0: repeat_request reads that as
+                                    @ "re-arm false colour", so a body object
+                                    @ parked there reads as armed and the panel
+                                    @ posts false colour at itself once a second
     LDA     ip, XT_ATTACH
     blx     ip
     str     r0, [r4, #0x14]
@@ -669,15 +676,19 @@ row_loop:
     mov     r1, r9
     PTR     r2, false_colour_label
     bl      draw_str
-    ldr     r0, [r10, #0x70]        @ the key gate holds the latch
-    cmp     r0, #0
-    ldrne   r0, [r0, #0x24]
-    movne   r0, #1
-    moveq   r0, #2
+    /* Where the latch lives depends on who is driving. Pushed over USB, the
+     * key gate owns it (+0x70 -> gate+0x24). On a card there is no gate: the
+     * menu owns the row itself and keeps its answer at MENU_ST+FC_ON, which is
+     * why this row read OFF forever on the first card build. */
     ldr     r1, [r10, #0x70]
     cmp     r1, #0
-    ldrne   r1, [r1, #0x24]
-    cmp     r1, #0
+    ldrne   r0, [r1, #0x24]
+    beq     4f
+    b       5f
+4:  LDA     r1, MENU_ST
+    ldr     r0, [r1, #MENU_FC_ON]
+5:  cmp     r0, #0
+    movne   r0, #1
     moveq   r0, #0
     mov     r1, #4
     mul     r0, r0, r1

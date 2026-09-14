@@ -15,6 +15,10 @@ background. Clearing the mappings avoids surprises until that is fixed.
 
 RIGHT cycles, UP toggles. Everything boots OFF. The panel is drawn top right;
 there is no key to open it, the keys are ours whenever the card is running.
+It hides itself after about four seconds of no changes and comes back on the
+next key. Turning an option on now also sets the framerate that option needs,
+which is what makes the camera adopt it -- you should no longer have to switch
+the preset away and back by hand.
   STOCK      all features off
   OPEN GATE  M117  3032x2012  full sensor area, 2x2 binned   274 MB/s
   M98 30P    M98   3032x2012  same framing, slower readout   274 MB/s
@@ -38,9 +42,10 @@ near 5 s on test; 23.976 is 377 MB/s. If it says SEL=xx RATE UNKNOWN, that
 framerate/bit-depth combination has not been measured yet -- note the two hex
 digits and it can be added. Use 12-bit for now: bit depth changes the selector.
 
-Open Gate and M98 30P are FHD 29.97; M98 60P is FHD 59.94. After toggling
-anything, switch the recording preset away and back before rolling. Anything
-over about 400 MB/s wants the SSD, attached BEFORE power-on.
+Open Gate and M98 30P are FHD 29.97; M98 60P is FHD 59.94. The card now selects
+the right rate for you when you switch an option on; if a take still looks like
+the old mode, switch the preset away and back once and tell us. Anything over
+about 400 MB/s wants the SSD, attached BEFORE power-on.
 
 To go back to stock: remove both files from the card, battery out/in.
 Nothing is flashed; every change is RAM only.
