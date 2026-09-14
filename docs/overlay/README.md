@@ -451,10 +451,92 @@ recording starts.
 `LV_MagnifyStatus` is a MIRROR, not a switch: `gui seti LV_MagnifyStatus 1`
 answers OK and reads back 0 immediately. Forcing it will not summon the PIP.
 
-Unfinished: find what clears the magnify state at record start. The variables
-are registered by name through a table (`0xC0575EE0` region registers the `CM_`
-ones), so nothing references those strings directly and an xref on them is
-empty -- the search has to come from the magnify state owner instead. If that
-turns out to be one call in the record-start path, suppressing it is a small
-patch; if magnify is torn down because the live-view path itself is replaced,
-it is the same wall as false colour.
+### Resolved, 2026-09-14 (static, from MAIN): magnify is a live-view MODE bit
+
+`LV_MagnifyStatus` has exactly one writer in the image, and it is not a state
+flag anyone can set. The chain, every edge read as ARM in `MAIN_c0000000.bin`:
+
+1. GUI content-model vtable `0xC2DF5AEC`, slot `+0x1B0` = `0xC059E5C8`, which
+   publishes the name `LV_MagnifyStatus` (string `0xC2DF5538`) through the
+   generic setter `0xC059CCC8`. Nothing else publishes that name.
+2. Slot `+0x1B0` is called from exactly one place in the standby live-view
+   module: `0xC0480034`, inside `0xC047FEB8`, whose RTTI name is
+   `StandbyLiveViewMovsigStateObserver` (`0xC0CD7454`). It is a MovSig state
+   observer, notified with a state code; it acts on codes 1 and 2 only.
+3. That observer is created and registered by the zoom state on entry:
+   `ZoomEnter` (`0xC0480C90`) -> `0xC0481AC0` -> `0xC0423D88` -> MovSig core
+   list. `0xC0481AC0` also latches `observer+8 = (zoom state id == 3 or 5)`,
+   which is the auto-magnify pair `AfAutoZoom`/`MfAutoZoom`.
+4. The value published is read from the shared camera-state snapshot at
+   `+0x23C`: `0` -> publish 0, non-zero -> publish 1, and 2 when `observer+8`
+   is set. So the GUI variable is a mirror of that word, three states deep.
+5. Snapshot `+0x23C` is written only by the group publisher `0xC0017F88`
+   (dirty bit `0x400000`), whose writers are `0xC031B7C4`, `0xC0428B68`
+   (MovSig start), `0xC0428EE4` (MovSig stop, clears the active byte and
+   leaves this word), `0xC0436B68` (geometry change).
+6. MovSig start takes the word from its own core `+0x18`, computed in
+   `0xC042A570`: `1` if live-view-param flag bit 4, `2` if bit 5, else `0`.
+7. Those flags are not runtime state either. They are a pure function of the
+   live-view MODE ID stored at param `+0`, built once in the param constructor
+   (`0xC043A158` -> cache at `+0x168`) by `0xC043A1C8`:
+   - bit 0: id 1..3
+   - bit 1: id 5..0x0B
+   - bit 2: id 0x65..0x80, 0xBF..0xC5, 0x12D..0x138, 0x191..0x1A0
+   - bit 3: id 0x83..0xBD, 0x1A1..0x1B2
+   - **bit 4 (AF magnify): id 0x1D..0x28**
+   - **bit 5 (MF magnify): id 0x11..0x1C**
+   - bit 8: `param+0xE0 == 0x0B`
+
+So the focus PIP is not a flag that record start clears. Magnification is a
+*class of live-view modes*: ids 0x11-0x1C are the MF-magnify modes and ids
+0x1D-0x28 the AF-magnify ones. Entering magnification swaps the live-view mode
+to one of those; recording runs a mode outside both ranges, its param flags
+carry neither bit, MovSig publishes kind 0, and the observer publishes
+`LV_MagnifyStatus = 0`. Forcing the GUI variable cannot work, which matches
+`gui seti` reading back 0.
+
+In this project's vocabulary the id at param `+0` is the **selector** already
+used by the green-preview work (`0xC043A158`, `profile = u32(0xC0BD05D4 +
+selector*4)`, selector 175 -> profile 122 = stock FHD/29.97). Reading that same
+table for the magnify selectors gives the profiles the loupe actually runs:
+
+| selector | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | ... | 0x20 | 0x25 | 0x28 |
+| profile  | 8    | 9    | 10   | 11   | 12   | ... | 23   | 24   | 27   |
+
+(selectors 0x21-0x24 are `0xFFFFFFFF`, i.e. unused.) Cross-referencing
+`reference/fpSup/gyro/analysis_imx410/imx410_mode_geometry.csv`: profile 8 is
+2016x1344 @60 with sampling 3/2/3/3, profile 10 is 6064x2022 @60 sampling
+1/1/1/1, profile 11 is 3032x2012 @105, profile 12 is 2016x672 @240, profile 27
+is 3032x1708 @60. These are **distinct sensor readouts**, not overlays.
+
+That settles the question the earlier note left open. The PIP is not torn down
+by a call in the record path that could be suppressed; magnification is a
+sensor readout mode, and during a take the sensor is running the record profile
+(122 for FHD/29.97, 127 for FHD/25). Nothing in the GUI layer can re-create it.
+
+Two levers remain, both one-word, both unverified on hardware, both risky
+because the selector also chooses the readout:
+
+- widen the range test at `0xC043A29C` (bit 4) or `0xC043A2B8` (bit 5) so the
+  record-time selector also carries a magnify bit. This is NOT cosmetic: the
+  two bits have ~13 consumers each, including the sensor/driver path
+  (`0xC02A9238`, `0xC02A0034`, `0xC02A285C`, `0xC02A4644`) and the geometry
+  builder (`0xC031B0D0`, `0xC031B3FC`) as well as MovSig (`0xC04293DC`,
+  `0xC042941C`). Setting the bit for a record selector tells all of them to run
+  the magnify crop while the profile's raster stays the record one -- a
+  geometry mismatch, i.e. the class of change that has frozen the camera before;
+- or make the record path request a selector inside 0x11-0x28, which really
+  does magnify but replaces the recorded geometry with that profile's -- the
+  same class of change as the existing mode swap, and it would change the take,
+  not just the monitor.
+
+**Second, independent finding: the UI refuses the MF ring in movie mode.** The
+MF-ring handler is `0xC0484DD8` (scene vtable slot 48, `StandbyEventHandler_
+w71c1`, vtable `0xC0CD7968`). It logs three named outcomes: `MfRing`
+(`0xC0CD7328`), `MfRingSkip` (`0xC0CD733C`), and `MovMfR_Sk` (`0xC0CD7330`,
+"movie MF ring skip"). The skip at `0xC0484EC8` is taken when movie mode is
+active (`0xC04AE0B8`: snapshot `+0x1F4+0x1C == 2`, or `0xC04FBE20`) AND
+`0xC0061218 == 0` AND `0xC0059D18 != 2` AND `0xC04A51B8 != 0` AND
+`0xC04914A0 == 0`. Forcing the branch at `0xC0484EC4` (`bne` -> `b`) removes
+that refusal, but it only lets the request through: the mode-id wall above
+still decides whether anything appears.
