@@ -1,179 +1,153 @@
-# Latching False Color / EL Zone on the SIGMA fp (Ver.5.02)
+# Latching False Color / EL Zone
 
-**What this gives you:** False Color, or EL Zone, as an on/off switch instead of
-a button you have to hold down. Works from any menu or payload of your own.
-About ten instructions. Nothing is written to flash, nothing persistent is
-written at all.
+SIGMA fp, firmware Ver.5.02.
 
-This is a complete recipe. You do not need anything else from this repo.
+On the stock camera, False Color is a momentary function: it is shown while an
+assigned button is held, and it stops when the button is released. This note
+describes how to turn it on and off from your own code, so it behaves as a
+toggle.
 
----
+## How the camera does it
 
-## 1. Why it cannot be done as a setting
+There is no stored setting for it. The assigned button calls two methods on the
+CameraIF object, which post rec-manager events:
 
-False colour is **not a stored setting on this camera**. Turning it on moves
-nothing:
-
-- `pic_false_color_on` does not change
-- `CM_FalseColor` does not change
-- not one byte moves in a 128 KB diff of the settings store
-
-The camera even tells you so. Localization key `2159` reads *"Assign False Color
-to a button on the Custom Button Functions menu."* There is no switch to find,
-which is why poking at RAM to find one is wasted effort.
-
-What actually happens is that a function key **posts an event while held**:
-
-| Action | Call | Posts |
+| Action | Method | Event |
 |---|---|---|
-| Key pressed | CameraIF vtable **+0xCC** = `0xC03722E8` | rec-manager event **0x21** |
-| Key released | CameraIF vtable **+0xD0** = `0xC0372330` | rec-manager event **0x22** |
+| Button pressed | CameraIF vtable +0xCC, `0xC03722E8` | `0x21` |
+| Button released | CameraIF vtable +0xD0, `0xC0372330` | `0x22` |
 
-The request is built on the stack and posted through `0xC03A0798`. That is the
-whole mechanism, and it is why nothing persists.
+The request is built on the stack and posted through `0xC03A0798`. Nothing is
+written to the settings store, so there is no flag to set and no state to read
+back.
 
-So: call those two methods yourself, and it becomes a latch. You keep the on/off
-state, because the camera does not.
+Calling the same two methods directly gives a toggle.
 
-## 2. The code
-
-Three addresses, firmware **Ver.5.02 only**:
+## Addresses
 
 ```
-0xC0370CF8   get the CameraIF singleton    (call it, returns the object in r0)
-0xC03722E8   vtable +0xCC   turn it ON     (posts 0x21)
-0xC0372330   vtable +0xD0   turn it OFF    (posts 0x22)
+0xC0370CF8   CameraIF singleton getter; call it, returns the object in r0
+0xC03722E8   vtable +0xCC, start
+0xC0372330   vtable +0xD0, stop
 ```
 
-Both methods take the singleton in `r0` and nothing else.
+Both methods take the object in `r0` and no other arguments.
 
-ARM, self-contained. `r0` in = 1 for on, 0 for off:
+## Code
+
+ARM. `r0` on entry: 1 to start, 0 to stop.
 
 ```arm
-false_colour:                       @ r0: 1 = on, 0 = off
+false_colour:
     push    {r4, lr}
-    movw    r4, #0x22E8             @ 0xC03722E8, start
+    movw    r4, #0x22E8                 @ 0xC03722E8, start
     movt    r4, #0xC037
     cmp     r0, #0
-    movweq  r4, #0x2330             @ 0xC0372330, stop
+    movweq  r4, #0x2330                 @ 0xC0372330, stop
     movteq  r4, #0xC037
-    movw    r0, #0x0CF8             @ 0xC0370CF8, the CameraIF singleton
+    movw    r0, #0x0CF8                 @ 0xC0370CF8
     movt    r0, #0xC037
-    blx     r0                      @ r0 = the singleton
-    blx     r4                      @ start or stop, taking it
+    blx     r0                          @ r0 = CameraIF
+    blx     r4
     pop     {r4, pc}
 ```
 
-That is it. There is no argument, no handle to keep, nothing to free.
-
-**Keep your own flag.** There is no camera state to read back, so your UI must
-remember what it last asked for. In our menu that is one byte, flipped on each
-press:
+As a toggle, holding the state in your own code, since the camera does not
+store it:
 
 ```arm
 toggle_false:
-    push {r4, r5, r6, lr}
-    LDA  r6, ST                     @ our state block
-    ldr  r0, [r6, #FC_ON]
-    eor  r0, r0, #1                 @ flip our own byte
-    str  r0, [r6, #FC_ON]
-    cmp  r0, #0
-    LDA  r4, 0xC03722E8             @ start
-    LDA  r0, 0xC0372330             @ stop
-    moveq r4, r0
-    LDA  r0, 0xC0370CF8
-    blx  r0                         @ the singleton
-    blx  r4
-    pop  {r4, r5, r6, pc}
+    push    {r4, r5, r6, lr}
+    LDA     r6, ST                      @ your state block
+    ldr     r0, [r6, #FC_ON]
+    eor     r0, r0, #1
+    str     r0, [r6, #FC_ON]
+    cmp     r0, #0
+    LDA     r4, 0xC03722E8
+    LDA     r0, 0xC0372330
+    moveq   r4, r0
+    LDA     r0, 0xC0370CF8
+    blx     r0
+    blx     r4
+    pop     {r4, r5, r6, pc}
 ```
 
-(`LDA` is just `movw`/`movt` of a 32-bit constant.)
+`LDA` is a `movw`/`movt` pair loading a 32-bit constant.
 
-## 3. Where to call it from
+## Calling it
 
-**Call it from your key handler.** That is exactly where the camera's own
-function key calls it, on the same thread, so there is nothing special about
-doing it from a menu row.
+Call it from a key handler. That is the context the stock function key uses, on
+the same thread.
 
-It touches no picker cell, no timing entry and no geometry, so unlike a
-recording-mode change it needs:
+It changes no picker cell, timing entry or geometry, so it needs no preset
+re-latch, no recording interlock for mode safety, and nothing to release when it
+is switched off. A cold boot clears it, since nothing was stored.
 
-- no preset re-latch
-- no busy/recording interlock to change modes safely
-- no resource to release when you switch it off
+## EL Zone
 
-Turning it off is the same call with the stop method. Cold boot clears it
-anyway, because nothing was stored.
+If the camera's False Color Style is set to EL ZONE, these calls latch EL Zone.
+Confirmed on hardware. The same code covers both; no separate implementation is
+needed.
 
-## 4. You get EL Zone for free
+Event `0x21` starts the mode without specifying a style. The scale is selected
+in the UI at draw time:
 
-**Confirmed on hardware:** set the camera's own **False Color Style** to
-**EL ZONE**, and the same call latches EL Zone instead. You do not implement EL
-Zone, and you do not need a second code path.
-
-Event 0x21 says *start the mode*. It never names a style. The scale that gets
-drawn is chosen separately, at draw time, inside the UI:
-
-- NBU scene **`B5_9`** holds a container the firmware calls **`StyleScale`**
-  (object 33210, 1024x64 at y=301).
+- Scene `B5_9` contains a container named `StyleScale` (object 33210,
+  1024x64 at y=301).
 - It carries a `toggleVisible` whose `select-value` is driven by an
-  `appVariableEvent` bound to the app variable **`CM_FalseColorAj`**.
-- Its two children are the two scales:
+  `appVariableEvent` bound to the app variable `CM_FalseColorAj`.
+- Its two children are the scales:
 
-| Child | Object | Ticks it draws |
+| Child | Object | Ticks |
 |---|---|---|
-| `FalseColorScale` | 33211 | `0`, `2.5`, `18`, `Gray`, `+1`, `Stop`, `99`, `100` — IRE |
-| `ElZoneScale` | 33212 | `-6 … -1`, `-½`, `0`, `+½`, `+1 … +6` — **stops** |
+| `FalseColorScale` | 33211 | `0`, `2.5`, `18`, `Gray`, `+1`, `Stop`, `99`, `100` (IRE) |
+| `ElZoneScale` | 33212 | `-6` to `-1`, `-½`, `0`, `+½`, `+1` to `+6` (stops) |
 
-One mode, two scales, selected by the user's style setting. That is the entire
-reason the latch works for both.
-
-Related symbols, if you want to drive the style yourself rather than asking the
-user to set it in the camera menu:
+Related symbols, for selecting the style from code rather than from the camera
+menu:
 
 ```
-0xC005DBA0  SetFalseColorType          picks the style; CANNOT switch the effect on
-0xC073F114  MenuItemFalseColorType     the menu item
+0xC005DBA0  SetFalseColorType       selects the style; does not switch the mode on
+0xC073F114  MenuItemFalseColorType
 0xC0CD0088  MenuFalseColorHandler
 0xC0D1BE3C  FalseColorBarDrawer
 0xC0BCABB4  ShellUserSettingAccessor<eFalseColorStyle, 1U>
 ```
 
-Localization keys: `2158` = `EL ZONE`, `2152`–`2157` = `False Color`.
+Localization keys: `2158` is `EL ZONE`, `2152`-`2157` are `False Color`.
 
-The style byte itself is **probably `0xC3032DCE`** — the
-`ShellUserSettingAccessor` descriptors carry a RAM address after their name
-pointer, and across 52 of them those addresses run one byte per setting
-(`eXC_ExpMode` `0xC3032D9B`, `eXC_IsoStep` `0xC3032D9D`, and so on). **This has
-not been read on a camera.** One shell read settles it: read the byte, change
-Style in the camera menu, read it again.
+The style byte is likely `0xC3032DCE`. `ShellUserSettingAccessor` descriptors
+hold a RAM address after their name pointer, and across 52 of them those
+addresses are consecutive, one byte per setting (`eXC_ExpMode` `0xC3032D9B`,
+`eXC_IsoStep` `0xC3032D9D`, and so on). This has not been read on a camera. To
+confirm: read the byte, change Style in the camera menu, read it again.
 
-## 5. The one limit, measured
+## Behaviour while recording
 
-**During recording the request is accepted and does nothing.** Measured with a
-resident watcher on the camera (the USB shell cannot be used mid-take):
+During recording the request is accepted and nothing is displayed. Measured with
+a resident watcher, since the USB shell cannot be used during a take:
 
-- posting event 0x21 once a second from our own thread returns success **every
-  time** and puts nothing on screen
+- event `0x21` posted once a second returns success each time, with nothing on
+  screen
 - the rec state machine's state index does not change when recording starts, and
-  the `+0x44 == 2` bail-out never fires, so nothing on the request path is
-  refusing it
-- stop recording and false colour comes back by itself
+  the `+0x44 == 2` bail-out does not fire, so the request path is not rejecting
+  it
+- display returns when recording stops
 
-So it is a live-view/standby tool. If your UI shows a state, it will read "on"
-during a take while nothing is displayed; that is the camera, not your code.
+A toggle's state display will therefore read on during a take while nothing is
+shown.
 
-## 6. How this was established
+## Notes on the analysis
 
-- Event numbering is cross-checked, not assumed: the neighbouring custom-key
-  entry (AP preview) emits `0x1F`/`0x20` from the adjacent vtable slots.
-- `gui send INTR_START_FALSE_COLOR` returns OK and does nothing. Those strings
-  are log-parser text with no code pointing at them. Do not chase them.
-- **Confirmed on hardware:** posting `0x21` from our own code turned false
-  colour on, with no key held. That is what makes it a latch.
-- The scene bindings above are decoded from the firmware's own component
-  property tables, not guessed. In this repo:
+- Event numbering was checked against the adjacent custom-key entry (AP
+  preview), which uses `0x1F` and `0x20` from the neighbouring vtable slots.
+- `gui send INTR_START_FALSE_COLOR` returns OK and has no effect; those strings
+  belong to the log parser and no code references them.
+- Posting `0x21` from injected code turned False Color on with no button held.
+  This was confirmed on hardware.
+- The scene bindings above were decoded from the firmware's component property
+  tables. In this repository:
   `python tools/nbu_components.py dump B5_9 33210`.
 
-Firmware **Ver.5.02** only. Every address here is from that image; on any other
-version, find them again before calling them.
+All addresses are from Ver.5.02 and should be located again on any other
+firmware version.
