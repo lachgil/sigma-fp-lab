@@ -79,14 +79,20 @@
  * picker holds for any one mode id. */
 .equ LOG_H1708,    0xC0732D00
 .equ LOG_H2088,    0xC0732E00
-/* The row map. The release card carries only the modes that have recorded on
- * a camera, plus the display fix open gate needs; everything else is on the
- * debug card, where whoever is testing it can read what it did.
+/* The row map. The release card carries the four rows asked for: Stock and the
+ * three modes that have recorded on a camera. Everything else, including Green
+ * Fix -- which is ported code that has never run on a camera -- is on the debug
+ * card, where whoever is testing it can read what it did.
  *
- * Release: Stock, M130, Open Gate, FHD 120, Green Fix.
- * Debug adds: M130 FAST (line period, same rate), M98 60P and the two other
- * same-raster swaps (cadence unconfirmed), False Col, Gyro, Gyro-Gate, M98 30P
- * (Open Gate's raster with more skew), M6 4K (no visible gain) and SEL.
+ * Release: Stock, M130, Open Gate, FHD 120.
+ * Debug adds: Green Fix (3:2 standby preview, untested on hardware), M130 FAST
+ * (line period, same rate), M98 60P and the two other same-raster swaps
+ * (cadence unconfirmed), False Col, Gyro, Gyro-Gate, M98 30P (Open Gate's
+ * raster with more skew), M6 4K (no visible gain) and SEL.
+ *
+ * Consequence of the four-row release: Open Gate greens the standby preview
+ * there, because the fix for it is a debug row. Use the debug card to shoot
+ * open gate with a usable monitor.
  *
  * state_offsets and the label table follow this order exactly.
  */
@@ -109,7 +115,7 @@
 #if SHOW_SEL
 .equ ROW_COUNT,  16
 #else
-.equ ROW_COUNT,  5
+.equ ROW_COUNT,  4
 #endif
 #ifndef OG60_SEL
 /* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at

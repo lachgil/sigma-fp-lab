@@ -55,12 +55,12 @@
 .equ INK,        0xB2           /* what the firmware's own glyphs read back as */
 .equ CELL_W,     12             /* (FONT_W + 1) * 2 */
 .equ ROW_PITCH,  18
-/* Rows, in src/menu.S's order. The release card carries only the modes that
- * have recorded on a camera, plus the display fix open gate needs. */
+/* Rows, in src/menu.S's order. The release card carries Stock and the three
+ * modes that have recorded on a camera; Green Fix is a debug row. */
 #if SHOW_SEL
 .equ ROWS,       16
 #else
-.equ ROWS,       5
+.equ ROWS,       4
 #endif
 .equ ROW_GATE,   11
 .equ ROW_SEL,    15

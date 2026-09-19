@@ -29,17 +29,20 @@ RIGHT moves down the list, UP switches the highlighted option on. Everything
 boots OFF and **Stock** clears it all. The panel is drawn top right, hides after
 about four seconds, and comes back on the next key.
 
+**Release card:** Stock, M130, Open Gate, FHD 120. Those are the three modes
+that have recorded on a camera, and nothing else.
+
 | Option | What you get |
 |---|---|
+| M130 | 3968×2640, full 1:1 readout, RAW12, follows the preset you select |
 | Open Gate | Full-sensor 3032×2012 (3:2) CinemaDNG instead of the 16:9 crop |
-| M98 30P / M98 60P | Alternative readout at 30p / 60p |
-| M130, M130 Fast | 3968×2640 cropped RAW12 |
-| M6 4K | 4176×2174, 14-bit full readout |
-| Gyro-Gate | Open gate together with the gyro metadata build |
-| 2K120 | 2016×1344 at 120 instead of 60 (mode 56) |
-| 672 240 | 2016×672 at 240 instead of 60 (mode 12) |
-| FALSE COL | False colour as a latch, instead of a button you hold |
-| SEL | A readout, not a switch (dev card only) |
+| FHD 120 | 1920×1080 12-bit at 120 fps; a burst, not a take |
+
+**Dev card adds:** Green Fix (3:2 standby preview, never run on a camera, which
+is why it is not on the release card), M130 Fast, M98 30P / M98 60P, M6 4K,
+2K120, 672 240, 2088 120, FALSE COL, Gyro, Gyro-Gate and the `SEL` readout.
+Open Gate greens the standby preview on the release card; use the dev card with
+Green Fix on if that is in your way.
 
 Turning an option on also selects the framerate it needs, which is what makes
 the camera adopt it. You should not have to switch the preset by hand.
@@ -53,6 +56,10 @@ modes are not our discovery:
   code on this camera at all, the AutoRun loader, the USB shell, the gyro
   metadata build, and the sensor mode table these options are selected from.
   Open gate was submitted back as [fpSup#2](https://github.com/ijigen/fpSup/pull/2).
+  ijigen has since released **OG3K v0.2.2a** (tag `fpsup-og3k-v0.2.2a`), a far
+  more complete open gate than the one here: eight frame rates, 3024×2010
+  recording geometry, in-camera playback, native ISO/highlight headroom,
+  shutter-angle correction and 8/10/12-bit. No part of it is included here.
 - **Vitaly Li / FP3K** — got open gate out of an fp first (3000×2000 12-bit
   CinemaDNG), and the display accessor (`0xC0437E98`) our standby green fix is
   built on. FP3K also demonstrates a native resolution entry, with its own

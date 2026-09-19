@@ -27,17 +27,17 @@ supports them, but no menu item names them. See **[docs/menu/](docs/menu/)**.
 
 ### 2. Recording modes the fp does not ship
 
-The **release card carries four rows and Stock**: the three modes that have
-actually recorded on a camera, plus the display fix Open Gate needs. Everything
-else is on the **debug card**, where whoever is testing it can read what it did.
-RIGHT moves, UP switches on, **Stock** switches everything off.
+The **release card carries Stock and four rows**: the three modes that have
+actually recorded on a camera. Everything else, Green Fix included, is on the
+**debug card**, where whoever is testing it can read what it did. RIGHT moves,
+UP switches on, **Stock** switches everything off.
 
 | Row | Sensor mode | Field of view | Readout | Recorded | Rolling shutter | Rate | Status |
 |---|---|---|---|---|---|---|---|
 | **M130** | M130 | middle 65% (1.53x crop) | **full 1:1** | 3968x2640 | 16.3 ms | 377 MB/s at 23.976 | **sustained on hardware**, two minutes. At 29.97 it needs 471 MB/s and stops after about 5 s |
-| Open Gate | M117 | **the whole sensor** | 2x2 binned | 3032x2012 | 9.2 ms | 274 MB/s | works; greens the preview until Green Fix is on |
+| Open Gate | M117 | **the whole sensor** | 2x2 binned | 3032x2012 | 9.2 ms | 274 MB/s | works; greens the standby preview, and the fix for that is a dev row |
 | FHD 120 | M58 (from M27) | whole sensor | 2x2 binned, 3032x1708 read | 1920x1080, **12-bit** | | 60 -> **120 fps** | **recorded on hardware** at about 389 MB/s, then overflows after a couple of seconds: a burst, not a take |
-| Green Fix | | | | | | | 3:2 preview for the 3:2 modes, ported from FP3K; **never run on a camera** |
+| Green Fix *(dev)* | | | | | | | 3:2 preview for the 3:2 modes, ported from FP3K; **never run on a camera**, which is why it is a dev row |
 | M130 FAST *(dev)* | M130 | middle 65% | full 1:1 | 3968x2640 | **12.1 ms** | as M130 | line period only; **not** a frame rate |
 | M98 60P *(dev)* | M98 | whole sensor | 2x2 binned | 3032x2012 | 12.4 ms | 548 MB/s | offline only, expect short bursts |
 | 2K120 *(dev)* | M56 (from M139) | whole sensor | 2x2 binned | 2016x1344 | | 60 -> 120 fps | the readout is selected; the cadence is unconfirmed |
@@ -59,9 +59,13 @@ columns, one photosite per pixel, no binning. Neither is simply better.
 Measurements in **[docs/modes/](docs/modes/)**.
 
 Open gate itself is worth saying plainly: it came down the fpSup/FP3K line, and
-**FP3K has since released a newer open gate of its own** with the display and
-brightness halves solved together. If open gate is what you want, look at that
-too; what is here is the same sensor half plus our own menu around it.
+**ijigen/fpSup has since released a much more complete open gate of its own**,
+OG3K v0.2.2a (tag `fpsup-og3k-v0.2.2a`, commit `a029b6a4`): eight frame rates,
+3024x2010 recording geometry that follows the fp's own +16/+10 crop convention,
+working in-camera playback, native ISO/highlight headroom restored, shutter-angle
+correction and 8/10/12-bit CinemaDNG. What is here is the original FHD-slot M117
+swap plus our own menu around it, and it is not a port of that work: the latest
+OG3K core sources are not published. If open gate is what you want, start there.
 
 ### 3. Our own code, reading the image and drawing on the screen
 
