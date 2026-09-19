@@ -1,3 +1,42 @@
+# 2026-09-15 — corrections, and where the native menu actually stands
+
+Read this before the older log below.
+
+- **The native FP LAB row was built against the wrong page and is withdrawn.**
+  Record Settings is scene `B2_5`; `B1_2_5` is Auto ISO Settings (ISO limits and
+  shutter limits). The `--fplab-page` card option and `cards/fp-fplab-row-card.zip`
+  are gone: the row they produced was a copy of an Auto ISO limit row with its
+  list, activation and animation records dropped, which cannot focus, open or
+  label itself. Nothing was lost -- it had never been on a camera.
+- **The prerequisite that was missing is now done.** `tools/nbu_components.py`
+  reads each component's property table out of the firmware (registration at
+  `0xC05D5E30`, reader types from `0xC05E7B78`) and decodes records against it:
+  206,836 component records across all 221 scenes consume exactly their own
+  length. Field offsets, including the type-14 object references a graft has to
+  renumber, are now read rather than guessed. The Frame Rate row is 294 records
+  and 17,144 bytes with 73 object references, 4 of which leave the row.
+- **Still blocked, and why.** Clips are allocated per animation group by the
+  header (that relation holds for all 221 scenes: `nbu_scene.py verify`), but the
+  clip records in a row do not follow their group record in stream order -- the
+  Frame Rate row's six groups allocate 30 clips while 29 clip records sit in
+  spans of 0/0/0/5/0/22. Until that mapping is established, a copied row's
+  positional header entries cannot be sliced, so an animated row cannot be
+  emitted. A row without animation also needs a private label: every four-digit
+  localization key in the pool is referenced, so it needs the synthetic-string
+  resolver hook FP3K uses at `0xC05E5B58`, not an overwritten stock string.
+  And a native row is a UI change: it has to be seen on a camera before it is
+  packaged, which is exactly the step the withdrawn card skipped.
+- **Release card rows are now Stock, M130, Open Gate, FHD 120** -- the three
+  modes that have recorded on a camera. Green Fix moved to the debug card
+  because it has never run on a camera; the consequence is that Open Gate greens
+  the standby preview on the release card.
+- **Open gate upstream has moved well past ours.** ijigen's OG3K v0.2.2a (tag
+  `fpsup-og3k-v0.2.2a`, commit `a029b6a4`, 2026-09-14) is eight rates, 3024x2010
+  recording geometry, in-camera playback, ISO/highlight headroom restored,
+  shutter-angle correction and 8/10/12-bit. Its latest core sources are not in
+  the public tree or the handoff, so it cannot be ported from here, and nothing
+  in this repo is that implementation. Ours is still the FHD-slot M117 swap.
+
 # SIGMA fp mod — project status (overnight session 2026-09-11)
 
 Worked the whole task list autonomously. Everything is RAM-only/reversible; no

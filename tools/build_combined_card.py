@@ -42,22 +42,34 @@ NATIVE_CSV_LEN = 89
 NATIVE_PICK = 0xC0732400        # the selection hook, empty in stock
 NATIVE_SITE = 0xC057A6A0        # MV_Resolution selection callback (ARM)
 NATIVE_SITE_STOCK = 0xE92D40F0  # push {r4,r5,r6,r7,lr}, the displaced word
-# The FP LAB row (--fplab-page). Caves verified empty in the stock image at
-# build time; the row itself is generated and checked by tools/fplab_page.py.
-INJECT_CODE = 0xC0793100
-INJECT_STATE = 0xC0793400
-INJECT_TABLE = 0xC0793420
-INJECT_HEADER = 0xC0793500
-INJECT_SITE = 0xC05E6400        # the NBU record interpreter; Thumb
-INJECT_MENU = 0xC0794100
-INJECT_RECORDS = 0xC07A4400
 # The green fix (src/greenfix.S), armed from the menu's GREEN FIX row. Caves
 # checked empty at build time; the hook word at 0xC0437E98 is NOT written here,
 # the menu writes it when the row is switched on and puts the stock instruction
 # back when it is switched off.
 GREEN_DESC = 0xC0794200
 GREEN_CODE = 0xC0794240
-INJECT_SITE_STOCK = 0x4FF0E92D  # push.w {r4-r11,lr} then the start of vpush
+# The FP LAB row (--fplab-row): a sixth row in the camera's own Record Settings
+# page, named through our own string resolver. Caves are checked empty in the
+# stock image at build time. The records are 10 KB, and no cave in the image is
+# that big and safe, so they ride in the loader's DMA pool like the menu's code
+# and the injector resolves the pool base at runtime (mode 2).
+STR_CODE = 0xC0793100           # src/strhook.S, 60 bytes
+STR_SITE = 0xC05E5B58           # the NBU string resolver; Thumb, a leaf
+STR_SITE_STOCK = 0x3FFFF1B1     # cmp.w r1, #-1
+STR_PRIVATE_BASE = 0x00100000   # private string offsets start here
+INJECT_CODE = 0xC0793200        # src/nbuinject.S
+INJECT_STATE = 0xC0793400
+INJECT_TABLE = 0xC0793420
+# Pool-relative, above the menu (0x50000) and the drawn panel (0x52000), and
+# clear of the loader's own read window. The enlarged header is 4 KB and the
+# row's records are 10 KB: the caves in the image that are both free and that
+# big do not exist, and these are the same kind of pool residence the menu's
+# code already uses.
+INJECT_HEADER_OFF = 0x54000     # the enlarged scene allocation header
+INJECT_MENU_OFF = 0x56000       # the Menu declaration, one more child
+INJECT_RECORDS_OFF = 0x58000    # the row itself
+INJECT_SITE = 0xC05E6400        # the NBU record interpreter; Thumb
+INJECT_SITE_STOCK = 0x4FF0E92D  # push.w {r4-r11,lr}, then the start of vpush
 
 
 def thumb_branch(site: int, target: int) -> int:
@@ -71,6 +83,7 @@ def thumb_branch(site: int, target: int) -> int:
     first = 0xF000 | (sign << 10) | ((offset >> 12) & 0x3FF)
     second = 0x9000 | (j1 << 13) | (j2 << 11) | ((offset >> 1) & 0x7FF)
     return first | (second << 16)
+
 
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
 # 0xC072F000, so the debug and release cards share one address map.
@@ -147,10 +160,16 @@ def main():
                              'Resolution list (max 12 characters)')
     parser.add_argument('--ui-probe', action='store_true',
                         help='arm the observation-only GUI append hook at boot')
-    parser.add_argument('--fplab-page', action='store_true',
-                        help='add a real fifth row to Record Settings, built '
-                             'from the stock Resolution row and fed to the NBU '
-                             'interpreter at boot (src/nbuinject.S)')
+    parser.add_argument('--fplab-row', action='store_true',
+                        help='add an "FP LAB" row to the camera\'s own Record '
+                             'Settings page, built from the Frame Rate row and '
+                             'named through our own string resolver. Has NEVER '
+                             'run on a camera: see docs/menu/gui-resources.md')
+    # --fplab-page is withdrawn: the row it built was a copy of an Auto ISO
+    # limit row grafted with its navigation and animation records dropped, and
+    # it was never a working native FP LAB entry. src/nbuinject.S and
+    # tools/verify_nbuinject.py keep the proven injection mechanism offline;
+    # tools/fplab_page.py is now a declaration-only experiment.
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
                         help='FieldAngle selector for FHD/59.94 CinemaDNG. '
                              'Default 173, measured on hardware 2026-09-11: the '
@@ -287,59 +306,81 @@ entry:
                              (PROBE_STATE, bytes(0x40), 'gui probe state'),
                              (PROBE_SITE, struct.pack('<I', hw1 | (hw2 << 16)),
                               'gui append hook')])
-        if args.fplab_page:
-            # A real fifth row in Record Settings. The scene's records are
-            # byte-packed, so the row arrives through the interpreter itself:
-            # see src/nbuinject.S and docs/menu/gui-resources.md.
-            plan = fplab_page.build(firmware)
+        if args.fplab_row:
+            # A sixth row in the camera's own Record Settings page. The scene's
+            # records are byte-packed with no slack, so the row arrives through
+            # the interpreter itself (src/nbuinject.S), and it is named through
+            # our own string resolver (src/strhook.S) rather than by overwriting
+            # a stock string. See docs/menu/gui-resources.md.
+            plan = fplab_page.build_row(firmware)
+            checks = fplab_page.verify_row(firmware, plan)['checks']
+            failed = [name for name, passed in checks.items() if not passed]
+            if failed:
+                raise SystemExit(f'the FP LAB row does not verify: {failed}')
+            if plan['label']['offset'] != hex(STR_PRIVATE_BASE):
+                raise SystemExit('the row label is not the private offset the '
+                                 'string hook answers')
+            # The label first: without it the row draws whatever the resolver
+            # returns for an unanswered offset, which is nothing.
+            defines = (f'PRIVATE_BASE={STR_PRIVATE_BASE:#x}', 'STR_BLOB=0')
+            blob = STR_CODE + symbols(ROOT / 'src/strhook.S', defines)['str_blob']
+            defines = (f'PRIVATE_BASE={STR_PRIVATE_BASE:#x}', f'STR_BLOB={blob:#x}')
+            resolver = assemble(ROOT / 'src/strhook.S', defines)
+            if symbols(ROOT / 'src/strhook.S', defines)['str_blob'] + STR_CODE != blob:
+                raise SystemExit('the string blob moved between assembler passes')
+            injector = assemble(ROOT / 'src/nbuinject.S',
+                                (f'INJECT_STATE={INJECT_STATE:#x}',
+                                 f'INJECT_TABLE={INJECT_TABLE:#x}',
+                                 'INJECT_COUNT=3'))
             payload = {
-                'code': (INJECT_CODE, assemble(ROOT / 'src/nbuinject.S',
-                                               (f'INJECT_STATE={INJECT_STATE:#x}',
-                                                f'INJECT_TABLE={INJECT_TABLE:#x}',
-                                                'INJECT_COUNT=3')), 'scene injector'),
+                'resolver': (STR_CODE, resolver, 'private string resolver'),
+                'code': (INJECT_CODE, injector, 'scene injector'),
                 'state': (INJECT_STATE, bytes(0x10), 'scene injector state'),
-                'header': (INJECT_HEADER, plan['header'], 'enlarged scene header'),
-                'menu': (INJECT_MENU, plan['menu'], 'Menu declaration, one more child'),
-                'records': (INJECT_RECORDS, plan['body'], 'FP LAB row records'),
             }
+            for site, stock, why in ((STR_SITE, STR_SITE_STOCK, 'string resolver'),
+                                     (INJECT_SITE, INJECT_SITE_STOCK, 'record interpreter')):
+                got = struct.unpack_from('<I', firmware, site - 0xC0000000)[0]
+                if got != stock:
+                    raise SystemExit(f'the {why} at {site:#x} starts {got:#x}, '
+                                     f'expected {stock:#x}')
+            for address, blob_bytes, why in payload.values():
+                if any(firmware[address - 0xC0000000:
+                                address - 0xC0000000 + len(blob_bytes)]):
+                    raise SystemExit(f'{why} cave at {address:#x} is not empty in stock')
+            # The table: two guarded replacements and one injected run, all
+            # three answered out of the pool. Each entry carries the stock
+            # record's length and FNV-1a, so a record that does not match byte
+            # for byte is left alone and counted at state +0x0C.
+            pooled = (
+                (plan['header_at'], plan['header_stock_size'], INJECT_HEADER_OFF,
+                 plan['header'], 2, 'enlarged scene header'),
+                (plan['menu_at'], len(plan['menu_stock']), INJECT_MENU_OFF,
+                 plan['menu'], 2, 'Menu declaration, one more child'),
+                (plan['tail_at'], plan['tail_size'], INJECT_RECORDS_OFF,
+                 plan['body'], 3, 'FP LAB row records'),
+            )
             table = b''
-            for record, stock, buffer, mode in (
-                    (plan['header_at'], firmware[plan['header_at'] - 0xC0000000:
-                                                 plan['header_at'] - 0xC0000000
-                                                 + plan['header_stock_size']],
-                     payload['header'], 0),
-                    (plan['menu_at'], plan['menu_stock'], payload['menu'], 0),
-                    (plan['tail_at'], firmware[plan['tail_at'] - 0xC0000000:
-                                               plan['tail_at'] - 0xC0000000
-                                               + plan['tail_size']],
-                     payload['records'], 1)):
+            for record, length, offset, buffer, mode, why in pooled:
+                stock = firmware[record - 0xC0000000:record - 0xC0000000 + length]
                 value = 0x811C9DC5
                 for byte in stock:
                     value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
-                table += struct.pack('<6I', record, len(stock), value, mode,
-                                     buffer[0], len(buffer[1]))
+                table += struct.pack('<6I', record, length, value, mode,
+                                     offset, len(buffer))
+                sections.append((offset, buffer + bytes(-len(buffer) % 4),
+                                 f'{why} (pool)'))
             payload['table'] = (INJECT_TABLE, table, 'scene injector table')
-            for address, blob, why in payload.values():
-                if any(firmware[address - 0xC0000000:
-                                address - 0xC0000000 + len(blob)]):
-                    raise SystemExit(f'{why} cave at {address:#x} is not empty in stock')
-            got = struct.unpack_from('<I', firmware, INJECT_SITE - 0xC0000000)[0]
-            if got != INJECT_SITE_STOCK:
-                raise SystemExit(f'the NBU interpreter starts {got:#x}, '
-                                 f'expected {INJECT_SITE_STOCK:#x}')
-            # The loader copies whole words. The table keeps each buffer's true
-            # length, so the padding is never handed to the interpreter.
-            sections.extend((address, blob + bytes(-len(blob) % 4), why)
-                            for address, blob, why in payload.values())
+            if any(firmware[INJECT_TABLE - 0xC0000000:
+                            INJECT_TABLE - 0xC0000000 + len(table)]):
+                raise SystemExit('the injector table cave is not empty in stock')
+            # The loader copies whole words; the table keeps each buffer's true
+            # length, so padding is never handed to the interpreter.
+            sections.extend((address, blob_bytes + bytes(-len(blob_bytes) % 4), why)
+                            for address, blob_bytes, why in payload.values())
+            sections.append((STR_SITE, struct.pack('<I', thumb_branch(
+                STR_SITE, STR_CODE)), 'string resolver hook'))
             sections.append((INJECT_SITE, struct.pack('<I', thumb_branch(
                 INJECT_SITE, INJECT_CODE)), 'scene injector hook'))
-            # The row's label. Not a cave: this deliberately overwrites one
-            # stock English string, the HDMI page's "DCI 4K 4096x2160", for a
-            # format this body cannot output. fplab_page checks it reads that
-            # before replacing it, and it is RAM only.
-            sections.append((plan['label']['patch_at'], plan['label']['patch'],
-                             f"row label {plan['label']['text']!r}"))
-
         # The green fix, placed but not armed: the menu's GREEN FIX row writes
         # the branch at 0xC0437E98 and puts the stock instruction back.
         green = assemble(ROOT / 'src/greenfix.S',

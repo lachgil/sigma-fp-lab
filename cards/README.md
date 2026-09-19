@@ -22,9 +22,8 @@ scripts in the repo root regenerate them from your own firmware).
 
 | File | What it does | Select on camera | Notes |
 |---|---|---|---|
-| `fp-menu-card.zip` | **The menu card.** Four rows and Stock: **M130** (24p when the camera is on 23.976), **Open Gate**, **FHD 120** (1920x1080 12-bit at 120 fps from a 3032x1708 readout, a couple of seconds before the recorder overflows) and **Green Fix**, which reframes the standby preview to 3:2 so Open Gate stops greening. Extract both files to the card root. | On camera, then re-latch the mode | **Start here.** No USB shell, no diagnostics. |
-| `fp-menu-card-dev.zip` | The same, **plus the USB shell and every other row**: M130 FAST, M98 60P, 2K120, 672 240, False Col, Gyro, Gyro-Gate, M98 30P, M6 4K, 2088 120 and the `SEL` readout. Those are experiments and dead ends kept for their evidence. | As above | For development. The shell replaces the camera's normal PTP interface, so SIGMA Camera Control will not see the camera. |
-| `fp-fplab-row-card.zip` | **Untested dev card.** The menu card with the USB shell, plus a genuinely new fifth row injected into the camera's own **Record Settings** page. Extract both files to the card root. | Nothing to select: open **Menu → Record Settings** and look below the last row | **Has never been on a camera.** The row is a copy of the last stock row, so it reads the same label; it has no focus highlight and Right/OK do nothing on purpose. What it is testing is whether a new row appears at all. If the menu misbehaves, remove the files and pull the battery. |
+| `fp-menu-card.zip` | **The menu card.** Stock and the three modes that have recorded on a camera: **M130** (24p when the camera is on 23.976), **Open Gate** and **FHD 120** (1920x1080 12-bit at 120 fps from a 3032x1708 readout, a couple of seconds before the recorder overflows). Extract both files to the card root. | On camera, then re-latch the mode | **Start here.** No USB shell, no diagnostics. Open Gate greens the standby preview here: the fix for it is untested on hardware, so it is a dev row. |
+| `fp-menu-card-dev.zip` | The same, **plus the USB shell and every other row**: Green Fix, M130 FAST, M98 60P, 2K120, 672 240, False Col, Gyro, Gyro-Gate, M98 30P, M6 4K, 2088 120 and the `SEL` readout. Those are experiments and dead ends kept for their evidence. | As above | For development, and the card to use for Open Gate with a usable monitor. The shell replaces the camera's normal PTP interface, so SIGMA Camera Control will not see the camera. |
 | `AutoRun-opengate.txt` | Open gate: full-sensor **3032×2012 (3:2)** CinemaDNG. Record hook is gated (selector `r5==175`) so other modes are untouched. Includes the fpSup USB shell. | **CinemaDNG → FHD → 29.97p** | Preview greens while recording (cosmetic, see below); files are correct. Submitted upstream as [ijigen/fpSup#2](https://github.com/ijigen/fpSup/pull/2). |
 | `AutoRun-opengate-greenfix.txt` | Same open gate **plus** the FP3K-style display hook that reframes the preview to 3:2. Boot-and-shoot (no shell). | **CinemaDNG → FHD → 29.97p** | Green fix is **standby/live-view** and only engages if this unit's display object matches the fingerprint (safe no-op otherwise). The record-time monitor may still band; recorded files are fine. Record to a **fast SSD**. |
 | `AutoRun-fhd120.txt` | High-fps experiment: repoints the FHD slot to **M58 (3032×1708 @≈120)** CinemaDNG RAW. | **CinemaDNG → FHD** (the repointed slot) | **EXPERIMENTAL.** ~389 MB/s → needs a **fast USB-C SSD**; on slower media it auto-stops after a couple of seconds. Recorded 120fps cadence is not yet independently confirmed. |
@@ -36,6 +35,13 @@ scripts in the repo root regenerate them from your own firmware).
   **monitor** artifact, not in your footage. The standby green fix
   (`opengate-greenfix`) is verified in firmware but needs a per-camera fingerprint
   match to engage; see [the green preview notes](../docs/display/green.md).
+- **If open gate is what you want, look upstream first.** Our open gate is the
+  original FHD-slot M117 swap. ijigen/fpSup has since released **OG3K v0.2.2a**
+  (tag `fpsup-og3k-v0.2.2a`, commit `a029b6a4`), which is a different and more
+  complete implementation: eight frame rates, 3024x2010 recording geometry,
+  in-camera playback, corrected native ISO/highlight headroom, shutter-angle
+  correction and 8/10/12-bit. Its latest core sources are not published, so
+  nothing here is a port of it, and none of its work is claimed here.
 - **High-fps is experimental.** M58/M103 are 2×2-binned (softer) sensor modes.
   Use a fast SSD, keep clips short, and verify your own files.
 - These are RAM-only and reversible, but RAM changes can still spoil a take.

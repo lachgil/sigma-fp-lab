@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / 'tools'), str(ROOT / 'reference/fpSup/fp_usb_shell')]
 import menu_resources as res
 import nbu_scene as ns
+import fplab_page
 import unicorn as uc
 from unicorn import arm_const as ar
 from armasm import assemble, symbols
@@ -40,6 +41,8 @@ SP = 0x102FFFF0
 STOP = 0x10240000
 SITE = 0xC05E6400
 NBU = 0xC18C0460
+POOL = 0x45000000            # the modelled DMA pool the card's offsets land in
+POOL_PTR = 0xC3757A7C        # where the firmware keeps that base
 
 
 def fnv(raw: bytes) -> int:
@@ -63,12 +66,22 @@ class Fixture:
         self.u.mem_write(res.LOAD, image)
         self.u.mem_protect(res.LOAD, span, uc.UC_PROT_READ | uc.UC_PROT_EXEC)
         self.u.mem_map(0x10200000, 0x200000)
+        self.u.mem_map(POOL, 0x100000)
         self.u.mem_write(CODE, self.code)
+        # The pool base the card's pool-relative entries are resolved against.
+        # The firmware word is read-only in this map, so the pointer lives in
+        # its own page and POOL_PTR is written there.
+        self.u.mem_map(POOL_PTR & ~0xFFF, 0x1000)
+        self.put(POOL_PTR, POOL)
         at = BUFFERS
         for entry in entries:
-            entry['buffer_at'] = at
-            self.u.mem_write(at, entry['buffer'])
-            at = (at + len(entry['buffer']) + 15) & ~15
+            if entry['mode'] & 2:               # pool-relative: an offset
+                entry['buffer_at'] = entry['pool_offset']
+                self.u.mem_write(POOL + entry['pool_offset'], entry['buffer'])
+            else:
+                entry['buffer_at'] = at
+                self.u.mem_write(at, entry['buffer'])
+                at = (at + len(entry['buffer']) + 15) & ~15
         table = b''.join(struct.pack('<6I', e['record'], e['length'], e['hash'],
                                      e['mode'], e['buffer_at'], len(e['buffer']))
                          for e in entries)
@@ -116,27 +129,29 @@ class Fixture:
 
 def main() -> None:
     image = (ROOT / 'analysis/MAIN_c0000000.bin').read_bytes()
-    plan = json.loads((ROOT / 'builds/fplab-page/plan.json').read_text())
-    header = (ROOT / 'builds/fplab-page/header.bin').read_bytes()
-    records = (ROOT / 'builds/fplab-page/records.bin').read_bytes()
-    menu = (ROOT / 'builds/fplab-page/menu.bin').read_bytes()
+    # The payload the card actually installs, built here rather than read from
+    # a stale file: a stale plan is exactly how a verifier passes for work the
+    # card no longer does.
+    plan = fplab_page.build_row(image)
+    header, records, menu = plan['header'], plan['body'], plan['menu']
 
     scene = ns.scene(image, plan['scene'])
-    header_at = int(plan['scene_at'], 16)
-    menu_at = int(plan['menu_declaration'], 16)
-    tail_at = int(plan['tail_record'], 16)
-    stock_header = image[header_at - res.LOAD:header_at - res.LOAD + plan['header_bytes'][0]]
-    stock_menu = image[menu_at - res.LOAD:menu_at - res.LOAD + len(menu)]
-    tail_size = scene.records[-1][2]
+    header_at = plan['header_at']
+    menu_at = plan['menu_at']
+    tail_at = plan['tail_at']
+    stock_header = image[header_at - res.LOAD:
+                         header_at - res.LOAD + plan['header_stock_size']]
+    stock_menu = plan['menu_stock']
+    tail_size = plan['tail_size']
     stock_tail = image[tail_at - res.LOAD:tail_at - res.LOAD + tail_size]
 
     entries = [
         dict(record=header_at, length=len(stock_header), hash=fnv(stock_header),
-             mode=0, buffer=header),
+             mode=2, pool_offset=0x54000, buffer=header),
         dict(record=menu_at, length=len(stock_menu), hash=fnv(stock_menu),
-             mode=0, buffer=menu),
+             mode=2, pool_offset=0x56000, buffer=menu),
         dict(record=tail_at, length=tail_size, hash=fnv(stock_tail),
-             mode=1, buffer=records),
+             mode=3, pool_offset=0x58000, buffer=records),
     ]
     fixture = Fixture(image, entries)
     results = []
@@ -201,6 +216,16 @@ def main() -> None:
           refuser.seen == [bytes(changed[menu_at - res.LOAD:
                                          menu_at - res.LOAD + len(stock_menu)])]
           and refuser.counters()['refused'] == 1)
+
+    # No pool means no payload: every pool-relative entry has to fall through to
+    # the stock record rather than read from offset zero, which is the one way
+    # this hook could hand the interpreter garbage.
+    poolless = Fixture(image, entries)
+    poolless.put(POOL_PTR, 0)
+    poolless.run(NBU, tail_at - NBU)
+    check('a pool base of zero leaves the scene stock',
+          poolless.seen == [stock_tail]
+          and poolless.counters()['injected'] == 0)
 
     report = dict(cases=results, payload_bytes=len(fixture.code),
                   injected_records=len(injected),

@@ -29,6 +29,16 @@ needs a camera unless it says so. Run them from the repository root:
 | `fwmap.py`, `af_dis.py` | Cross-references and disassembly |
 | `inspect_preview.py`, `regiondiff.py` | Read saved captures, compare regions |
 
+## The camera's own menu, offline
+
+| Script | What it does |
+|---|---|
+| `menu_resources.py` | Reads the NBR resource table, scene directory and localization |
+| `nbu_scene.py` | Scene allocation-header codec and record graft |
+| `nbu_components.py` | Component property tables out of the firmware: `verify`, `schema <name>`, `refs <scene> <object>` |
+| `fplab_page.py` | Record Settings identity, and the declaration-only construction experiment. **Not installable**, see [docs/menu/gui-resources.md](../docs/menu/gui-resources.md) |
+| `native_scene_vm.py`, `verify_nbuinject.py` | Run the firmware's interpreter and our injector offline |
+
 ## Talking to a live camera
 
 These need the fpSup USB shell (a debug card) and its daemon running. They

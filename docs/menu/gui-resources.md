@@ -73,42 +73,75 @@ Relevant branch rules:
 - avoid `bl` between local labels: it emits `R_ARM_THM_CALL`, which the
   relocation handler in `armasm.py` does not implement.
 
-## A construction route, executed offline
+## What the page actually is
 
-`B1_2_5`, not MainB5, is Record Settings. Its stream begins at
-`0xC196410F` with a 2,948-byte allocation header. That header declares
-238 objects and component/supplemental sizing information. The native
-interpreter's header path at `0xC05E679A` uses those counts before object
-construction.
+Record Settings is `B2_5`, **not** `B1_2_5`. `B1_2_5` is Auto ISO Settings: its
+four rows are ISO Lower Limit, ISO Upper Limit, Slowest Shutter Speed Limit and
+Maximum Shutter Angle. Earlier notes here named it Record Settings and the row
+work was built on it; that was wrong, and `tools/fplab_page.py inspect` now
+proves the identity out of the firmware instead of asserting it:
 
-The `Menu` declaration at `0xC196D74B` has object ID `0x59` and capacity
-for six children: four setting-row containers plus `shuttermode` and `Blind`.
-An extra row needs another child slot. The native child vector can request
-reallocation; increasing its declaration capacity avoids that extra request.
+| Scene | Object | Row | Key | English |
+| --- | --- | --- | --- | --- |
+| `B2_5` | 90 | `B2_5_1` | `0301` | Format |
+| `B2_5` | 91 | `B2_5_2` | `0304` | Bit Depth |
+| `B2_5` | 4361 | `B2_5_3` | `0309` | Compression |
+| `B2_5` | 4253 | `B2_5_4` | `0312` | Resolution |
+| `B2_5` | 4433 | `B2_5_5` | `0315` | Frame Rate |
 
-Run the local investigation fixture:
+The scene starts at `0xC1A5C590`, declares 285 objects, and its `Menu` container
+is object `0x59` at `0xC1A63E99` with room for six children (five rows plus
+`Blind`). The movie-resolution bindings live here too: the `controlAppVariable`
+records under `B2_5_5` name `MV_FrameRate`, `SYS_SubmenuIndex` and
+`B2_n5_ListFocus4`, which is what a native row would have to drive.
 
-```sh
-.venv/bin/python analysis/native_row_construction_proof.py
-```
+## What is proven, and what is not
 
-It executes the **real firmware** record interpreter, object factory,
-parent attachment, name assignment, and sorted ID insertion/lookup:
+`tools/fplab_page.py verify` runs the **real** firmware record interpreter,
+object factory, parent attachment, name assignment and sorted-ID insertion over
+the enlarged scene:
 
-- Stock: 238 objects, six Menu children.
-- Extended: 249 objects, seven Menu children. The added declaration subtree
-  comes from the 11-object `MainB5/B5_9` jump row, with private IDs
-  `0xF000..0xF00A` and its root parent changed to `0x59`.
-- All 238 original IDs and all 11 new IDs resolve.
-- Negative control: leaving the scene object count at 238 causes the native
-  store at `0xC05E8290` to write past the reserved object-pointer table.
-  This demonstrates a failure mode, not a diagnosis of earlier camera failures.
+- stock: 285 objects, six `Menu` children;
+- extended: 330 objects, seven `Menu` children, from the 45 declarations of the
+  Frame Rate row renumbered into `0xF000..0xF02C` with its root reparented to
+  `0x59`;
+- all 285 stock IDs and all 45 private IDs resolve;
+- negative control: leaving the object count at 285 makes the native store at
+  `0xC05E8290` write past the reserved object-pointer table.
 
-The fixture models allocation, byte readers, and component-size lookup.
-It parses **declarations only**, not the donor row's components/actions.
-The arena-size numbers therefore exclude component storage. This is not a
-working FP LAB UI, a rendering test, or an installable payload. Exact boundaries
-and results are recorded in `analysis/native_row_construction_proof.json`.
+That is object construction and nothing else. **It emits declarations only.**
+Components, drawing, focus, key handling and actions are not built, so the
+arena sizes exclude component storage and none of this is installable.
+
+What a real native row still needs:
+
+- **done: the per-component property schemas.** A component record is a
+  presence bitmask over an ordered property table the firmware itself carries:
+  each constructor registers `(count, table)` with `0xC05D5E30`, and the
+  interpreter's reader at `0xC05E7B78` dispatches 15 property types
+  (`0xC05E7BC0` is its jump table). `tools/nbu_components.py` locates those
+  tables and decodes records against them: **206,836 component records across
+  all 221 scenes consume exactly their own length**, so field offsets are read
+  rather than guessed. Undecoded families are reported, not half-decoded:
+  `fill` (240 records), layout records `0x10007` (211), `controlLayout` (4),
+  `animationEvent` (2), `languageEvent` (2).
+  That matters because object references are type-14 fields whose offset
+  depends on which earlier properties are present. The Frame Rate row is 294
+  records and 17,144 bytes, and `fplab_page.py inspect` now audits it: **73
+  object references** -- 69 inside the row, 4 leaving it (objects `1` and `37`,
+  the scene root and `Footer`) -- across `changePropertyByControl` (33),
+  `controlAnimation` (18), `controlFocus` (15), `controlAppVariable` (6) and
+  `drawScrollbar` (1).
+- the animation-group header arithmetic. `B2_5` declares 214 `animationClip`
+  entries for 190 group records, so the clip count is not one per record and the
+  copied row's positional entries cannot be sliced out by counting records.
+  `animationClip` and `list` records are the two forms in the row that
+  `nbu_components.py` does not decode.
+- a label, and actions. Every four-digit localization key in the pool is
+  referenced; the withdrawn row borrowed key `1636` ("DCI 4K 4096x2160") by
+  overwriting a stock English string, which is a hack, not a mechanism. A row
+  that does anything also has to bind to a variable the way the stock rows bind
+  `MV_FrameRate`, and nothing here does that yet.
 
 ### Connecting this to FP3K's parser hook
 
@@ -118,45 +151,70 @@ After interpreting the replacement it restores the original base and resumes
 after the original record. Its bounded synthetic-string resolver provides
 private names without overwriting localization keys.
 
-That establishes the mechanism. The 512-byte scratch in FP3K's version is too
-small for this scene's 2,948-byte header, and one substitution per record
-cannot add records, so `src/nbuinject.S` carries its own buffers and adds an
-injection mode.
+That establishes the mechanism, and `src/nbuinject.S` extends it: the 512-byte
+scratch in FP3K's version is too small for this scene's allocation header, and
+one substitution per record cannot add records, so ours carries its own buffers
+and an injection mode.
 
-## What is built, and how to run it
+## The row on a card
+
+The card build is `--fplab-row`:
 
 ```sh
-.venv/bin/python tools/nbu_scene.py verify        # header codec, 221 scenes
-.venv/bin/python tools/fplab_page.py verify       # the row, on real firmware
-.venv/bin/python tools/verify_nbuinject.py        # the hook, at the real site
-.venv/bin/python tools/build_combined_card.py --debug --fplab-page \
-    --out builds/fplab-card
+.venv/bin/python tools/fplab_page.py row          # build + verify the row
+.venv/bin/python tools/verify_strhook.py          # the label mechanism
+.venv/bin/python tools/verify_nbuinject.py        # the hook, fed the real table
+.venv/bin/python tools/build_combined_card.py --debug --fplab-row \
+    --out builds/fplab-row
 ```
+
+What it installs, and what each piece is for:
+
+| Piece | Where | What |
+| --- | --- | --- |
+| `src/strhook.S` | `0xC0793100`, 60 B | answers offsets above the pool out of its own blob, so the row can be NAMED |
+| `src/nbuinject.S` | `0xC0793200`, 420 B | two guarded replacements and one injected run at `0xC05E6400` |
+| enlarged header | pool `+0x54000`, 4,072 B | 285 -> 330 objects, one more `Menu` child |
+| `Menu` declaration | pool `+0x56000`, 36 B | child capacity 6 -> 7 |
+| the row | pool `+0x58000`, 10,792 B | 241 records copied from Frame Rate |
+
+The kilobyte buffers ride in the loader's DMA pool, the way the menu's own code
+does, because no cave in the image is both free and that big. The injector's
+mode field grew a second flag for that: bit 1 means the buffer address is a
+pool offset, resolved from `0xC3757A7C` at parse time. A pool base of zero
+leaves the scene stock, which is checked.
+
+**v1 duplicates Frame Rate.** The row keeps the donor's bindings, so it reads
+and writes `MV_FrameRate`: opening it and picking a value changes the frame
+rate, exactly as the stock row does. That is deliberate for the first camera
+run -- it means every part of a working row is exercised (it draws, focuses,
+opens a page and acts) with no new binding to be wrong at the same time.
+Rebinding it to our own state is the next step, not this one.
+
+The earlier `--fplab-page` option and `cards/fp-fplab-row-card.zip` are
+withdrawn: they grafted a copy of an Auto ISO limit row, with its list,
+activation and animation records dropped, into the wrong page.
+
+What the first camera run has to answer: whether the row appears at all,
+whether it lands at y=324 under Frame Rate, whether it reads `FP LAB` (the
+literal-key fallback is the one link in the label chain that no emulator can
+settle), whether Up/Down reach it, whether Right opens its page, and whether
+the five stock rows still behave. **Nothing here has been on a camera.**
 
 | Piece | What it is |
 | --- | --- |
 | `tools/nbu_scene.py` | Allocation-header codec and the graft that adds records with their exact header contribution |
-| `tools/fplab_page.py` | Builds the new row out of stock row `B1_2_5_4` and checks it against the firmware |
+| `tools/nbu_components.py` | Component property tables read out of the firmware; decodes, audits and locates every serialized field |
+| `tools/fplab_page.py` | Record Settings identity, the row build, and the declaration-only construction experiment |
 | `tools/native_scene_vm.py` | Runs the firmware's interpreter, object factory and id table offline |
-| `src/nbuinject.S` | 388-byte Thumb/ARM hook at `0xC05E6400`: two guarded replacements and one injected run |
-| `tools/verify_nbuinject.py` | Executes that payload with the interpreter mocked one instruction in |
+| `src/strhook.S`, `tools/verify_strhook.py` | Private names, and the equivalence test against the firmware's own resolver |
+| `src/nbuinject.S`, `tools/verify_nbuinject.py` | The injector, and ten cases at the real hook site |
 
-The card places the payload in caves checked empty in the stock image:
-code `0xC0793100`, state `0xC0793400`, table `0xC0793420`, header
-`0xC0793500`, Menu declaration `0xC0794100`, records `0xC07A4400`.
-Each table entry carries the stock record's length and FNV-1a, so a record
-that does not match byte for byte is left alone and counted at state `+0x0C`.
-
-Current row: a copy of the last Record Settings row, 22 objects, 4,629 bytes
-of records, asking for the next row slot down. Its value list is not copied,
-so Right and OK are dropped with it rather than left pointing at a page that
-does not exist. The focus highlight is missing for the same reason the clips
-are: their header entries are positional per animation group and that mapping
-is not proven.
-
-What the first camera run has to answer: whether the row appears at all,
-where it lands, whether Up/Down reach it, and whether the other four rows and
-their pages still behave. Nothing here has been on a camera yet.
+`src/nbuinject.S` keeps its own table: each entry carries the stock record's
+length and FNV-1a, so a record that does not match byte for byte is left alone
+and counted at state `+0x0C`. Our caves start at `0xC0793100`, which is worth
+knowing because ijigen's OG3K UI pack occupies `0xC0793060..0xC079585C`: the
+two cannot be installed together as they stand.
 
 ## What the generic boot append probe does not prove
 

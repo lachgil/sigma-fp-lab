@@ -26,9 +26,12 @@
  * Entered with B.W (T4), so lr still belongs to the interpreter's caller.
  *
  * Table entry, 24 bytes:
- *   +0x00 stock record address      +0x0C mode: 0 replace, 1 inject before
- *   +0x04 stock record length       +0x10 buffer address
- *   +0x08 stock FNV-1a              +0x14 buffer length
+ *   +0x00 stock record address      +0x0C mode: bit 0 = inject a run rather
+ *   +0x04 stock record length             than replace one record,
+ *   +0x08 stock FNV-1a                    bit 1 = the buffer is a
+ *                                         pool-relative offset
+ *                                  +0x10 buffer address or pool offset
+ *                                  +0x14 buffer length
  *
  * State block:
  *   +0x00 records seen on our stream   +0x08 records injected
@@ -39,6 +42,7 @@
 .equ COUNT,  INJECT_COUNT
 .equ NBU,    0xC18C0460            /* the stock NBU stream base */
 .equ RESUME, 0xC05E6405            /* hook site + 4, Thumb */
+.equ POOL_PTR, 0xC3757A7C          /* the loader's DMA pool base, at runtime */
 
 .macro addr reg, value
     movw    \reg, #:lower16:\value
@@ -92,9 +96,22 @@ inject_found:
     b       inject_stock
 
 inject_guarded:
+    /* Mode is two flags: bit 0 injects a run rather than replacing one record,
+     * bit 1 means the buffer address is an OFFSET into the loader's DMA pool
+     * rather than an absolute address. The row's records and the enlarged
+     * allocation header are kilobytes, and no cave in the image is that big and
+     * free, so they ride in the pool the way the menu's own code does -- and the
+     * pool's base is only known at runtime. */
     ldr     r6, [r9, #12]           @ mode
     ldr     r10, [r9, #16]          @ buffer
-    cmp     r6, #0
+    tst     r6, #2
+    beq     1f
+    addr    r0, POOL_PTR
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     inject_stock            @ no pool: leave the scene stock
+    add     r10, r10, r0
+1:  tst     r6, #1
     bne     inject_run
 
     /* One record answered from the buffer. The interpreter advances the
