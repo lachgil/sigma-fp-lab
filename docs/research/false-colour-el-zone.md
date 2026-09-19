@@ -151,3 +151,88 @@ shown.
 
 All addresses are from Ver.5.02 and should be located again on any other
 firmware version.
+
+## Future research: converting the user's existing button into a toggle
+
+The approach above requires the user to operate your menu. An alternative is to
+leave the camera's own Custom Button Functions mapping alone and change what
+the press and release do, so whichever button the user has already assigned to
+False Color becomes a toggle: first press on, second press off.
+
+### Why this looks practical
+
+`0xC03722E8` and `0xC0372330` are the only implementations of these two
+operations, and nothing reaches them directly. A search of the image for `B` or
+`BL` to either address returns zero results; every call arrives through the
+CameraIF vtable at `0xC0B9928C` (+0xCC and +0xD0). Patching the two method
+bodies therefore covers every caller, whatever button is mapped and whichever
+code path dispatches it.
+
+Both are short, and the body is the same except for the event number:
+
+```
+0xC03722E8  push {r4, lr}            <- the displaced instruction, 4 bytes
+            sub  sp, sp, #0xBC
+            mov  r4, r0              <- the CameraIF object
+            ...  zero the 0xBC-byte request with 0xC0015058
+            mov  r1, #0x21           <- 0x22 in the stop method
+            str  r1, [sp]            <- event id at request +0x00
+            mov  r1, #1
+            strb r1, [sp, #4]        <- flag byte at request +0x04
+            ldr  r0, [r4, #4]        <- the rec-manager target
+            mov  r1, sp
+            bl   0xC03A0798          <- post
+            add  sp, sp, #0xBC
+            pop  {r4, pc}
+```
+
+That is the whole protocol: a zeroed 0xBC-byte request, the event id at +0x00,
+`1` at +0x04, posted to `[object+4]`. A hook can post either event itself
+without calling back into the patched methods, which avoids re-entrancy.
+
+### Proposed behaviour
+
+- Hook `0xC03722E8` (press). Flip a flag of your own and post `0x21` when it
+  becomes set, `0x22` when it becomes clear. One press on, one press off.
+- Hook `0xC0372330` (release) and return without posting, so releasing the
+  button no longer cancels the mode.
+
+Both sites start with `push {r4, lr}`, so the displaced instruction is one word
+and the hook can be entered with a plain `B`.
+
+### The open question
+
+Whether anything other than the button release calls +0xD0. If the firmware
+also stops the mode when entering playback, opening the menu, starting a
+recording or going into power save, a hook that swallows every stop could leave
+the mode latched when the camera expects it off.
+
+This is answerable without guessing. Hook `0xC0372330` so that it records the
+caller's `lr` and then performs the stock post, and drive the camera through
+those transitions with False Color active:
+
+- press and release the mapped button
+- enter and leave playback
+- open and close the menu
+- start and stop a recording
+- let it idle into power save
+
+If every entry in the log carries the same `lr`, the release path is the only
+caller and swallowing it unconditionally is safe. If other `lr` values appear,
+the hook should swallow only the button path and let the rest run, which the
+same log will have identified by address.
+
+### Notes
+
+- The mapping itself does not need to be read. The hook sits below the
+  dispatcher, so it does not matter which button or which function slot the
+  user chose.
+- The same hook covers EL Zone, for the reason given above: the style selects
+  the scale, not the code path.
+- Reading the mapping is still useful for a state display, since a toggle that
+  shows its state has to know the mode exists on this body's configuration.
+  `MenuItemFalseColorType` (`0xC073F114`) and the Custom Button items are the
+  place to start.
+- The interaction with recording is already known: the request is accepted and
+  nothing is drawn, so a press during a take will flip the flag and appear to do
+  nothing.
