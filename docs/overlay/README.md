@@ -393,7 +393,7 @@ log-parser text with no code pointing at them.
 **Confirmed on hardware:** posting 0x21 from our own code turned false colour on.
 That makes it a latch rather than a hold, which is what a menu row needs.
 
-**It is not only false colour.** Reported on hardware 2026-09-15: with the
+**It is not only false colour.** Reported on hardware 2026-09-19: with the
 camera's own False Color Style set to **EL ZONE**, the same row latches EL Zone.
 Event 0x21 starts the mode and never names a style; the scale drawn is picked at
 draw time by `CM_FalseColorAj`, which selects between the `FalseColorScale` and

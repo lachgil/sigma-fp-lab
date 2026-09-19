@@ -1,4 +1,4 @@
-# 2026-09-15 — corrections, and where the native menu actually stands
+# 2026-09-19 — corrections, and where the native menu actually stands
 
 Read this before the older log below.
 

@@ -152,14 +152,15 @@ shown.
 All addresses are from Ver.5.02 and should be located again on any other
 firmware version.
 
-## Future research: converting the user's existing button into a toggle
+## Toggling the user's existing button
 
-The approach above requires the user to operate your menu. An alternative is to
-leave the camera's own Custom Button Functions mapping alone and change what
+The approach above requires the user to operate your menu. The alternative is
+to leave the camera's own Custom Button Functions mapping alone and change what
 the press and release do, so whichever button the user has already assigned to
-False Color becomes a toggle: first press on, second press off.
+False Color becomes a toggle: first press on, second press off. This works, and
+was confirmed on a camera on 2026-09-19.
 
-### Why this looks practical
+### Why the two methods are the right place
 
 `0xC03722E8` and `0xC0372330` are the only implementations of these two
 operations, and nothing reaches them directly. A search of the image for `B` or
@@ -190,22 +191,34 @@ That is the whole protocol: a zeroed 0xBC-byte request, the event id at +0x00,
 `1` at +0x04, posted to `[object+4]`. A hook can post either event itself
 without calling back into the patched methods, which avoids re-entrancy.
 
-### Proposed behaviour
+### Behaviour, confirmed on hardware 2026-09-19
 
-- Hook `0xC03722E8` (press). Flip a flag of your own and post `0x21` when it
-  becomes set, `0x22` when it becomes clear. One press on, one press off.
-- Hook `0xC0372330` (release) and return without posting, so releasing the
-  button no longer cancels the mode.
+- `0xC03722E8` (press): flip a flag of your own and post `0x21` when it becomes
+  set, `0x22` when it becomes clear. One press on, one press off.
+- `0xC0372330` (release): return without posting, so releasing the button no
+  longer cancels the mode. The stock method returns the post's result and
+  callers read it as a success flag, so return 1.
 
 Both sites start with `push {r4, lr}`, so the displaced instruction is one word
-and the hook can be entered with a plain `B`.
+and the hook is entered with a plain `B`.
 
-### The open question
+Implementation in this repository: `src/fclatch.S`, built by
+`tools/build_fclatch_autorun.py` into a standalone AutoRun with nothing else in
+it. The ready-made file is `cards/AutoRun-fc-latch.txt`.
+
+Checked in an emulator against the Ver.5.02 image before it was booted: six
+alternating calls produced `0x21`, nothing, `0x22`, nothing, `0x21`, nothing,
+and the posted request is byte-identical to the stock method's (same target
+from `[object+4]`, event id at +0x00, `1` at +0x04, remaining 0xBC bytes zero).
+Then confirmed on a camera: the assigned button toggles the mode on and off.
+
+### What is still untested
 
 Whether anything other than the button release calls +0xD0. If the firmware
 also stops the mode when entering playback, opening the menu, starting a
-recording or going into power save, a hook that swallows every stop could leave
-the mode latched when the camera expects it off.
+recording or going into power save, a hook that swallows every stop can leave
+the mode latched when the camera expects it off. Toggling itself is confirmed;
+these transitions are not.
 
 This is answerable without guessing. Hook `0xC0372330` so that it records the
 caller's `lr` and then performs the stock post, and drive the camera through

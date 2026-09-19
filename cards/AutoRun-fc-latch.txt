@@ -1,0 +1,76 @@
+# ==========================================================
+# fpLAB: False Color / EL Zone as a TOGGLE, on your own button
+# SIGMA fp Ver.5.02 ONLY. RAM only; remove this file and cold
+# boot to revert. Nothing is written to flash.
+#
+# Map a button to False Color first:
+#   Menu -> Custom -> button settings -> False Color
+# Then one press turns it on and it STAYS on; the next press
+# turns it off. Whether you see False Color or EL Zone is the
+# camera own False Color Style setting, unchanged by this.
+#
+# It replaces the two methods the button calls:
+#   press   0xc03722e8 -> 0xc072e440
+#   release 0xc0372330 -> 0xc072e480
+# ==========================================================
+display monitor 0 1
+display osd 1 0x00000000
+display text fpLAB FC latch
+display osd 1
+
+# --- state @ 0xC072E400: latch, presses, releases swallowed ---
+mem set 0xC072E400 0x00000000
+mem set 0xC072E404 0x00000000
+mem set 0xC072E408 0x00000000
+mem set 0xC072E40C 0x00000000
+# --- handlers @ 0xC072E440 (43 words) ---
+mem set 0xC072E440 0xE92D4030
+mem set 0xC072E444 0xE1A04000
+mem set 0xC072E448 0xE30E5400
+mem set 0xC072E44C 0xE34C5072
+mem set 0xC072E450 0xE5951004
+mem set 0xC072E454 0xE2811001
+mem set 0xC072E458 0xE5851004
+mem set 0xC072E45C 0xE5950000
+mem set 0xC072E460 0xE2200001
+mem set 0xC072E464 0xE5850000
+mem set 0xC072E468 0xE3500000
+mem set 0xC072E46C 0xE3A01022
+mem set 0xC072E470 0x13A01021
+mem set 0xC072E474 0xE1A00004
+mem set 0xC072E478 0xEB000007
+mem set 0xC072E47C 0xE8BD8030
+mem set 0xC072E480 0xE30E1400
+mem set 0xC072E484 0xE34C1072
+mem set 0xC072E488 0xE5910008
+mem set 0xC072E48C 0xE2800001
+mem set 0xC072E490 0xE5810008
+mem set 0xC072E494 0xE3A00001
+mem set 0xC072E498 0xE12FFF1E
+mem set 0xC072E49C 0xE92D4030
+mem set 0xC072E4A0 0xE1A04000
+mem set 0xC072E4A4 0xE1A05001
+mem set 0xC072E4A8 0xE24DD0BC
+mem set 0xC072E4AC 0xE1A0000D
+mem set 0xC072E4B0 0xE3A01000
+mem set 0xC072E4B4 0xE3A020BC
+mem set 0xC072E4B8 0xE3053058
+mem set 0xC072E4BC 0xE34C3001
+mem set 0xC072E4C0 0xE12FFF33
+mem set 0xC072E4C4 0xE58D5000
+mem set 0xC072E4C8 0xE3A01001
+mem set 0xC072E4CC 0xE5CD1004
+mem set 0xC072E4D0 0xE5940004
+mem set 0xC072E4D4 0xE1A0100D
+mem set 0xC072E4D8 0xE3003798
+mem set 0xC072E4DC 0xE34C303A
+mem set 0xC072E4E0 0xE12FFF33
+mem set 0xC072E4E4 0xE28DD0BC
+mem set 0xC072E4E8 0xE8BD8030
+# --- arm both methods LAST ---
+mem set 0xC03722E8 0xEA0EF054
+mem set 0xC0372330 0xEA0EF052
+
+display osd 1 0x00000000
+display text fpLAB FC latch ON
+display osd 1
