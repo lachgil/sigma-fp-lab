@@ -1,3 +1,2 @@
-The camera only offers false colour as a button you hold. It is not a stored setting at all, which is why turning it on moved nothing: not pic_false_color_on, not CM_FalseColor, and not one byte in a 128 KB diff of the settings store.
 
 The function key calls CameraIF vtable +0xCC (0xC03722E8), which posts rec-manager event 0x21 (INTR_START_FALSE_COLOR); releasing calls +0xD0 (0xC0372330), posting 0x22. The request is built on the stack and posted through 0xC03A0798, so nothing persistent is written anywhere. Event numbering is cross-checked: the neighbouring custom-key entry (AP preview) emits 0x1F/0x20 from the adjacent slots. SetFalseColorType (0xC005DBA0) is a separate thing -- it picks the style, gray/half/stop, and cannot switch the effect on.
