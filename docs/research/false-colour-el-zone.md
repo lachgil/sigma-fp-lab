@@ -1,14 +1,6 @@
 # False colour and EL Zone are one mode with two scales
 
-**Hardware, 2026-09-15 (user):** with the camera's own False Color Style set to
-**EL ZONE**, our `FALSE COL` menu row latches **EL Zone**, not false colour.
-Nothing in our card knows what EL Zone is.
 
-That is not a coincidence and it is worth writing down, because it means the row
-already supports a mode we never implemented, and a future row can switch
-between them without touching the latch at all.
-
-## Why our latch is style-agnostic
 
 The row posts rec-manager event **0x21** through CameraIF vtable +0xCC
 (`0xC03722E8`), and `0x22` through +0xD0 (`0xC0372330`) to stop it. See
