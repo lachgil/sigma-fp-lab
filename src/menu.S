@@ -117,6 +117,9 @@
 #else
 .equ ROW_COUNT,  4
 #endif
+#ifndef KEYLOG_ST
+#define KEYLOG_ST 0                /* --keylog: a diagnostic, off by default */
+#endif
 #ifndef OG60_SEL
 /* Measured on hardware 2026-09-11: the probe read AF (175) with the preset at
  * FHD/29.97 and AD (173) at FHD/59.94, which is the framerate-tracking
@@ -301,6 +304,24 @@ entry:
      * camera's own menu moved our cursor in the background -- and any custom
      * function assigned to those keys never fired at all.
      */
+#if KEYLOG_ST
+    /* Every (control, key) pair this handler is given, before any filtering.
+     * The point is to tell "the firmware never called us" apart from "it called
+     * us with a code we do not match", which nothing else here can distinguish.
+     *
+     *   +0x00 pairs seen   +0x08.. a ring of sixteen (r0, r1), oldest lost
+     */
+    push {r0, r1, r2, r3}
+    LDA r2, KEYLOG_ST
+    ldr r3, [r2]
+    and r12, r3, #15
+    add r12, r2, r12, lsl #3
+    str r0, [r12, #8]
+    str r1, [r12, #12]
+    add r3, r3, #1
+    str r3, [r2]
+    pop {r0, r1, r2, r3}
+#endif
     push {r0, r1, r2, r3, r12, lr}
     LDA r12, UI_STATE
     ldr r12, [r12]

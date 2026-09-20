@@ -48,9 +48,35 @@ The drawable's vtable:
 
 The shell's `display osd` draws, rotates, then submits the same descriptor
 with `0xC02E8A08(controller, descriptor, sub)`. Nothing holds a lock across
-acquire/draw/rotate, so a resident thread that draws is racing the UI; what
-works (measured, photographed) is remembering every back buffer you are handed
-and repainting all of them every 150 ms.
+acquire/draw/rotate, so a resident thread that paints cached buffers races
+the UI: measured as horizontal tearing lines and brief dropouts of the overlay
+with a 150 ms repaint thread (2026-09-20).
+
+### Drawing at the submit
+
+`0xC02E8A08` is the last point every frame passes before the panel is
+programmed, and its `descriptor` argument is the exact buffer about to be
+shown. Hooking its first instruction (`push {r4, r5, r6, r7, fp, lr}`,
+`0xE92D48F0`; replay it and resume at `+4`) gives a paint routine that runs
+once per frame on the right buffer with no cached addresses and no thread:
+
+```
+r0  controller      LCD: 0xC02E44B0's object; remember it to present yourself
+r1  descriptor      check +0x00 == 3 and the geometry before writing bytes
+r2  sub             0 main, 1 sub
+```
+
+Early returns inside the function: `controller[0] == 3`, `[controller+4][0]
+== 0`, and `sub != 0 && [controller+4]+0x78 != 0` (the sub layer hidden).
+
+Because the layer's three buffers are recycled, a buffer that carried the
+overlay has to be cleared once when the overlay is no longer wanted; track a
+drawn flag per buffer base. Flush the cache (`0xC000E91C`) after painting:
+the panel reads memory. To make a change visible at a key press rather than
+at the UI's next frame, do the shell's sequence from the key handler: `+0x10`
+back descriptor, `+0x14` rotate, `0xC02E8A08(controller, that descriptor, 1)`,
+and let the hook paint it. `src/fcscale.S` (`fc_submit`, `fc_on_submit`,
+`fc_present`) is the implementation.
 
 Measured: asking for the buffer from an AutoRun at boot returns nothing; from
 a key handler it works.

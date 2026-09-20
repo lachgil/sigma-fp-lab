@@ -35,14 +35,16 @@ MAIN = ROOT / 'analysis/MAIN_c0000000.bin'
 MAIN_SHA = '92a8ee993f6c3d66c251e88d45a2ccd5135c6cf7342717784321c2ed506e2fb4'
 NATIVE_INC = ROOT / 'src/fcscale_native.inc.S'
 
-# Free worker-region caves, checked zero in the stock image at build time. The
-# state block runs to +0x180: the thread and body objects live at +0x80.
+# Free worker-region caves, checked zero in the stock image at build time.
 STATE = 0xC072E200
+STATE_SIZE = 0x80
 CODE = 0xC072E400
 
 PRESS_SITE = 0xC03722E8         # CameraIF vtable +0xCC
 RELEASE_SITE = 0xC0372330       # vtable +0xD0
 SITE_STOCK = 0xE92D4010         # push {r4, lr}, in both
+SUBMIT_SITE = 0xC02E8A08        # display submit(controller, descriptor, sub)
+SUBMIT_STOCK = 0xE92D48F0       # push {r4, r5, r6, r7, fp, lr}, replayed by fc_submit
 
 # How an AutoRun runs code: the echo command's handler pointer is repointed,
 # `echo` is issued, and the stock handler is put straight back. Same slot the
@@ -227,13 +229,16 @@ def build(out: Path) -> str:
         if got != SITE_STOCK:
             raise SystemExit(f'the {why} method at {site:#x} starts {got:#x}, '
                              f'expected {SITE_STOCK:#x}')
+    if word(image, SUBMIT_SITE) != SUBMIT_STOCK:
+        raise SystemExit(f'the display submit at {SUBMIT_SITE:#x} does not start '
+                         f'{SUBMIT_STOCK:#x}')
     NATIVE_INC.write_text(native_include(image))
-    defines = (f'STATE={STATE:#x}',)
+    defines = (f'STATE={STATE:#x}', f'SUBMIT_RESUME={SUBMIT_SITE + 4:#x}')
     code = assemble(ROOT / 'src/fcscale.S', defines)
     marks = symbols(ROOT / 'src/fcscale.S', defines)
-    if STATE + 0x180 > CODE:
+    if STATE + STATE_SIZE > CODE:
         raise SystemExit('the state block runs into the code')
-    for address, length, why in ((STATE, 0x180, 'state'), (CODE, len(code), 'code')):
+    for address, length, why in ((STATE, STATE_SIZE, 'state'), (CODE, len(code), 'code')):
         for at in range(address, address + length, 4):
             if word(image, at):
                 raise SystemExit(f'the {why} cave at {at:#x} is not zero in stock')
@@ -241,8 +246,7 @@ def build(out: Path) -> str:
     words = struct.unpack(f'<{len(code) // 4}I', code)
     press = CODE + marks['fc_press']
     release = CODE + marks['fc_release']
-    spawn = CODE + marks['fc_spawn']
-    body = CODE + marks['fc_body']
+    submit = CODE + marks['fc_submit']
     lines = [
         '# ==========================================================',
         '# False Color / EL Zone as a TOGGLE, with the EL Zone scale',
@@ -269,24 +273,20 @@ def build(out: Path) -> str:
         '',
         f'# --- state @ 0x{STATE:08X} ---',
     ]
-    lines += [f'mem set 0x{STATE + i * 4:08X} 0x00000000' for i in range(0x180 // 4)]
+    lines += [f'mem set 0x{STATE + i * 4:08X} 0x00000000' for i in range(STATE_SIZE // 4)]
     lines.append(f'# --- code @ 0x{CODE:08X} ({len(words)} words) ---')
     lines += [f'mem set 0x{CODE + i * 4:08X} 0x{value:08X}'
               for i, value in enumerate(words)]
     lines += [
-        '# --- the drawing thread object: +0x140 holds the object, whose vtable',
-        '#     is the next word, and the body hangs off that vtable +0x0C ---',
-        f'mem set 0x{STATE + 0x140:08X} 0x{STATE + 0x144:08X}',
-        f'mem set 0x{STATE + 0x150:08X} 0x{body:08X}',
-        '# --- arm both methods ---',
+        '# --- arm the press and the release, then make the new code real to',
+        "#     the caches by borrowing the echo command's handler slot ---",
         f'mem set 0x{PRESS_SITE:08X} 0x{branch(PRESS_SITE, press):08X}',
         f'mem set 0x{RELEASE_SITE:08X} 0x{branch(RELEASE_SITE, release):08X}',
-        '# --- freshly written code is only data to the caches, so flush it and',
-        '#     then start the thread. Both are done by borrowing the echo',
-        "#     command's handler slot and putting it straight back ---",
         f'mem set 0x{ECHO_SLOT:08X} 0x{CACHE_FN:08X}',
         'echo',
-        f'mem set 0x{ECHO_SLOT:08X} 0x{spawn:08X}',
+        '# --- the display submit fires every frame, so it is armed only once',
+        '#     the code is clean, and the site itself is flushed after ---',
+        f'mem set 0x{SUBMIT_SITE:08X} 0x{branch(SUBMIT_SITE, submit):08X}',
         'echo',
         f'mem set 0x{ECHO_SLOT:08X} 0x{ECHO_ORIG:08X}',
         '',
@@ -301,7 +301,7 @@ def build(out: Path) -> str:
     print(f'{out / "AutoRun.txt"}: {len(words)} words, {len(text)} bytes')
     print(f'  press   {PRESS_SITE:#010x} -> {press:#010x}')
     print(f'  release {RELEASE_SITE:#010x} -> {release:#010x}')
-    print(f'  spawn   {spawn:#010x}   body {body:#010x}   state {STATE:#010x}')
+    print(f'  submit  {SUBMIT_SITE:#010x} -> {submit:#010x}   state {STATE:#010x}')
     return text
 
 

@@ -70,6 +70,21 @@ INJECT_MENU_OFF = 0x56000       # the Menu declaration, one more child
 INJECT_RECORDS_OFF = 0x58000    # the row itself
 INJECT_SITE = 0xC05E6400        # the NBU record interpreter; Thumb
 INJECT_SITE_STOCK = 0x4FF0E92D  # push.w {r4-r11,lr}, then the start of vpush
+# False Color / EL Zone as a toggle on the user's own button (--fc-latch), with
+# the scale drawn by the panel thread on a third press. src/fclatch.S replaces
+# the two CameraIF methods an assigned function key calls.
+# 0xC072E400 is the gyro drain's cave on this card, so the combined build puts
+# the latch above the row payload instead; the standalone AutoRun, which
+# carries no gyro, keeps its own address.
+FCLATCH_STATE = 0xC0794400      # latch state, presses, releases, scale flag
+FCLATCH_CODE = 0xC0794440
+# --keylog: a ring of sixteen (control, key) pairs, written by src/menu.S's key
+# entry before it filters anything. Its own cave, so a diagnostic build never
+# moves the payload around.
+KEYLOG_STATE = 0xC0794600
+FC_PRESS_SITE = 0xC03722E8      # CameraIF vtable +0xCC
+FC_RELEASE_SITE = 0xC0372330    # vtable +0xD0
+FC_SITE_STOCK = 0xE92D4010      # push {r4, lr}, in both
 
 
 def thumb_branch(site: int, target: int) -> int:
@@ -83,6 +98,14 @@ def thumb_branch(site: int, target: int) -> int:
     first = 0xF000 | (sign << 10) | ((offset >> 12) & 0x3FF)
     second = 0x9000 | (j1 << 13) | (j2 << 11) | ((offset >> 1) & 0x7FF)
     return first | (second << 16)
+
+
+def arm_branch(site: int, target: int) -> int:
+    """A plain ARM `B` at `site` reaching `target`."""
+    offset = target - site - 8
+    if offset % 4 or not -0x2000000 <= offset < 0x2000000:
+        raise SystemExit('branch target out of range')
+    return 0xEA000000 | ((offset >> 2) & 0xFFFFFF)
 
 
 # Above the shell's worker (0xC072F050..0xC072F698) and its state block at
@@ -158,8 +181,18 @@ def main():
                         const='OG 3032x2012',
                         help='add LABEL as a third entry in the native '
                              'Resolution list (max 12 characters)')
+    parser.add_argument('--fc-latch', action='store_true',
+                        help='make the button you mapped to False Color a '
+                             'toggle, and draw the stop scale on a third press '
+                             '(src/fclatch.S). Needs a button assigned in the '
+                             "camera's own Custom Button Functions menu")
     parser.add_argument('--ui-probe', action='store_true',
                         help='arm the observation-only GUI append hook at boot')
+    parser.add_argument('--keylog', action='store_true',
+                        help='record every (control, key) pair the published '
+                             'key handler is given, in a ring at the address '
+                             'printed at the end. A diagnostic: it changes no '
+                             'behaviour')
     parser.add_argument('--fplab-row', action='store_true',
                         help='add an "FP LAB" row to the camera\'s own Record '
                              'Settings page, built from the Frame Rate row and '
@@ -197,7 +230,9 @@ def main():
     # same SHOW_SEL, so the row map cannot differ between them.
     panel_source = ROOT / 'src/menu_overlay.S'
     panel_defines = (f'STATE_ADDR={PANEL_STATE:#x}',
-                     f'SHOW_SEL={1 if args.debug else 0}')
+                     f'SHOW_SEL={1 if args.debug else 0}',
+                     f'FCLATCH_ST={FCLATCH_STATE:#x}' if args.fc_latch
+                     else 'FCLATCH_ST=0')
     panel = assemble(panel_source, panel_defines)
     panel_syms = symbols(panel_source, panel_defines)
     panel_core = PANEL_OFFSET + panel_syms['menu_core']
@@ -210,9 +245,15 @@ def main():
                f'PANEL_OFF={panel_core:#x}',
                f'PANEL_SPAWN_OFF={panel_spawn:#x}',
                f'PANEL_BODY_OFF={panel_body:#x}',
+               f'KEYLOG_ST={KEYLOG_STATE:#x}' if args.keylog else 'KEYLOG_ST=0',
                f'GREEN_CODE={GREEN_CODE:#x}')
     menu = assemble(menu_source, defines)
     syms = symbols(menu_source, defines)
+    if args.keylog:
+        if any(firmware[KEYLOG_STATE - 0xC0000000:
+                        KEYLOG_STATE - 0xC0000000 + 0x90]):
+            raise SystemExit('the key-log cave is not empty in stock firmware')
+        sections.append((KEYLOG_STATE, bytes(0x90), 'key log'))
     guards = list(struct.iter_unpack('<II', menu[syms['guard_table']:syms['labels']]))
     for address, expected in guards:
         actual = struct.unpack_from('<I', firmware, address - 0xC0000000)[0]
@@ -381,6 +422,39 @@ entry:
                 STR_SITE, STR_CODE)), 'string resolver hook'))
             sections.append((INJECT_SITE, struct.pack('<I', thumb_branch(
                 INJECT_SITE, INJECT_CODE)), 'scene injector hook'))
+        if args.fc_latch:
+            # False Color / EL Zone on the button the user already mapped, and
+            # the scale drawn by the panel thread on the third press. The two
+            # CameraIF methods the assigned key calls are replaced outright:
+            # see src/fclatch.S and docs/research/false-colour-el-zone.md.
+            # The menu's own surface-discovery routine, in the pool. The hook
+            # runs in key context, so it can take the display lock the way a
+            # card key press does; without it the scale can only appear after
+            # the card's own RIGHT or UP has learned the buffers.
+            latch_defines = (f'STATE={FCLATCH_STATE:#x}', 'LEGEND=1',
+                             f'PANEL_KICK_OFF={MENU_OFFSET + syms["panel"]:#x}')
+            latch = assemble(ROOT / 'src/fclatch.S', latch_defines)
+            latch_syms = symbols(ROOT / 'src/fclatch.S', latch_defines)
+            for site, stock, why in ((FC_PRESS_SITE, FC_SITE_STOCK, 'press'),
+                                     (FC_RELEASE_SITE, FC_SITE_STOCK, 'release')):
+                got = struct.unpack_from('<I', firmware, site - 0xC0000000)[0]
+                if got != stock:
+                    raise SystemExit(f'the false-colour {why} method at {site:#x} '
+                                     f'starts {got:#x}, expected {stock:#x}')
+            for address, blob, why in ((FCLATCH_STATE, bytes(0x10), 'latch state'),
+                                       (FCLATCH_CODE, latch, 'latch handlers')):
+                if any(firmware[address - 0xC0000000:
+                                address - 0xC0000000 + len(blob)]):
+                    raise SystemExit(f'{why} cave at {address:#x} is not empty in stock')
+            sections.extend([
+                (FCLATCH_STATE, bytes(0x10), 'false-colour latch state'),
+                (FCLATCH_CODE, latch, 'false-colour latch handlers'),
+                (FC_PRESS_SITE, struct.pack('<I', arm_branch(
+                    FC_PRESS_SITE, FCLATCH_CODE + latch_syms['fc_press'])),
+                 'false-colour press hook'),
+                (FC_RELEASE_SITE, struct.pack('<I', arm_branch(
+                    FC_RELEASE_SITE, FCLATCH_CODE + latch_syms['fc_release'])),
+                 'false-colour release hook')])
         # The green fix, placed but not armed: the menu's GREEN FIX row writes
         # the branch at 0xC0437E98 and puts the stock instruction back.
         green = assemble(ROOT / 'src/greenfix.S',

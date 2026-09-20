@@ -30,40 +30,34 @@
  * layer's existing entry count, so entries above the stock thirty never
  * exist -- which is why an earlier build drew nothing.
  *
- * The layer rotates three buffers and the UI paints over whatever it finds,
- * so the press handler learns the buffers once (it runs in key context, the
- * same context the camera's own function key runs in) and a drawing thread
- * repaints every 150 ms into every buffer it has seen.
+ * Painting is done inside the firmware's own display submit: 0xC02E8A08 is
+ * entered through fc_submit, which paints the scale into the exact buffer
+ * being sent to the panel. The layer rotates three buffers; each one is
+ * tracked with a drawn flag so a buffer carrying the scale is cleared once
+ * when the scale goes away. A press presents one frame itself (back buffer,
+ * rotate, submit: the shell's `display osd` sequence) so the change is
+ * immediate rather than at the UI's next frame.
  *
  * State block at STATE:
- *   +0x00 0 off, 1 on, 2 on with the scale   +0x20 stride
- *   +0x04 presses                            +0x24 height
- *   +0x08 releases swallowed                 +0x28..+0x30 the three OSD buffers
- *   +0x0C the scale flag                     +0x34 thread attach result
- *   +0x10 buffer-discovery attempts          +0x38 passes
- *   +0x14 scale drawn on the last pass       +0x3C current buffer, while drawing
- *   +0x18 thread create result               +0x40 current colour
- *   +0x44 our palette is installed           +0x48 palette setter result
- *   +0x50..+0x58 the palette descriptor {entries, count, generation}
- *   +0x80.. the thread object and its body object
+ *   +0x00 0 off, 1 on, 2 on with the scale   +0x3C buffer being painted
+ *   +0x04 presses                            +0x40 current colour
+ *   +0x08 releases swallowed                 +0x44 our palette is installed
+ *   +0x0C the scale flag                     +0x48 palette setter result
+ *   +0x20 stride, while painting             +0x50..+0x58 palette descriptor
+ *   +0x24 height, while painting             +0x60..+0x68 drawn flag per buffer
+ *   +0x28..+0x30 the layer's three buffers   +0x6C paint lock
+ *   +0x70 the LCD controller, from the hook  +0x74 submits seen
+ *   +0x78 frames painted                     +0x7C next slot to evict
  */
 .equ MEMSET,     0xC0015058
 .equ POST,       0xC03A0798
+.equ SUBMIT,     0xC02E8A08         /* submit(controller, descriptor, sub) */
 .equ DRAW_MGR,   0xC0698D80         /* display manager; [r0+4]+0xC resolves a layer */
 .equ SUB_LAYER,  1                  /* selector: LCD sub layer, the indexed one */
 .equ FMT_INDEX8, 3                  /* descriptor format: one byte per pixel */
 .equ UI_STATE,   0xC3033A44         /* 2 live view, 4 playback, 5 camera menu */
 .equ UI_LIVEVIEW, 2
 .equ CACHE_FN,   0xC000E91C
-.equ TK_DLY,     0xC01F89C4
-.equ XT_CREATE,  0xC036E108
-.equ XT_ATTACH,  0xC036E1B8
-.equ PERIOD_MS,  150
-.equ PRIORITY,   20
-.equ STACK,      0x2000
-.equ FETCH_MAX,  8                  /* the layer is asked for its buffer at most
-                                     * this often, and never again once all
-                                     * three buffers are known */
 /* Where the firmware draws its own scale, in sub-layer pixels: the bar is
  * memset row 464 and copied down to row 582 (0xC057DC94, 0xC057DD1C); the
  * labels sit in the 25-row band above it. */
@@ -100,7 +94,6 @@ fc_press:
     sub     sp, sp, #4              @ three registers: keep sp 8-aligned
     mov     r4, r0
     LDA     r5, STATE
-    bl      learn_surface           @ clobbers r0-r3, keeps r4 and r5
     ldr     r1, [r5, #4]
     add     r1, r1, #1
     str     r1, [r5, #4]
@@ -115,13 +108,16 @@ fc_press:
     str     r1, [r5, #0xC]
     mov     r0, #1
     bl      fc_palette
+    bl      fc_present
     add     sp, sp, #4
     pop     {r4, r5, pc}
 1:  mov     r1, #0
     str     r1, [r5, #0xC]
     cmp     r0, #0
     bne     2f
-    bl      fc_palette              @ r0 = 0: give the layer its palette back
+    bl      fc_present              @ take the scale down now
+    mov     r0, #0
+    bl      fc_palette              @ give the layer its palette back
     mov     r1, #0x22               @ off
     b       3f
 2:  mov     r1, #0x21               @ on
@@ -220,129 +216,150 @@ fc_palette:
     str     r0, [r6, #0x44]
 9:  pop     {r4, r5, r6, pc}
 
-/* Learn the sub layer's buffers. Runs from the press handler, which is key
- * context -- the same context the camera's own function key runs in. The
- * layer rotates three buffers and only the UI decides which is live, so every
- * one seen is remembered and all of them are painted.
+/* ------------------------------------------------------------- the painting */
+
+/* Placed over the first instruction of 0xC02E8A08, the display submit:
+ * submit(controller, descriptor, sub). Every buffer the UI sends to the panel
+ * passes through here first, so the scale is painted into exactly the buffer
+ * about to be shown, once per frame, with no thread and no cached buffer
+ * addresses. The displaced push {r4, r5, r6, r7, fp, lr} is replayed and
+ * control returns to the instruction after it. */
+.global fc_submit
+fc_submit:
+    push    {r0, r1, r2, r3, ip, lr}
+    bl      fc_on_submit
+    pop     {r0, r1, r2, r3, ip, lr}
+    push    {r4, r5, r6, r7, fp, lr}
+    LDA     ip, SUBMIT_RESUME
+    bx      ip
+
+/* fc_on_submit(controller, descriptor, sub). Acts only on a one-byte-per-pixel
+ * descriptor of the scale's width and at least its height; anything else
+ * (the 16-bit main layer, another monitor) is left alone. Remembers the
+ * controller so a press can present a frame itself.
  *
- * Refuses a descriptor that is not one byte per pixel: every pixel write
- * here is a byte, and on a 16-bit layer that would be garbage.
- *
- * Bounded twice: nothing happens once the third buffer is known, and never
- * more than FETCH_MAX attempts in case this body only ever presents one.
- * r5 = STATE on entry and exit.
- */
-learn_surface:
-    push    {r4, r6, r7, lr}
-    ldr     r0, [r5, #0x30]
-    cmp     r0, #0
-    bne     9f                      @ all three known: nothing left to ask for
-    ldr     r0, [r5, #0x10]
-    cmp     r0, #FETCH_MAX
-    bhs     9f
+ * Each of the layer's buffers is tracked with a drawn flag: the scale is
+ * painted whenever it is wanted, and a buffer that carries it is cleared once
+ * when it is not, so nothing of ours stays on a buffer the UI recycles. A
+ * word at +0x6C serialises this against fc_present. */
+fc_on_submit:
+    push    {r4, r5, r6, r7, r8, lr}
+    LDA     r8, STATE
+    ldr     r3, [r8, #0x74]
+    add     r3, r3, #1
+    str     r3, [r8, #0x74]
+    cmp     r1, #0
+    beq     9f
+    ldr     r3, [r1]
+    cmp     r3, #FMT_INDEX8
+    bne     9f
+    ldr     r4, [r1, #4]            @ base
+    cmp     r4, #0
+    beq     9f
+    ldr     r3, [r1, #8]
+    cmp     r3, #0
+    beq     9f
+    ldr     r5, [r3]                @ width, which is the byte stride
+    ldr     r6, [r3, #4]            @ height
+    movw    ip, #SCALE_W
+    cmp     r5, ip
+    bne     9f
+    movw    ip, #(CLEAR_Y + CLEAR_H)
+    cmp     r6, ip
+    blo     9f
+    str     r0, [r8, #0x70]
+
+    ldr     r0, [r8]                @ wanted: state 2, in live view
+    cmp     r0, #2
+    moveq   r7, #1
+    movne   r7, #0
+    LDA     r0, UI_STATE
+    ldr     r0, [r0]
+    cmp     r0, #UI_LIVEVIEW
+    movne   r7, #0
+
+    mov     r0, #0                  @ find this buffer's slot, or take one
+1:  add     r1, r8, r0, lsl #2
+    ldr     r2, [r1, #0x28]
+    cmp     r2, r4
+    beq     2f
+    cmp     r2, #0
+    beq     3f
     add     r0, r0, #1
-    str     r0, [r5, #0x10]
+    cmp     r0, #3
+    blo     1b
+    ldr     r0, [r8, #0x7C]         @ all three taken by others: evict in turn
+    add     r2, r0, #1
+    cmp     r2, #3
+    moveq   r2, #0
+    str     r2, [r8, #0x7C]
+    add     r1, r8, r0, lsl #2
+3:  str     r4, [r1, #0x28]
+    mov     r2, #0
+    str     r2, [r1, #0x60]
+2:  ldr     r2, [r1, #0x60]         @ drawn on this buffer
+    orrs    r2, r2, r7
+    beq     9f                      @ nothing there and nothing wanted
+
+    add     r3, r8, #0x6C           @ take the paint lock, or leave this frame
+4:  ldrex   r2, [r3]
+    cmp     r2, #0
+    bne     9f
+    mov     r2, #1
+    strex   r0, r2, [r3]
+    cmp     r0, #0
+    bne     4b
+    dmb
+    str     r4, [r8, #0x3C]
+    str     r5, [r8, #0x20]
+    str     r6, [r8, #0x24]
+    mov     r6, r1                  @ the slot, across the calls below
+    mov     r0, r4
+    mov     r1, r7
+    bl      draw_scale
+    str     r7, [r6, #0x60]
+    ldr     r0, [r8, #0x78]
+    add     r0, r0, #1
+    str     r0, [r8, #0x78]
+    LDA     ip, CACHE_FN            @ the panel reads memory, not our cache
+    blx     ip
+    dmb
+    mov     r0, #0
+    str     r0, [r8, #0x6C]
+9:  pop     {r4, r5, r6, r7, r8, pc}
+
+/* Present one frame of the sub layer from a press, so the scale changes at
+ * the press and not at the UI's next frame: the layer's back buffer, rotated
+ * and submitted, which is the shell's own `display osd` sequence. The submit
+ * runs through fc_submit, which does the painting. Needs a controller seen
+ * by the hook; before the first UI frame there is nothing to present to. */
+fc_present:
+    push    {r4, r5, r6, lr}
+    LDA     r6, STATE
+    ldr     r4, [r6, #0x70]
+    cmp     r4, #0
+    beq     9f
     bl      sub_drawable
     cmp     r0, #0
     beq     9f
-    mov     r7, r0
-    ldr     r1, [r7]
-    ldr     r1, [r1, #0x10]         @ getBackbuffer
-    mov     r0, r7
-    blx     r1
-    cmp     r0, #0
-    beq     9f
-    ldr     r1, [r0]
-    cmp     r1, #FMT_INDEX8
-    bne     9f
-    ldr     r2, [r0, #4]            @ the buffer's base
-    cmp     r2, #0
-    beq     9f
-    ldr     r1, [r0, #8]
-    cmp     r1, #0
-    beq     9f
-    ldr     r6, [r1]                @ width, which is also the byte stride
-    str     r6, [r5, #0x20]
-    ldr     r6, [r1, #4]
-    str     r6, [r5, #0x24]
-    mov     r6, #0x28               @ remember this base if it is new
-1:  ldr     r0, [r5, r6]
-    cmp     r0, r2
-    beq     9f
-    cmp     r0, #0
-    streq   r2, [r5, r6]
-    beq     9f
-    add     r6, r6, #4
-    cmp     r6, #0x30
-    bls     1b
-9:  pop     {r4, r6, r7, pc}
-
-/* ------------------------------------------------------------- the painting */
-
-.global fc_spawn
-fc_spawn:
-    push    {r4, lr}
-    LDA     r4, STATE
-    add     r0, r4, #0x80
-    mov     r1, #PRIORITY
-    LDA     r2, STACK
-    PTR     r3, thread_name
-    LDA     ip, XT_CREATE
-    blx     ip
-    str     r0, [r4, #0x18]
-    add     r0, r4, #0x80
-    add     r1, r4, #0x140
-    LDA     ip, XT_ATTACH
-    blx     ip
-    str     r0, [r4, #0x34]
-    mov     r0, #0
-    pop     {r4, pc}
-
-.global fc_body
-fc_body:
-    push    {r4, lr}
-    LDA     r4, STATE
-1:  bl      fc_pass
-    ldr     r0, [r4, #0x38]
-    add     r0, r0, #1
-    str     r0, [r4, #0x38]
-    mov     r0, #PERIOD_MS
-    LDA     ip, TK_DLY
-    blx     ip
-    b       1b
-
-/* One repaint. Draws into every buffer it has seen, and takes the scale down
- * again on the first pass after it is switched off or live view is left, so
- * nothing of ours is ever left on a screen that is not ours. */
-fc_pass:
-    push    {r4, r5, r6, lr}
-    LDA     r4, STATE
-    ldr     r0, [r4]                @ state 2 is the only one that draws
-    cmp     r0, #2
-    moveq   r0, #1
-    movne   r0, #0
     mov     r5, r0
-    LDA     r1, UI_STATE
-    ldr     r1, [r1]
-    cmp     r1, #UI_LIVEVIEW
-    movne   r5, #0                  @ playback or the camera's menu: not ours
-    ldr     r0, [r4, #0x14]
-    orrs    r0, r0, r5
-    beq     9f                      @ not up, and nothing to take down
-    mov     r6, #0x28
-1:  ldr     r0, [r4, r6]
+    ldr     r3, [r5]
+    ldr     r3, [r3, #0x10]         @ back descriptor
+    mov     r0, r5
+    blx     r3
     cmp     r0, #0
-    beq     2f
-    mov     r1, r5
-    bl      draw_scale
-2:  add     r6, r6, #4
-    cmp     r6, #0x30
-    bls     1b
-    str     r5, [r4, #0x14]
-    LDA     ip, CACHE_FN            @ our writes are only data to the caches
-    blx     ip
+    beq     9f
+    mov     r6, r0
+    ldr     r3, [r5]
+    ldr     r3, [r3, #0x14]         @ rotate: it becomes the front
+    mov     r0, r5
+    blx     r3
+    mov     r0, r4
+    mov     r1, r6
+    mov     r2, #SUB_LAYER
+    LDA     r3, SUBMIT
+    blx     r3
 9:  pop     {r4, r5, r6, pc}
-
 /* draw_scale(base, wanted): clear the scale's rows, then draw it if wanted.
  * Refuses a surface the firmware's own geometry does not fit on. */
 draw_scale:

@@ -70,6 +70,32 @@
 .equ PERIOD_MS,  150
 .equ PRIORITY,   20
 .equ STACK,      0x2000
+/* The EL Zone / False Color scale, drawn while src/fclatch.S says its third
+ * state is selected. FCLATCH_ST is that hook's state block, or 0 on a card
+ * that does not carry the hook, in which case the legend is never wanted and
+ * the code below is inert.
+ *
+ *   FCLATCH_ST +0x00  0 off, 1 on, 2 on with the scale
+ *   FCLATCH_ST +0x0C  the scale flag itself
+ *
+ * Thirteen whole stops across the bottom of the frame. The camera draws this
+ * scale only inside its own menu page (NBU scene B5_9, built from font
+ * glyphs), so there is nothing to switch on in live view -- it is drawn here.
+ */
+#ifndef FCLATCH_ST
+#define FCLATCH_ST 0
+#endif
+.equ LEG_X,      44             /* first tick */
+.equ LEG_STEP,   78             /* 44 + 12 * 78 = 980, inside 1024 */
+.equ LEG_W,      960
+.equ LEG_CLR_X,  (LEG_X - CELL_W)   /* labels are centred, so the strip taken */
+.equ LEG_CLR_W,  (LEG_W + CELL_W*2) /* down is wider than the ticks by a cell */
+.equ LEG_TICK,   10
+.equ LEG_H,      29             /* tick + gap + one double-height glyph row */
+.equ LEG_UP,     40             /* the strip's top, above the bottom edge */
+.equ LEG_MIN_W,  1024
+.equ LEG_WANT,   0x164          /* wanted this pass */
+.equ LEG_DREW,   0x168          /* drawn on the last pass */
 
 .macro LDA reg, value
     movw \reg, #:lower16:\value
@@ -168,20 +194,28 @@ menu_core:
     str     r1, [r10, #0x5C]        @ menu re-shows the panel with time still
                                     @ on the clock, which looks like it opened
                                     @ itself. A real change brings it back.
+    mov     r0, #0                  @ not live view: the legend goes too
+    bl      legend_state
     ldr     r0, [r10, #0x68]        @ exactly one clearing pass, as when hiding
     cmp     r0, #1
     moveq   r0, #2
     movne   r0, #0
     str     r0, [r10, #0x68]
-    cmp     r0, #0
+    ldr     r1, [r10, #LEG_DREW]
+    orrs    r0, r0, r1
     beq     done
     b       2f
 1:
     bl      follow_options          @ the cursor or an option moved: follow it
     bl      visibility              @ decide whether the panel shows at all
+    mov     r0, #1
+    bl      legend_state
     ldr     r0, [r10, #0x68]
-    cmp     r0, #0
-    beq     done                    @ idle and already hidden: nothing to draw
+    ldr     r1, [r10, #LEG_WANT]
+    orr     r0, r0, r1
+    ldr     r1, [r10, #LEG_DREW]
+    orrs    r0, r0, r1
+    beq     done                    @ nothing showing and nothing to take down
 
 2:  ldr     r7, [r10, #0x28]        @ stride
     ldr     r8, [r10, #0x2C]        @ surface height
@@ -214,12 +248,18 @@ surface_loop:
     cmp     r1, #2
     bne     3f
     bl      clear_panel             @ the pass that hides it
-    b       surface_next
-3:  bl      paint_panel
+    b       4f
+3:  cmp     r1, #0
+    beq     4f                      @ panel hidden: the legend may still draw
+    bl      paint_panel
+4:  ldr     r0, [r10, r9]           @ the helpers above clobber r0
+    bl      paint_legend
 surface_next:
     add     r9, r9, #4
     cmp     r9, #0x24
     bls     surface_loop
+    ldr     r0, [r10, #LEG_WANT]    @ so the next pass knows to clear it
+    str     r0, [r10, #LEG_DREW]
 
 done:
     bl      apply_setting           @ a queued camera setting, if one is waiting
@@ -459,6 +499,91 @@ no_gate:
     movhi   r0, #0
     strhi   r0, [r4, #0x68]
 9:  pop     {r4, r5, r6, r7, pc}
+/* legend_state(live): is the scale wanted this pass? Writes LEG_WANT.
+ *
+ * The hook owns the decision; this only reads its flag, and only in live view.
+ */
+legend_state:
+    push    {r4, lr}
+    LDA     r4, STATE
+    cmp     r0, #0
+    beq     1f
+#if FCLATCH_ST
+    LDA     r0, FCLATCH_ST
+    ldr     r0, [r0, #0xC]
+    cmp     r0, #0
+    movne   r0, #1
+#else
+    mov     r0, #0                  @ no hook on this card
+#endif
+    str     r0, [r4, #LEG_WANT]
+    pop     {r4, pc}
+1:  mov     r0, #0
+    str     r0, [r4, #LEG_WANT]
+    pop     {r4, pc}
+
+/* paint_legend(base): thirteen whole stops across the bottom of the frame.
+ *
+ * Always clears its strip first, so the pass after the scale is switched off
+ * takes it down and nothing else has to remember where it was. Refuses a
+ * surface it does not fit on rather than writing past the end of a row.
+ */
+paint_legend:
+    push    {r4, r5, r6, r7, r8, r9, r10, lr}
+    LDA     r10, STATE
+    str     r0, [r10, #0x3C]
+    ldr     r0, [r10, #LEG_WANT]
+    ldr     r1, [r10, #LEG_DREW]
+    orrs    r0, r0, r1
+    beq     9f                      @ not up and not coming down
+    ldr     r7, [r10, #0x28]        @ stride
+    ldr     r8, [r10, #0x2C]        @ height
+    movw    r0, #LEG_MIN_W
+    cmp     r7, r0
+    blo     9f
+    cmp     r8, #(LEG_UP + LEG_H)
+    blo     9f
+    sub     r6, r8, #LEG_UP         @ the strip's top edge
+
+    mov     r0, #0                  @ clear it, transparent
+    str     r0, [r10, #0x40]
+    mov     r0, #LEG_CLR_X          @ wide enough for the first label, which
+    mov     r1, r6                  @ hangs half a cell left of its own tick
+    movw    r2, #LEG_CLR_W
+    mov     r3, #LEG_H
+    bl      fill_rect
+    ldr     r0, [r10, #LEG_WANT]
+    cmp     r0, #0
+    beq     9f
+
+    mov     r0, #INK
+    str     r0, [r10, #0x40]
+    mov     r0, #LEG_X              @ the baseline the ticks stand on
+    add     r1, r6, #LEG_TICK
+    movw    r2, #LEG_W
+    mov     r3, #1
+    bl      fill_rect
+
+    mov     r4, #0
+1:  mov     r0, #LEG_STEP
+    mul     r5, r4, r0
+    add     r5, r5, #LEG_X          @ this tick's x
+    mov     r0, r5
+    mov     r1, r6
+    mov     r2, #1
+    mov     r3, #LEG_TICK
+    bl      fill_rect
+    PTR     r2, legend_labels       @ four-byte slots, two characters each
+    mov     r0, #4
+    mla     r2, r4, r0, r2
+    sub     r0, r5, #CELL_W         @ centred on the tick
+    add     r1, r6, #(LEG_TICK + 3)
+    bl      draw_str
+    add     r4, r4, #1
+    cmp     r4, #13
+    blo     1b
+9:  pop     {r4, r5, r6, r7, r8, r9, r10, pc}
+
 
 /* clear_panel(base): take our rectangle back off the screen, nothing else. */
 clear_panel:
@@ -882,6 +1007,24 @@ value_texts:
     .asciz "OFF"
     .asciz "ON";  .space 1     @ four-byte slots: the index is a shift, not a walk
     .asciz "--";  .space 1
+    .balign 4
+/* The scale's thirteen whole stops, four-byte slots like the values above.
+ * Two characters each, including the zero, so every label centres the same way
+ * on its tick. The font is 0x20..0x5A, which covers the signs and digits. */
+legend_labels:
+    .asciz "-6"; .space 1
+    .asciz "-5"; .space 1
+    .asciz "-4"; .space 1
+    .asciz "-3"; .space 1
+    .asciz "-2"; .space 1
+    .asciz "-1"; .space 1
+    .asciz " 0"; .space 1
+    .asciz "+1"; .space 1
+    .asciz "+2"; .space 1
+    .asciz "+3"; .space 1
+    .asciz "+4"; .space 1
+    .asciz "+5"; .space 1
+    .asciz "+6"; .space 1
     .balign 4
 /* Twelve bytes each, so a row index is a multiply rather than a table walk.
  * In src/menu.S's row order; false colour and the green fix are rows here now,
