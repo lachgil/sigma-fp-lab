@@ -37,7 +37,7 @@ NATIVE_INC = ROOT / 'src/fcscale_native.inc.S'
 
 # Free worker-region caves, checked zero in the stock image at build time.
 STATE = 0xC072E200
-STATE_SIZE = 0x80
+STATE_SIZE = 0x90
 CODE = 0xC072E400
 
 PRESS_SITE = 0xC03722E8         # CameraIF vtable +0xCC
@@ -59,6 +59,7 @@ BAND_N = 15
 NATIVE_PAL = 0xC0D1B34C         # 256 x {u8 alpha, u8 Y, s8 U, s8 V}
 NATIVE_PAL_N = 256
 GLYPH_H = 25
+PAL_GENERATION = 0x0000FC01     # distinct from anything the layer numbers its own with
 GLYPH_SIGN_W = 22
 # The label glyphs of scene B5_9's ElZoneScale (object 33212): XCI images in
 # MAIN, in the order the label table below indexes them.
@@ -274,7 +275,14 @@ def build(out: Path) -> str:
         f'# --- state @ 0x{STATE:08X} ---',
     ]
     lines += [f'mem set 0x{STATE + i * 4:08X} 0x00000000' for i in range(STATE_SIZE // 4)]
-    lines.append(f'# --- code @ 0x{CODE:08X} ({len(words)} words) ---')
+    lines += [
+        "# --- our palette descriptor {entries, count, generation}: the firmware's",
+        '#     own 256-entry scale palette, pointed at by the frame descriptor',
+        '#     while the scale is up ---',
+        f'mem set 0x{STATE + 0x50:08X} 0x{NATIVE_PAL:08X}',
+        f'mem set 0x{STATE + 0x54:08X} 0x{NATIVE_PAL_N:08X}',
+        f'mem set 0x{STATE + 0x58:08X} 0x{PAL_GENERATION:08X}',
+    ]
     lines += [f'mem set 0x{CODE + i * 4:08X} 0x{value:08X}'
               for i, value in enumerate(words)]
     lines += [

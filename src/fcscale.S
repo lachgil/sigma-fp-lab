@@ -23,12 +23,7 @@
  *
  * The drawing surface is the LCD's indexed sub layer: one byte per pixel,
  * descriptor format 3, resolved through the display manager exactly as the
- * firmware's own FalseColorBarDrawer does (0xC057DA78). The palette is
- * installed through the drawable's own setter (vtable +0x18) when the scale
- * is switched on and restored (+0x1C) when the mode goes off. A palette file
- * loaded with `display osdPalette` cannot do this: that command keeps the
- * layer's existing entry count, so entries above the stock thirty never
- * exist -- which is why an earlier build drew nothing.
+ * firmware's own FalseColorBarDrawer does (0xC057DA78).
  *
  * Painting is done inside the firmware's own display submit: 0xC02E8A08 is
  * entered through fc_submit, which paints the scale into the exact buffer
@@ -38,16 +33,26 @@
  * rotate, submit: the shell's `display osd` sequence) so the change is
  * immediate rather than at the UI's next frame.
  *
+ * The palette travels with the frame: the submit copies the descriptor's
+ * palette pointer (+0xC -> {entries, count, generation}) into the request.
+ * While the scale is up the hook points that word at our descriptor for the
+ * firmware's 256-entry scale palette and keeps the layer's own pointer per
+ * buffer, putting it back on the clearing pass. The layer's palette setters
+ * are not used: an install through vtable +0x18 at the press did not hold on
+ * the camera (2026-09-20: stock colours), and `display osdPalette` keeps the
+ * layer's existing entry count, so the stock thirty never grow.
+ *
  * State block at STATE:
  *   +0x00 0 off, 1 on, 2 on with the scale   +0x3C buffer being painted
  *   +0x04 presses                            +0x40 current colour
- *   +0x08 releases swallowed                 +0x44 our palette is installed
- *   +0x0C the scale flag                     +0x48 palette setter result
- *   +0x20 stride, while painting             +0x50..+0x58 palette descriptor
- *   +0x24 height, while painting             +0x60..+0x68 drawn flag per buffer
- *   +0x28..+0x30 the layer's three buffers   +0x6C paint lock
- *   +0x70 the LCD controller, from the hook  +0x74 submits seen
- *   +0x78 frames painted                     +0x7C next slot to evict
+ *   +0x08 releases swallowed                 +0x50..+0x58 our palette descriptor,
+ *   +0x0C the scale flag                            written by the card
+ *   +0x20 stride, while painting             +0x60..+0x68 drawn flag per buffer
+ *   +0x24 height, while painting             +0x6C paint lock
+ *   +0x28..+0x30 the layer's three buffers   +0x70 the LCD controller, from the hook
+ *   +0x74 submits seen                       +0x78 frames painted
+ *   +0x7C next slot to evict                 +0x80..+0x88 the layer's palette
+ *                                                   pointer per buffer
  */
 .equ MEMSET,     0xC0015058
 .equ POST,       0xC03A0798
@@ -106,8 +111,6 @@ fc_press:
     bne     1f
     mov     r1, #1
     str     r1, [r5, #0xC]
-    mov     r0, #1
-    bl      fc_palette
     bl      fc_present
     add     sp, sp, #4
     pop     {r4, r5, pc}
@@ -116,8 +119,6 @@ fc_press:
     cmp     r0, #0
     bne     2f
     bl      fc_present              @ take the scale down now
-    mov     r0, #0
-    bl      fc_palette              @ give the layer its palette back
     mov     r1, #0x22               @ off
     b       3f
 2:  mov     r1, #0x21               @ on
@@ -177,44 +178,6 @@ sub_drawable:
     blx     r3
 9:  pop     {r4, pc}
 
-/* fc_palette(r0): 1 installs the firmware's 256-entry scale palette on the
- * sub layer through the drawable's own setter, 0 restores the layer's
- * default through its own restore. Both take the layer's mutex themselves.
- * Restoring when nothing was installed does nothing. */
-fc_palette:
-    push    {r4, r5, r6, lr}
-    mov     r4, r0
-    LDA     r6, STATE
-    bl      sub_drawable
-    cmp     r0, #0
-    beq     9f
-    mov     r5, r0
-    ldr     r3, [r5]
-    cmp     r4, #0
-    beq     1f
-    LDA     r1, NATIVE_PAL
-    str     r1, [r6, #0x50]
-    mov     r1, #NATIVE_PAL_N
-    str     r1, [r6, #0x54]
-    mov     r1, #0
-    str     r1, [r6, #0x58]
-    add     r1, r6, #0x50
-    ldr     r3, [r3, #0x18]         @ setPalette(drawable, &descriptor)
-    mov     r0, r5
-    blx     r3
-    str     r0, [r6, #0x48]
-    mov     r0, #1
-    str     r0, [r6, #0x44]
-    b       9f
-1:  ldr     r0, [r6, #0x44]
-    cmp     r0, #0
-    beq     9f
-    ldr     r3, [r3, #0x1C]         @ restoreDefaultPalette(drawable)
-    mov     r0, r5
-    blx     r3
-    mov     r0, #0
-    str     r0, [r6, #0x44]
-9:  pop     {r4, r5, r6, pc}
 
 /* ------------------------------------------------------------- the painting */
 
@@ -244,6 +207,8 @@ fc_submit:
  * word at +0x6C serialises this against fc_present. */
 fc_on_submit:
     push    {r4, r5, r6, r7, r8, lr}
+    sub     sp, sp, #8              @ [sp] the descriptor; keeps sp 8-aligned
+    str     r1, [sp]
     LDA     r8, STATE
     ldr     r3, [r8, #0x74]
     add     r3, r3, #1
@@ -324,9 +289,33 @@ fc_on_submit:
     mov     r1, #CLEAR_H            @ the firmware's 0xC000E91C cleans every
     mul     r1, r5, r1              @ set and way of both levels with
     bl      clean_range             @ interrupts off, too much for every frame
-    mov     r0, #0
+
+    /* The palette. The submit copies {entries, count, generation} from
+     * descriptor +0xC into the frame request, so this is the word that
+     * decides the frame's colours. While the scale is up it points at our
+     * copy of the firmware's scale palette (STATE +0x50, written by the
+     * card); the layer's own pointer is kept per buffer and put back on the
+     * clearing pass. Nothing goes through the layer's palette setters. */
+    ldr     r0, [sp]                @ the descriptor
+    ldr     r1, [r0, #0xC]
+    add     r2, r8, #0x50
+    cmp     r7, #0
+    beq     5f
+    cmp     r1, r2
+    beq     6f
+    str     r1, [r6, #0x80]         @ the layer's own, to give back
+    str     r2, [r0, #0xC]
+    b       6f
+5:  ldr     r1, [r6, #0x80]
+    cmp     r1, #0
+    beq     6f
+    str     r1, [r0, #0xC]
+    mov     r1, #0
+    str     r1, [r6, #0x80]
+6:  mov     r0, #0
     str     r0, [r8, #0x6C]
-9:  pop     {r4, r5, r6, r7, r8, pc}
+9:  add     sp, sp, #8
+    pop     {r4, r5, r6, r7, r8, pc}
 
 /* clean_range(address, length): data cache clean by address to the point of
  * coherency, 32-byte steps (a 64-byte line is simply cleaned twice). */

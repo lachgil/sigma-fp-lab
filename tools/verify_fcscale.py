@@ -46,6 +46,8 @@ DESC_UI = FAKE + 0xA0           # what the UI submits
 DESC_BACK = FAKE + 0xB0         # what the drawable hands a present
 DESC_MAIN = FAKE + 0xC0         # a 16-bit main-layer descriptor
 GEOM = FAKE + 0xD0
+LAYER_PAL = FAKE + 0xE0         # the layer's own palette descriptor {entries, 30, 7}
+OUR_PAL = card.STATE + 0x50     # ours, written by the card
 STUB_RESOLVE, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE = (FAKE + 0x100 + 8 * i
                                                                    for i in range(5))
 PIX_UI = FAKE + 0x1000
@@ -77,13 +79,16 @@ class Camera:
         u.mem_write(DRAWABLE, struct.pack('<I', DRW_VT))
         u.mem_write(DRW_VT + 0x10, struct.pack('<IIII', STUB_BACK, STUB_ROTATE,
                                                  STUB_SETPAL, STUB_RESTORE))
-        u.mem_write(DESC_UI, struct.pack('<IIII', 3, PIX_UI, GEOM, 0))
-        u.mem_write(DESC_BACK, struct.pack('<IIII', 3, PIX_BACK, GEOM, 0))
+        u.mem_write(DESC_UI, struct.pack('<IIII', 3, PIX_UI, GEOM, LAYER_PAL))
+        u.mem_write(DESC_BACK, struct.pack('<IIII', 3, PIX_BACK, GEOM, LAYER_PAL))
         u.mem_write(DESC_MAIN, struct.pack('<IIII', 1, PIX_MAIN, GEOM, 0))
+        u.mem_write(LAYER_PAL, struct.pack('<III', FAKE + 0xF00, 30, 7))
+        u.mem_write(card.STATE + 0x50, struct.pack('<III', card.NATIVE_PAL, card.NATIVE_PAL_N,
+                                                    card.PAL_GENERATION))   # as the card does
         u.mem_write(GEOM, struct.pack('<II', W, H))
         for stub in (STUB_RESOLVE, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE):
             u.mem_write(stub, struct.pack('<I', 0xE12FFF1E))        # bx lr
-        self.events, self.palette_calls, self.selectors = [], [], []
+        self.events, self.selectors = [], []
         self.rotates, self.submitted = 0, []
         self.writes = set()
         u.hook_add(uc.UC_HOOK_CODE, self._code)
@@ -120,13 +125,8 @@ class Camera:
             assert r0 == DRAWABLE
             self.rotates += 1
             self._ret()
-        elif address == STUB_SETPAL:
-            desc = struct.unpack('<III', u.mem_read(u.reg_read(ar.UC_ARM_REG_R1), 12))
-            self.palette_calls.append(('set', desc))
-            self._ret(0)
-        elif address == STUB_RESTORE:
-            self.palette_calls.append(('restore', r0))
-            self._ret(0)
+        elif address in (STUB_SETPAL, STUB_RESTORE):
+            raise AssertionError("the layer's palette setters must not be called")
         elif address == card.CACHE_FN:
             self._ret()
         elif address == 0xC03A0798:                             # POST
@@ -159,6 +159,9 @@ class Camera:
 
     def state(self, offset):
         return struct.unpack('<I', self.u.mem_read(card.STATE + offset, 4))[0]
+
+    def palette_of(self, desc=DESC_UI):
+        return struct.unpack('<I', self.u.mem_read(desc + 0xC, 4))[0]
 
     def pixels(self, base=PIX_UI):
         return bytes(self.u.mem_read(base, W * H))
@@ -215,25 +218,28 @@ def main() -> None:
     check('the hook remembers the controller and paints nothing while only on',
           cam.state(0x70) == CTRL and not cam.writes and cam.state(0x74) == 1)
 
-    # Press 2: palette installed, one frame presented through the hook.
+    # Press 2: one frame presented through the hook, carrying our palette.
     cam.call('fc_press', r0=CAMERA_IF)
     check('press 2 sets the scale flag without posting an event',
           cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21])
-    check("the firmware's 256-entry palette is installed through the drawable's own setter",
-          cam.palette_calls == [('set', (card.NATIVE_PAL, card.NATIVE_PAL_N, 0))]
-          and cam.selectors and all(s == card.SUB_LAYER if hasattr(card, 'SUB_LAYER') else s == 1
-                                    for s in cam.selectors))
     check('the press presents the back buffer: rotate once, submit it as the sub layer',
-          cam.rotates == 1 and cam.submitted[-1] == (CTRL, DESC_BACK, 1))
+          cam.rotates == 1 and cam.submitted[-1] == (CTRL, DESC_BACK, 1)
+          and cam.selectors and all(s == 1 for s in cam.selectors))
     back = cam.pixels(PIX_BACK)
     check('the presented buffer carries the scale and the UI buffer is untouched',
           any(back) and not any(cam.pixels(PIX_UI)))
+    check("the presented descriptor points at the firmware's 256-entry scale palette",
+          cam.palette_of(DESC_BACK) == OUR_PAL and cam.palette_of() == LAYER_PAL
+          and struct.unpack('<III', cam.u.mem_read(OUR_PAL, 12))
+          == (card.NATIVE_PAL, card.NATIVE_PAL_N, card.PAL_GENERATION))
 
-    # The next UI frame gets the scale too, identically.
+    # The next UI frame gets the scale too, identically, and our palette.
     cam.ui_submit()
     pixels = cam.pixels()
     check('the next UI frame is painted, in rows 430..582 only, identically',
           cam.rows_written() == scale_rows and pixels == back)
+    check("the frame's palette pointer is ours and the layer's is kept for it",
+          cam.palette_of() == OUR_PAL and cam.state(0x80) == LAYER_PAL)
     bands = card.bands(image)
     check("the bar carries the firmware's own band indices at its edges",
           all(pixels[y * W + x] == index
@@ -247,20 +253,31 @@ def main() -> None:
     # A main-layer frame is not ours.
     cam.ui_submit(DESC_MAIN, sub=0)
     check('a 16-bit main-layer descriptor is passed through untouched',
-          not cam.writes and cam.submitted[-1] == (CTRL, DESC_MAIN, 0))
+          not cam.writes and cam.submitted[-1] == (CTRL, DESC_MAIN, 0)
+          and cam.palette_of(DESC_MAIN) == 0)
+
+    # The layer re-pointing its palette between frames does not win.
+    cam.u.mem_write(DESC_UI + 0xC, struct.pack('<I', LAYER_PAL))
+    cam.ui_submit()
+    check("a frame whose palette the layer re-pointed leaves with ours again",
+          cam.palette_of() == OUR_PAL and cam.state(0x80) == LAYER_PAL)
 
     # Leaving live view: each buffer carrying the scale is cleared once.
     cam.ui_state(5)
     cam.ui_submit()
     check('outside live view a buffer carrying the scale is cleared, rows 430..582 only',
           cam.rows_written() == scale_rows and not any(cam.pixels()))
+    check("and the layer's own palette pointer is put back on it",
+          cam.palette_of() == LAYER_PAL and cam.state(0x80) == 0)
     cam.ui_submit()
     check('and not touched again once clear', not cam.writes)
     cam.ui_submit(DESC_BACK)
-    check('the other buffer is cleared when it comes round', not any(cam.pixels(PIX_BACK)))
+    check('the other buffer is cleared when it comes round, palette pointer restored',
+          not any(cam.pixels(PIX_BACK)) and cam.palette_of(DESC_BACK) == LAYER_PAL)
     cam.ui_state(2)
     cam.ui_submit()
-    check('back in live view the scale returns', cam.pixels() == pixels)
+    check('back in live view the scale returns, with our palette',
+          cam.pixels() == pixels and cam.palette_of() == OUR_PAL)
 
     # The paint lock: a frame arriving while another paint holds it is skipped.
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 1))
@@ -271,12 +288,13 @@ def main() -> None:
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 0))
     cam.ui_state(2)
 
-    # Press 3: presents a cleared frame, restores the palette, posts 0x22.
+    # Press 3: presents a cleared frame with the layer's palette back, posts 0x22.
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 3 posts 0x22, presents once more and restores the palette after',
+    check('press 3 posts 0x22 and presents once more',
           cam.state(0) == 0 and cam.events == [0x21, 0x22] and cam.rotates == 2
-          and cam.submitted[-1] == (CTRL, DESC_BACK, 1)
-          and cam.palette_calls[-1] == ('restore', DRAWABLE))
+          and cam.submitted[-1] == (CTRL, DESC_BACK, 1))
+    check("the presented buffer is clear and carries the layer's own palette again",
+          not any(cam.pixels(PIX_BACK)) and cam.palette_of(DESC_BACK) == LAYER_PAL)
     cam.ui_submit()
     check('the UI buffer is cleared on its next frame', not any(cam.pixels()))
     cam.ui_submit()
@@ -286,14 +304,15 @@ def main() -> None:
 
     report = dict(cases=results, code_bytes=len(cam.code), events=cam.events,
                   submits=len(cam.submitted), rotates=cam.rotates,
-                  palette_calls=[list(map(str, c)) for c in cam.palette_calls],
                   faked=['display manager 0xC0698D80 and its layer resolver',
-                         'the drawable: back descriptor, rotate, setPalette, restore',
+                         'the drawable: back descriptor, rotate',
                          'the display submit body after its first instruction',
-                         'the event post 0xC03A0798', 'the cache flush'],
+                         'the event post 0xC03A0798'],
                   real=['the payload', 'firmware memset', 'band table, palette, glyphs',
                         'the stock word at the submit site'],
-                  untested=['LCD compositing of the sub layer in each DISP state'])
+                  untested=['LCD compositing of the sub layer in each DISP state',
+                            'that the frame request programs the CLUT from the '
+                            'descriptor palette it carries'])
     out = ROOT / 'builds/fcscale/verification.json'
     out.write_text(json.dumps(report, indent=2) + '\n')
     if not all(c['passed'] for c in results):
