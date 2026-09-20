@@ -206,8 +206,8 @@ def main() -> None:
 
     # Press 2: one frame presented through the hook.
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 2 sets the scale flag without posting an event',
-          cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21])
+    check('press 2 sets the scale flag and re-asserts FC on (0x21)',
+          cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21, 0x21])
     check('the press presents the main layer: resolve 0, rotate once, submit with sub = 0',
           cam.rotates == 1 and cam.submitted[-1] == (CTRL, DESC_BACK, 0)
           and cam.selectors and all(s == 0 for s in cam.selectors))
@@ -238,15 +238,22 @@ def main() -> None:
     check('an indexed sub-layer descriptor is passed through untouched',
           not cam.writes and cam.submitted[-1] == (CTRL, DESC_SUB, 1))
 
-    # Leaving live view: each buffer carrying the scale is cleared once.
-    cam.ui_state(5)
+    # Another UI screen (False Color's own) still gets the scale.
+    cam.ui_state(9)
+    cam.ui_submit()
+    check('a UI state other than playback or menu keeps the scale', cam.pixels() == pixels)
+
+    # Playback or the camera menu: each buffer carrying the scale is cleared once.
+    cam.ui_state(4)
     cam.ui_submit()
     check('outside live view a buffer carrying the scale is cleared, rows 430..582 only',
           cam.rows_written() == SCALE_ROWS and not any(cam.pixels()))
     cam.ui_submit()
     check('and not touched again once clear', not cam.writes)
+    cam.ui_state(5)
     cam.ui_submit(DESC_BACK)
-    check('the other buffer is cleared when it comes round', not any(cam.pixels(PIX_BACK)))
+    check('the other buffer is cleared when it comes round, in the menu too',
+          not any(cam.pixels(PIX_BACK)))
     cam.ui_state(2)
     cam.ui_submit()
     check('back in live view the scale returns', cam.pixels() == pixels)
@@ -263,7 +270,7 @@ def main() -> None:
     # Press 3: presents a cleared frame, posts 0x22.
     cam.call('fc_press', r0=CAMERA_IF)
     check('press 3 posts 0x22 and presents once more, cleared',
-          cam.state(0) == 0 and cam.events == [0x21, 0x22] and cam.rotates == 2
+          cam.state(0) == 0 and cam.events == [0x21, 0x21, 0x22] and cam.rotates == 2
           and cam.submitted[-1] == (CTRL, DESC_BACK, 0) and not any(cam.pixels(PIX_BACK)))
     cam.ui_submit()
     check('the UI buffer is cleared on its next frame', not any(cam.pixels()))

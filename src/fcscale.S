@@ -61,7 +61,8 @@
 .equ PAINT_FMT,   1                 /* the descriptor format that layer must report */
 .equ PAINT_BPP,   2                 /* bytes per pixel there */
 .equ UI_STATE,   0xC3033A44         /* 2 live view, 4 playback, 5 camera menu */
-.equ UI_LIVEVIEW, 2
+.equ UI_PLAYBACK, 4
+.equ UI_MENU,     5
 .equ CACHE_FN,   0xC000E91C
 /* Where the firmware draws its own scale, in sub-layer pixels: the bar is
  * memset row 464 and copied down to row 582 (0xC057DC94, 0xC057DD1C); the
@@ -107,13 +108,13 @@ fc_press:
     cmp     r0, #3
     moveq   r0, #0
     str     r0, [r5]
-    cmp     r0, #2                  @ the scale step: the mode is already on
-    bne     1f
-    mov     r1, #1
-    str     r1, [r5, #0xC]
+    cmp     r0, #2                  @ the scale step: the mode is already on;
+    bne     1f                      @ 0x21 is posted again so the UI produces
+    mov     r1, #1                  @ a frame for the hook to paint, in case
+    str     r1, [r5, #0xC]          @ our own present is not shown
     bl      fc_present
-    add     sp, sp, #4
-    pop     {r4, r5, pc}
+    mov     r1, #0x21
+    b       3f
 1:  mov     r1, #0
     str     r1, [r5, #0xC]
     cmp     r0, #0
@@ -234,14 +235,15 @@ fc_on_submit:
     blo     9f
     str     r0, [r8, #0x70]
 
-    ldr     r0, [r8]                @ wanted: state 2, in live view
-    cmp     r0, #2
-    moveq   r7, #1
-    movne   r7, #0
-    LDA     r0, UI_STATE
-    ldr     r0, [r0]
-    cmp     r0, #UI_LIVEVIEW
-    movne   r7, #0
+    ldr     r0, [r8]                @ wanted: state 2, and not in playback or
+    cmp     r0, #2                  @ the camera menu. False Color has a UI
+    moveq   r7, #1                  @ screen of its own, so "equals live view"
+    movne   r7, #0                  @ is false once the mode has settled
+    LDA     r0, UI_STATE            @ (camera, 2026-09-20: two slow presses
+    ldr     r0, [r0]                @ drew nothing, two quick ones drew).
+    cmp     r0, #UI_PLAYBACK
+    cmpne   r0, #UI_MENU
+    moveq   r7, #0
 
     mov     r0, #0                  @ find this buffer's slot, or take one
 1:  add     r1, r8, r0, lsl #2
