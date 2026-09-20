@@ -1,74 +1,99 @@
 # Drawing your own pixels on the LCD
 
-SIGMA fp, firmware Ver.5.02.
+SIGMA fp, firmware Ver.5.02. Everything below is read from the firmware
+instructions (Capstone, 2026-09-20) unless marked as measured on the camera.
 
-This is how to get arbitrary graphics onto the screen from your own code: where
-the buffer comes from, what format it is, and what the palette is. The colour
-chart photograph came from about forty instructions using this.
+## Two layers, two formats
 
-## Getting a buffer
-
-```
-0xC03E5698   take the display handle
-0xC03E56D8   handle -> drawable object
-[drawable]   its vtable; vtable +0x10 is getBackbuffer, called with the drawable
-```
-
-`getBackbuffer` returns a descriptor:
+The LCD has a **main** layer and a **sub** layer, and they are different
+objects with different pixel formats. Every descriptor says which it is:
 
 ```
-+0x04   the buffer base
-+0x08   -> geometry: +0x00 width (also the stride), +0x04 height
+descriptor +0x00   format: 0 = 32-bit, 1 = 16-bit, 3 = one byte per pixel (index)
+           +0x04   pixel base
+           +0x08   -> geometry: +0x00 width, +0x04 height
+           +0x0C   -> palette descriptor {entries, count, generation}, indexed layers only
 ```
 
-On the LCD that is **1024 x 682, one byte per pixel**, so a pixel is
-`base + y * stride + x` and the byte is a palette index.
+`0xC052B118` addresses a pixel as `base + (y*width + x) * {4, 2, 1}` by that
+format, so the width is the pixel stride and there is no padding. **Check
+`+0x00` before writing bytes**: on the LCD the sub layer is format 3
+(1024 x 682 bytes) and the main layer is format 1 (16-bit, 4-bit alpha in the
+top nibble; the order of the three low nibbles is not established).
 
-Three things that are not obvious and cost time:
-
-- **Call this from key context.** It works from a key handler, which is where
-  the camera's own function keys run. Called from an AutoRun at boot it returns
-  nothing, because the display is not up yet.
-- **The layer rotates three buffers.** Only the UI decides which is live, so
-  remember every base you are handed and paint all of them. Painting one makes
-  the overlay flicker or vanish as the UI presents another.
-- **Repaint.** The UI paints over whatever it finds, so a resident thread that
-  redraws every 150 ms is what makes graphics stay up. Take the display lock
-  only to learn the buffers, not on every paint.
-
-## The palette
-
-The camera will dump it for you, from an AutoRun or the shell:
+### Getting a layer
 
 ```
-display monitor 0 1
-display palette 2 1 \PAL.BIN        sel: main 1, sub 2, both 3 -- isRgb: yuv 0, rgb 1
+0xC0698D80          display manager
+[r0+4] -> [+0xC]    resolve(selector): 0 main, 1 sub (monitor 0); 2, 3 for monitor 1
 ```
 
-On the LCD's 8-bit layer that returns **120 bytes, thirty entries, A,R,G,B**:
+This is how the firmware's own FalseColorBarDrawer gets the sub layer
+(`0xC057DA78`). The shell's `display` commands go through their own
+singleton (`0xC03E5698`, then `0xC03E56D8`) which turns `display monitor A B`
+into the same selector; **`display monitor 0 1` selects the sub layer**.
+`0xC03E5698` is not a display lock -- it is a guarded singleton accessor.
 
-| Index | Colour | | Index | Colour |
-|---|---|---|---|---|
-| 0 | transparent | | 5 | `1D7FEC` blue |
-| 1 | `FF0000` red | | 6 | black, alpha `BB` |
-| 2 | black | | 7 | `440000` dark red |
-| 3 | `4DD67F` green | | 8-15 | empty |
-| 4 | `95AC96` grey | | 16-29 | teal to pale grey, rising alpha |
+The drawable's vtable:
 
-**Only 0 to 29 exist.** Anything above that reads past the table into whatever
-memory follows, which is why a chart of all 256 indices comes out mostly
-transparent with scattered colour, and why index `0xB2` draws red. Those
-colours are not yours and should not be relied on.
+| slot | |
+|---|---|
+| `+0x0C` | front descriptor |
+| `+0x10` | back descriptor |
+| `+0x14` | rotate the three buffers (takes the layer's mutex); **not** a present |
+| `+0x18` | `setPalette(&{entries, count, generation})`: copies `count*4` bytes, points all three descriptors at the copy |
+| `+0x1C` | restore the default palette |
+| `+0x20` | fill the back buffer with a raw pixel value |
+| `+0x28` | byte stride (`r1 = 0` for the full width) |
 
-The camera also loads a palette, which is the way to get colours it does not
-already have:
+The shell's `display osd` draws, rotates, then submits the same descriptor
+with `0xC02E8A08(controller, descriptor, sub)`. Nothing holds a lock across
+acquire/draw/rotate, so a resident thread that draws is racing the UI; what
+works (measured, photographed) is remembering every back buffer you are handed
+and repainting all of them every 150 ms.
+
+Measured: asking for the buffer from an AutoRun at boot returns nothing; from
+a key handler it works.
+
+## The palette is A, Y, U, V
+
+Palette entries are four bytes: **alpha, Y, signed U, signed V**. Not RGB.
+The shell's own converter (`0xC03E4C38`) prints them as `a, y, u, v` and, when
+asked for RGB, computes `R = Y + 1.402 V`, `G = Y - 0.344136 U - 0.714136 V`,
+`B = Y + 1.772 U`.
+
+Two traps that cost a card each:
+
+- **`display palette <sel> <isRgb> <file>` writes the raw bytes whatever
+  `isRgb` says.** The flag only changes the printed text. A file dumped that
+  way is AYUV, and reading it as ARGB gives colours that do not exist.
+- **`display osdPalette <sel> <file>` keeps the layer's current entry count.**
+  It swaps the entries pointer and passes the old count to `setPalette`, so a
+  256-entry file loaded over the stock 30-entry palette still has 30 entries.
+  Indices 30 and up stay undefined, which is why a scale drawn with them showed
+  nothing. Call the drawable's `+0x18` yourself with the count you mean.
+
+The stock UI palette on the sub layer has 30 entries (measured, 2026-09-20).
+Index 0 is transparent. Anything above the count reads past the table, which
+is what a 256-cell chart photographed: scattered colours from whatever memory
+follows. Do not rely on them.
+
+## The firmware's own EL Zone scale
+
+`FalseColorBarDrawer` (`0xC057DB98`) draws the scale from tables in MAIN:
 
 ```
-display osdPalette 1 \FPLAB.PAL
+0xC0D1B74C   15 x {u16 x0, u16 x1 inclusive, u32 palette index}   the bands
+0xC0D1B34C   256 x {a, y, u, v}                                   its palette
 ```
 
-The file is the same layout, A,R,G,B per entry. Keep entries 0 to 29 identical
-to the dump and nothing the camera's own UI draws changes colour.
+It installs the palette through the sub layer's `+0x18` with `{table, 256, 0}`
+and memsets row 464, then copies that row down to row 582. The labels are
+scene `B5_9`'s `ElZoneScale` (object 33212): sign glyphs 22x25, numerals
+18x25 and a 44x25 half glyph, XCI images in MAIN. `tools/build_fcscale_autorun.py`
+reads all of it out of the verified image and `src/fcscale.S` redraws it;
+`tools/verify_fcscale.py` runs the result in an emulator and renders it
+through that palette to `builds/fcscale/scale.png`.
 
 ## Capturing the screen
 
@@ -77,9 +102,7 @@ display capture \OSD.XCI 1 0        sel: main 1, sub 2, both 3 -- compress: none
 ```
 
 Header is `XC\0\0`, then payload size, width, height, a format byte and a depth
-byte, then the pixels. The LCD gives two files: a 16-bit main layer and the
-8-bit sub layer, `1024 * 682` bytes, which is the one you draw into. Useful for
-reading back exactly what your code put on screen without photographing it.
+byte, then the pixels: the main layer 16-bit, the sub layer one byte per pixel.
 
 ## Bounds
 
@@ -87,11 +110,3 @@ Check `x + w` against the stride and `y + h` against the height before every
 write, in the fill routine rather than in its callers. A chart drawn from a
 fixed origin with no check froze the camera outright: if the buffer is smaller
 or strided differently than you assumed, you write straight past the end of it.
-
-## Where this is used here
-
-`src/fcscale.S` is a complete, self-contained example: it takes the buffers
-from a key handler, runs a 150 ms repaint thread, carries a 5x7 font, and draws
-a stop scale across the bottom of live view. It is built into a single AutoRun
-by `tools/build_fcscale_autorun.py`, with no menu, no key hook of its own and
-nothing else resident.

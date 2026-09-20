@@ -2,10 +2,10 @@
 .arm
 .text
 /* False Color / EL Zone as a toggle on the button you already mapped, with the
- * stop scale drawn across the bottom of live view.
+ * camera's own EL Zone scale drawn across the bottom of live view.
  *
  * Self-contained: no menu, no key hook, no panel, nothing bound to RIGHT or UP.
- * The only buttons involved are the one the camera's own Custom Button
+ * The only button involved is the one the camera's own Custom Button
  * Functions menu already points at False Color.
  *
  *   press 1   mode on, and it stays on
@@ -13,27 +13,45 @@
  *   press 3   both off
  *
  * The camera calls CameraIF vtable +0xCC on press and +0xD0 on release; both
- * are replaced outright (see docs/research/false-colour-el-zone.md). The press
- * handler also takes the display lock once to learn the OSD buffers, because it
- * runs in key context where that is safe, and a drawing thread repaints every
- * 150 ms because the UI rotates three buffers and paints over whatever it
- * finds.
+ * are replaced outright (see docs/research/false-colour-el-zone.md).
+ *
+ * The scale is the firmware's own. Its band table (0xC0D1B74C: fifteen
+ * x-ranges, each with a palette index), its 256-entry palette (0xC0D1B34C)
+ * and its label glyphs are read out of the verified MAIN image by the card
+ * builder, which writes them into fcscale_native.inc.S. Nothing about the
+ * colours is invented here.
+ *
+ * The drawing surface is the LCD's indexed sub layer: one byte per pixel,
+ * descriptor format 3, resolved through the display manager exactly as the
+ * firmware's own FalseColorBarDrawer does (0xC057DA78). The palette is
+ * installed through the drawable's own setter (vtable +0x18) when the scale
+ * is switched on and restored (+0x1C) when the mode goes off. A palette file
+ * loaded with `display osdPalette` cannot do this: that command keeps the
+ * layer's existing entry count, so entries above the stock thirty never
+ * exist -- which is why an earlier build drew nothing.
+ *
+ * The layer rotates three buffers and the UI paints over whatever it finds,
+ * so the press handler learns the buffers once (it runs in key context, the
+ * same context the camera's own function key runs in) and a drawing thread
+ * repaints every 150 ms into every buffer it has seen.
  *
  * State block at STATE:
  *   +0x00 0 off, 1 on, 2 on with the scale   +0x20 stride
  *   +0x04 presses                            +0x24 height
  *   +0x08 releases swallowed                 +0x28..+0x30 the three OSD buffers
- *   +0x0C the scale flag                     +0x34 thread create result
+ *   +0x0C the scale flag                     +0x34 thread attach result
  *   +0x10 buffer-discovery attempts          +0x38 passes
  *   +0x14 scale drawn on the last pass       +0x3C current buffer, while drawing
- *   +0x18 spawn result                       +0x40 current colour
+ *   +0x18 thread create result               +0x40 current colour
+ *   +0x44 our palette is installed           +0x48 palette setter result
+ *   +0x50..+0x58 the palette descriptor {entries, count, generation}
  *   +0x80.. the thread object and its body object
  */
 .equ MEMSET,     0xC0015058
 .equ POST,       0xC03A0798
-.equ POOL_PTR,   0xC3757A7C
-.equ DRAW_LOCK,  0xC03E5698
-.equ DRAW_OBJ,   0xC03E56D8
+.equ DRAW_MGR,   0xC0698D80         /* display manager; [r0+4]+0xC resolves a layer */
+.equ SUB_LAYER,  1                  /* selector: LCD sub layer, the indexed one */
+.equ FMT_INDEX8, 3                  /* descriptor format: one byte per pixel */
 .equ UI_STATE,   0xC3033A44         /* 2 live view, 4 playback, 5 camera menu */
 .equ UI_LIVEVIEW, 2
 .equ CACHE_FN,   0xC000E91C
@@ -43,49 +61,21 @@
 .equ PERIOD_MS,  150
 .equ PRIORITY,   20
 .equ STACK,      0x2000
-.equ FETCH_MAX,  8                  /* the display lock is taken at most this
-                                     * often, and never again once all three
-                                     * buffers are known */
-.equ INK,        0xB2               /* what the firmware's own glyphs read as */
-.equ FONT_W,     5
-.equ FONT_H,     7
-.equ CELL_W,     12                 /* (FONT_W + 1) * 2: the font is drawn 2x */
-/* Thirteen whole stops. 44 + 12 * 78 = 980, so the last label ends at 1004 on
- * a 1024-wide surface. The cleared strip is a cell wider at each end because
- * the labels are centred on their ticks. */
-.equ LEG_X,      44
-.equ LEG_STEP,   78
-.equ LEG_W,      960
-.equ LEG_CLR_X,  (LEG_X - CELL_W)
-.equ LEG_CLR_W,  (LEG_W + CELL_W * 2)
-.equ LEG_TICK,   10
-.equ LEG_H,      29
-.equ LEG_UP,     40                 /* the strip's top, above the bottom edge */
-/* Palette indices.
- *
- * 0..29 are the camera's own, dumped with `display palette 2 1 <path>` on
- * 2026-09-20: A,R,G,B, and that is all the layer defines. Anything above 29
- * reads past the table, which is why a 256-cell chart showed scattered colour
- * and why 0xB2 came out red -- those colours are whatever memory follows, not
- * ours to rely on.
- *
- * So the card carries its own palette file and loads it at boot with
- * `display osdPalette 1 \FPLAB.PAL`. Entries 0..29 in that file are copied
- * from the camera's own, so nothing the UI draws changes colour; 30 upwards
- * are ours. STOP_BASE..STOP_BASE+12 are the thirteen stops, deep blue under,
- * grey at middle, through yellow to red over. */
-.equ STOCK_RED,  1
-.equ STOCK_GREY, 4
-.equ STOP_BASE,  30
-.equ C_WHITE,    43
-.equ C_BLACK,    44
-.equ C_BACK,     45             /* black at 75% alpha, our own */
-.equ C_GREY,     46
-.equ LEG_MIN_W,  1024
+.equ FETCH_MAX,  8                  /* the layer is asked for its buffer at most
+                                     * this often, and never again once all
+                                     * three buffers are known */
+/* Where the firmware draws its own scale, in sub-layer pixels: the bar is
+ * memset row 464 and copied down to row 582 (0xC057DC94, 0xC057DD1C); the
+ * labels sit in the 25-row band above it. */
+.equ SCALE_W,    1024
+.equ BAR_Y,      464
+.equ BAR_H,      119
+.equ LABEL_Y,    430
+.equ CLEAR_Y,    LABEL_Y
+.equ CLEAR_H,    (BAR_Y + BAR_H - LABEL_Y)
+.equ C_CLEAR,    0                  /* index 0 is transparent in both palettes */
 
-#ifndef SWATCH
-#define SWATCH 0                   /* --swatch: the palette chart instead */
-#endif
+#include "fcscale_native.inc.S"
 
 .macro LDA reg, val
     movw \reg, #:lower16:\val
@@ -107,6 +97,7 @@
 .global fc_press
 fc_press:
     push    {r4, r5, lr}
+    sub     sp, sp, #4              @ three registers: keep sp 8-aligned
     mov     r4, r0
     LDA     r5, STATE
     bl      learn_surface           @ clobbers r0-r3, keeps r4 and r5
@@ -119,16 +110,24 @@ fc_press:
     moveq   r0, #0
     str     r0, [r5]
     cmp     r0, #2                  @ the scale step: the mode is already on
-    moveq   r1, #1
-    streq   r1, [r5, #0xC]
-    popeq   {r4, r5, pc}
-    mov     r1, #0
+    bne     1f
+    mov     r1, #1
+    str     r1, [r5, #0xC]
+    mov     r0, #1
+    bl      fc_palette
+    add     sp, sp, #4
+    pop     {r4, r5, pc}
+1:  mov     r1, #0
     str     r1, [r5, #0xC]
     cmp     r0, #0
+    bne     2f
+    bl      fc_palette              @ r0 = 0: give the layer its palette back
     mov     r1, #0x22               @ off
-    movne   r1, #0x21               @ on
-    mov     r0, r4
+    b       3f
+2:  mov     r1, #0x21               @ on
+3:  mov     r0, r4
     bl      fc_post
+    add     sp, sp, #4
     pop     {r4, r5, pc}
 
 /* Replaces 0xC0372330, the release: swallowed, so letting go does not cancel.
@@ -142,21 +141,6 @@ fc_release:
     str     r0, [r1, #8]
     mov     r0, #1
     bx      lr
-
-/* Draw one pass on demand, from a shell command rather than a key press.
- * The AutoRun borrows the echo handler to call this, so a capture taken a
- * moment later has the chart on screen. Takes no arguments and returns 0.
- */
-.global fc_probe
-fc_probe:
-    push    {r4, r5, lr}
-    sub     sp, sp, #4
-    LDA     r5, STATE
-    bl      learn_surface
-    bl      fc_pass
-    mov     r0, #0
-    add     sp, sp, #4
-    pop     {r4, r5, pc}
 
 /* r0 = the CameraIF object, r1 = event id. The stock method body, reproduced,
  * so nothing calls back into a patched method. */
@@ -182,11 +166,67 @@ fc_post:
 
 /* ------------------------------------------------------------- the surfaces */
 
-/* Learn the OSD buffers. Runs from the press handler, which is key context --
- * the same context the camera's own function key runs in, and the only place
- * the display lock is safe to take. The layer rotates three buffers and only
- * the UI decides which is live, so every one seen is remembered and all of
- * them are painted.
+/* The sub layer's drawable, the way the firmware's own bar drawer gets it:
+ * display manager, then its interface's slot +0xC with the layer selector.
+ * Returns 0 if the manager is not up. */
+sub_drawable:
+    push    {r4, lr}
+    LDA     ip, DRAW_MGR
+    blx     ip
+    cmp     r0, #0
+    beq     9f
+    ldr     r1, [r0, #4]
+    ldr     r3, [r1, #0xC]
+    mov     r1, #SUB_LAYER
+    blx     r3
+9:  pop     {r4, pc}
+
+/* fc_palette(r0): 1 installs the firmware's 256-entry scale palette on the
+ * sub layer through the drawable's own setter, 0 restores the layer's
+ * default through its own restore. Both take the layer's mutex themselves.
+ * Restoring when nothing was installed does nothing. */
+fc_palette:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    LDA     r6, STATE
+    bl      sub_drawable
+    cmp     r0, #0
+    beq     9f
+    mov     r5, r0
+    ldr     r3, [r5]
+    cmp     r4, #0
+    beq     1f
+    LDA     r1, NATIVE_PAL
+    str     r1, [r6, #0x50]
+    mov     r1, #NATIVE_PAL_N
+    str     r1, [r6, #0x54]
+    mov     r1, #0
+    str     r1, [r6, #0x58]
+    add     r1, r6, #0x50
+    ldr     r3, [r3, #0x18]         @ setPalette(drawable, &descriptor)
+    mov     r0, r5
+    blx     r3
+    str     r0, [r6, #0x48]
+    mov     r0, #1
+    str     r0, [r6, #0x44]
+    b       9f
+1:  ldr     r0, [r6, #0x44]
+    cmp     r0, #0
+    beq     9f
+    ldr     r3, [r3, #0x1C]         @ restoreDefaultPalette(drawable)
+    mov     r0, r5
+    blx     r3
+    mov     r0, #0
+    str     r0, [r6, #0x44]
+9:  pop     {r4, r5, r6, pc}
+
+/* Learn the sub layer's buffers. Runs from the press handler, which is key
+ * context -- the same context the camera's own function key runs in. The
+ * layer rotates three buffers and only the UI decides which is live, so every
+ * one seen is remembered and all of them are painted.
+ *
+ * Refuses a descriptor that is not one byte per pixel: every pixel write
+ * here is a byte, and on a 16-bit layer that would be garbage.
  *
  * Bounded twice: nothing happens once the third buffer is known, and never
  * more than FETCH_MAX attempts in case this body only ever presents one.
@@ -202,10 +242,7 @@ learn_surface:
     bhs     9f
     add     r0, r0, #1
     str     r0, [r5, #0x10]
-    LDA     r0, DRAW_LOCK
-    blx     r0
-    LDA     r1, DRAW_OBJ
-    blx     r1
+    bl      sub_drawable
     cmp     r0, #0
     beq     9f
     mov     r7, r0
@@ -215,11 +252,16 @@ learn_surface:
     blx     r1
     cmp     r0, #0
     beq     9f
+    ldr     r1, [r0]
+    cmp     r1, #FMT_INDEX8
+    bne     9f
     ldr     r2, [r0, #4]            @ the buffer's base
+    cmp     r2, #0
+    beq     9f
     ldr     r1, [r0, #8]
     cmp     r1, #0
     beq     9f
-    ldr     r6, [r1]                @ width, which is also the stride
+    ldr     r6, [r1]                @ width, which is also the byte stride
     str     r6, [r5, #0x20]
     ldr     r6, [r1, #4]
     str     r6, [r5, #0x24]
@@ -269,9 +311,9 @@ fc_body:
     blx     ip
     b       1b
 
-/* One repaint. Draws into every buffer it has seen, and takes the strip down
- * again on the first pass after the scale is switched off or live view is
- * left, so nothing of ours is ever left on a screen that is not ours. */
+/* One repaint. Draws into every buffer it has seen, and takes the scale down
+ * again on the first pass after it is switched off or live view is left, so
+ * nothing of ours is ever left on a screen that is not ours. */
 fc_pass:
     push    {r4, r5, r6, lr}
     LDA     r4, STATE
@@ -292,11 +334,7 @@ fc_pass:
     cmp     r0, #0
     beq     2f
     mov     r1, r5
-#if SWATCH
-    bl      draw_swatches
-#else
-    bl      draw_legend
-#endif
+    bl      draw_scale
 2:  add     r6, r6, #4
     cmp     r6, #0x30
     bls     1b
@@ -305,136 +343,65 @@ fc_pass:
     blx     ip
 9:  pop     {r4, r5, r6, pc}
 
-#if SWATCH
-/* The palette chart, in place of the scale: 256 cells, index 0 at the top
- * left, running left to right then down, sixty-four to a row, four rows.
- *
- * The OSD is one byte per pixel into a palette we do not have, which is why
- * the scale came out all one colour: 0xB2 is simply the index the firmware's
- * own glyphs use. Photographing this chart is what turns the palette into
- * something we can pick colours out of.
- *
- * It is anchored to the bottom of whatever surface we were handed and refuses
- * one it does not fit on, exactly like the scale. An earlier version painted
- * 960x480 from a fixed origin with no check at all and froze the camera: if
- * the buffer is smaller or its stride differs, that writes straight past the
- * end of it.
- */
-.equ SW_X,       32
-.equ SW_CELL_W,  15
-.equ SW_CELL_H,  20
-.equ SW_COLS,    64
-.equ SW_ROWS,    4
-.equ SW_W,       (SW_CELL_W * SW_COLS)      /* 960 */
-.equ SW_H,       (SW_CELL_H * SW_ROWS)      /* 80 */
-.equ SW_UP,      (SW_H + 40)                /* clear of the very bottom edge */
-
-draw_swatches:
-    push    {r4, r5, r6, r7, r8, r9, lr}
-    sub     sp, sp, #4                      @ seven registers: keep sp aligned
-    mov     r8, r1                          @ wanted
-    LDA     r7, STATE
-    str     r0, [r7, #0x3C]                 @ the buffer fill_rect paints into
-    ldr     r0, [r7, #0x20]                 @ stride
-    cmp     r0, #(SW_X + SW_W)
-    blo     9f
-    ldr     r9, [r7, #0x24]                 @ height
-    cmp     r9, #SW_UP
-    blo     9f
-    sub     r9, r9, #SW_UP                  @ the chart's top edge
-
-    mov     r0, #0                          @ clear it either way
-    str     r0, [r7, #0x40]
-    mov     r0, #SW_X
-    mov     r1, r9
-    movw    r2, #SW_W
-    mov     r3, #SW_H
-    bl      fill_rect
-    cmp     r8, #0
-    beq     9f
-
-    mov     r4, #0                          @ index
-1:  and     r5, r4, #(SW_COLS - 1)          @ column
-    lsr     r6, r4, #6                      @ row
-    str     r4, [r7, #0x40]                 @ each cell is its own index
-    mov     r0, #SW_CELL_W
-    mul     r0, r5, r0
-    add     r0, r0, #SW_X
-    mov     r1, #SW_CELL_H
-    mla     r1, r6, r1, r9
-    mov     r2, #(SW_CELL_W - 1)
-    mov     r3, #(SW_CELL_H - 2)
-    bl      fill_rect
-    add     r4, r4, #1
-    cmp     r4, #256
-    blo     1b
-9:  add     sp, sp, #4
-    pop     {r4, r5, r6, r7, r8, r9, pc}
-#endif
-
-/* draw_legend(base, wanted): clear our strip, then draw it if wanted. */
-draw_legend:
+/* draw_scale(base, wanted): clear the scale's rows, then draw it if wanted.
+ * Refuses a surface the firmware's own geometry does not fit on. */
+draw_scale:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
     LDA     r10, STATE
     str     r0, [r10, #0x3C]
     mov     r9, r1
     ldr     r7, [r10, #0x20]        @ stride
-    ldr     r8, [r10, #0x24]        @ height
-    movw    r0, #LEG_MIN_W
+    movw    r0, #SCALE_W
     cmp     r7, r0
-    blo     9f                      @ narrower than the scale: leave it alone
-    cmp     r8, #(LEG_UP + LEG_H)
     blo     9f
-    sub     r6, r8, #LEG_UP
+    ldr     r8, [r10, #0x24]        @ height
+    movw    r0, #(CLEAR_Y + CLEAR_H)
+    cmp     r8, r0
+    blo     9f
 
-    mov     r0, #0                  @ clear, transparent
+    mov     r0, #C_CLEAR
     str     r0, [r10, #0x40]
-
-    mov     r0, #LEG_CLR_X
-    mov     r1, r6
-    movw    r2, #LEG_CLR_W
-    mov     r3, #LEG_H
+    mov     r0, #0
+    movw    r1, #CLEAR_Y
+    movw    r2, #SCALE_W
+    mov     r3, #CLEAR_H
     bl      fill_rect
     cmp     r9, #0
     beq     9f
 
-    mov     r0, #C_BACK             @ a backdrop, so the numbers read over a
-    str     r0, [r10, #0x40]        @ bright scene as well as a dark one
-    mov     r0, #LEG_CLR_X
-    mov     r1, r6
-    movw    r2, #LEG_CLR_W
-    mov     r3, #LEG_H
+    PTR     r4, bands               @ {u16 x0, u16 x1, u8 index}, as the firmware's
+    mov     r5, #BAND_N
+1:  ldrh    r0, [r4]
+    ldrh    r1, [r4, #2]
+    ldrb    r2, [r4, #4]
+    str     r2, [r10, #0x40]
+    sub     r2, r1, r0
+    add     r2, r2, #1              @ x1 is inclusive
+    movw    r1, #BAR_Y
+    mov     r3, #BAR_H
     bl      fill_rect
+    add     r4, r4, #8
+    subs    r5, r5, #1
+    bne     1b
 
-    mov     r0, #C_GREY             @ the line the ticks stand on
+    mov     r0, #C_LABEL
     str     r0, [r10, #0x40]
-    mov     r0, #LEG_X
-    add     r1, r6, #LEG_TICK
-    movw    r2, #LEG_W
-    mov     r3, #1
-    bl      fill_rect
-
-    mov     r4, #0
-1:  PTR     r0, legend_colours      @ blue below, green at zero, red above
-    ldrb    r0, [r0, r4]
-    str     r0, [r10, #0x40]
-    mov     r0, #LEG_STEP
-    mul     r5, r4, r0
-    add     r5, r5, #LEG_X
-    mov     r0, r5
-    mov     r1, r6
-    mov     r2, #1
-    mov     r3, #LEG_TICK
-    bl      fill_rect
-    PTR     r2, legend_labels       @ four-byte slots, two characters each
-    mov     r0, #4
-    mla     r2, r4, r0, r2
-    sub     r0, r5, #CELL_W         @ centred on the tick
-    add     r1, r6, #(LEG_TICK + 3)
-    bl      draw_str
-    add     r4, r4, #1
-    cmp     r4, #13
-    blo     1b
+    PTR     r4, labels              @ {u16 x, u8 glyph, u8 glyph or 0xFF}
+    mov     r5, #LABEL_N
+2:  ldrh    r0, [r4]
+    movw    r1, #LABEL_Y
+    ldrb    r2, [r4, #2]
+    bl      draw_glyph
+    ldrb    r2, [r4, #3]
+    cmp     r2, #0xFF
+    beq     3f
+    ldrh    r0, [r4]
+    add     r0, r0, #GLYPH_SIGN_W   @ the second glyph follows the sign
+    movw    r1, #LABEL_Y
+    bl      draw_glyph
+3:  add     r4, r4, #4
+    subs    r5, r5, #1
+    bne     2b
 9:  pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 /* fill_rect(x, y, w, h) in the current colour.
@@ -481,89 +448,59 @@ fill_rect:
     bne     1b
 9:  pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
-/* draw_str(x, y, asciz) in the current colour. */
-draw_str:
-    push    {r4, r5, r6, lr}
-    mov     r4, r0
-    mov     r5, r1
-    mov     r6, r2
-1:  ldrb    r2, [r6], #1
-    cmp     r2, #0
-    beq     9f
-    mov     r0, r4
-    mov     r1, r5
-    bl      draw_char
-    add     r4, r4, #CELL_W
-    b       1b
-9:  pop     {r4, r5, r6, pc}
-
-/* draw_char(x, y, character): the font at double size, one 2x2 block per dot. */
-draw_char:
+/* draw_glyph(x, y, glyph): one of the firmware's own label glyphs, in the
+ * current colour. Each glyph is GLYPH_H rows of whole words, bit 0 the
+ * leftmost pixel; set bits are drawn, clear bits leave the bar showing.
+ * Refuses a glyph that would leave the buffer. */
+draw_glyph:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
     LDA     r10, STATE
-    ldr     r6, [r10, #0x3C]
-    ldr     r7, [r10, #0x20]
-    ldr     r8, [r10, #0x40]
-    sub     r2, r2, #FONT_FIRST
-    cmp     r2, #(FONT_LAST - FONT_FIRST)
-    bhi     9f
-    PTR     r3, font5x7
+    ldr     r6, [r10, #0x3C]        @ base
+    ldr     r7, [r10, #0x20]        @ stride
+    ldr     r8, [r10, #0x24]        @ height
+    cmp     r6, #0
+    beq     9f
+    cmp     r2, #GLYPH_N
+    bhs     9f
+    PTR     r3, glyph_hdr           @ {u16 offset in words, u8 width, u8 words per row}
     add     r3, r3, r2, lsl #2
-    add     r3, r3, r2              @ five bytes per glyph
-    mov     r4, #0
-1:  ldrb    r5, [r3, r4]
-    mov     r9, #0
-2:  mov     lr, #1
-    lsl     lr, lr, r9
-    tst     r5, lr
-    beq     3f
-    add     lr, r1, r9, lsl #1
-    mla     ip, lr, r7, r6
-    add     ip, ip, r0
-    add     ip, ip, r4, lsl #1
-    strb    r8, [ip]
-    strb    r8, [ip, #1]
-    add     ip, ip, r7
-    strb    r8, [ip]
-    strb    r8, [ip, #1]
-3:  add     r9, r9, #1
-    cmp     r9, #FONT_H
-    blo     2b
-    add     r4, r4, #1
-    cmp     r4, #FONT_W
-    blo     1b
+    ldrh    r4, [r3]
+    ldrb    r5, [r3, #2]
+    ldrb    r9, [r3, #3]
+    add     ip, r0, r5
+    cmp     ip, r7
+    bhi     9f
+    add     ip, r1, #GLYPH_H
+    cmp     ip, r8
+    bhi     9f
+    PTR     r3, glyph_bits
+    add     r3, r3, r4, lsl #2
+    ldr     r8, [r10, #0x40]        @ colour
+    mla     r6, r1, r7, r6
+    add     r6, r6, r0              @ the glyph's top-left pixel
+    mov     r4, #GLYPH_H
+1:  mov     ip, r6
+    mov     lr, r5                  @ pixels left in this row
+    mov     r0, r9                  @ words left in this row
+2:  ldr     r1, [r3], #4
+    mov     r2, #32
+3:  cmp     lr, #0
+    beq     4f                      @ row complete; still consume its words
+    tst     r1, #1
+    strbne  r8, [ip]
+    lsr     r1, r1, #1
+    add     ip, ip, #1
+    sub     lr, lr, #1
+    subs    r2, r2, #1
+    bne     3b
+4:  subs    r0, r0, #1
+    bne     2b
+    add     r6, r6, r7
+    subs    r4, r4, #1
+    bne     1b
 9:  pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 .balign 4
 thread_name:
     .asciz "fpFCsc"
     .balign 4
-/* One palette index per stop: blue below middle grey, green at it, red above.
- * Dumped from the camera on 2026-09-20 with `display palette 2 1 <path>`: the
- * layer carries THIRTY entries, A,R,G,B, and nothing above 29 is defined --
- * which is why an index like 0xB2 came out red and most of a 256-cell chart
- * was invisible. There is no yellow, orange or purple to be had, so this is
- * not EL Zone's own ramp; it is the closest the layer can draw. */
-legend_colours:
-    .byte STOP_BASE +  0, STOP_BASE +  1, STOP_BASE +  2, STOP_BASE +  3
-    .byte STOP_BASE +  4, STOP_BASE +  5, STOP_BASE +  6, STOP_BASE +  7
-    .byte STOP_BASE +  8, STOP_BASE +  9, STOP_BASE + 10, STOP_BASE + 11
-    .byte STOP_BASE + 12
-    .balign 4
-
-legend_labels:
-    .asciz "-6"; .space 1
-    .asciz "-5"; .space 1
-    .asciz "-4"; .space 1
-    .asciz "-3"; .space 1
-    .asciz "-2"; .space 1
-    .asciz "-1"; .space 1
-    .asciz " 0"; .space 1
-    .asciz "+1"; .space 1
-    .asciz "+2"; .space 1
-    .asciz "+3"; .space 1
-    .asciz "+4"; .space 1
-    .asciz "+5"; .space 1
-    .asciz "+6"; .space 1
-    .balign 4
-#include "font5x7.inc.S"
