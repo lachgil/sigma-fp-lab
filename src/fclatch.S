@@ -32,27 +32,81 @@
  */
 .equ MEMSET, 0xC0015058
 .equ POST,   0xC03A0798
+.equ POOL_PTR, 0xC3757A7C          /* the loader's DMA pool base, at runtime */
+#ifndef PANEL_KICK_OFF
+#define PANEL_KICK_OFF 0           /* no drawing payload on this card */
+#endif
 
 .macro LDA reg, val
     movw \reg, #:lower16:\val
     movt \reg, #:upper16:\val
 .endm
-
-/* Replaces 0xC03722E8. r0 = the CameraIF object. */
+/* Replaces 0xC03722E8. r0 = the CameraIF object.
+ *
+ * With LEGEND, one button walks three states instead of two, because there is
+ * only one button and the scale is worth having on the same one:
+ *
+ *   off -> on (post 0x21) -> on with the scale drawn -> off (post 0x22)
+ *
+ * The middle step posts nothing: the mode is already running, only our own
+ * legend flag changes. Without LEGEND it is a plain on/off toggle and +0x0C is
+ * never written.
+ */
 .global fc_press
 fc_press:
     push    {r4, r5, lr}
     mov     r4, r0
     LDA     r5, STATE
+#if PANEL_KICK_OFF
+    /* Hand the drawing thread a surface.
+     *
+     * It cannot ask for one itself: the display lock is taken from key
+     * context, which is where this hook runs, exactly like the menu's own key
+     * path. Without this the scale can only appear after a press of the card's
+     * own RIGHT or UP, because that was the only thing that ever learned the
+     * buffers -- the camera's function key goes through its own dispatcher and
+     * never reaches our key hook.
+     *
+     * The routine is the menu's, in the pool, and it is bounded by its own
+     * counters: once the three buffer bases are known it stops calling the
+     * firmware at all.
+     */
+    LDA     r0, POOL_PTR
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     1f
+    movw    r1, #:lower16:PANEL_KICK_OFF
+    movt    r1, #:upper16:PANEL_KICK_OFF
+    add     r0, r0, r1
+    blx     r0
+1:
+#endif
     ldr     r1, [r5, #4]
     add     r1, r1, #1
     str     r1, [r5, #4]
+#if LEGEND
+    ldr     r0, [r5]                   @ 0 off, 1 on, 2 on with the scale
+    add     r0, r0, #1
+    cmp     r0, #3
+    moveq   r0, #0
+    str     r0, [r5]
+    cmp     r0, #2                     @ the scale step: nothing to post
+    moveq   r1, #1
+    streq   r1, [r5, #0xC]
+    popeq   {r4, r5, pc}
+    mov     r1, #0
+    str     r1, [r5, #0xC]             @ leaving the scale step clears it
+    cmp     r0, #0
+    mov     r1, #0x22                  @ off
+    movne   r1, #0x21                  @ on
+#else
     ldr     r0, [r5]
     eor     r0, r0, #1                 @ our latch, since the camera keeps none
     str     r0, [r5]
     cmp     r0, #0
     mov     r1, #0x22                  @ off
     movne   r1, #0x21                  @ on
+#endif
     mov     r0, r4
     bl      fc_post
     pop     {r4, r5, pc}
