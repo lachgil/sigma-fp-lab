@@ -42,17 +42,17 @@ CTRL = FAKE + 0x900
 MGR_IF = FAKE                   # [+4] -> MGR_VT
 MGR_VT = FAKE + 0x20            # [+0xC] -> resolve stub
 DRAWABLE = FAKE + 0x40          # [+0] -> DRW_VT
-DRW_VT = FAKE + 0x60            # +0x10 back, +0x14 rotate, +0x18 set palette, +0x1C restore
+DRW_VT = FAKE + 0x60            # +0x0C front, +0x10 back, +0x14 rotate, +0x18/+0x1C palette
 DESC_UI = FAKE + 0xA0           # what the UI submits (main, 16-bit)
-DESC_BACK = FAKE + 0xB0         # what the drawable hands a present
+DESC_FRONT = FAKE + 0xB0        # the layer's front buffer, painted by a press
 DESC_SUB = FAKE + 0xC0          # the indexed sub layer: not ours
 GEOM = FAKE + 0xD0
-STUB_RESOLVE, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE = (FAKE + 0x100 + 8 * i
-                                                                   for i in range(5))
+(STUB_RESOLVE, STUB_FRONT, STUB_BACK, STUB_ROTATE, STUB_SETPAL,
+ STUB_RESTORE) = (FAKE + 0x100 + 8 * i for i in range(6))
 BUF = W * H * BPP
 PIX_UI = FAKE + 0x1000
-PIX_BACK = PIX_UI + 0x200000
-PIX_SUB = PIX_BACK + 0x200000
+PIX_FRONT = PIX_UI + 0x200000
+PIX_SUB = PIX_FRONT + 0x200000
 SCALE_ROWS = set(range(430, 583))
 
 
@@ -78,16 +78,16 @@ class Camera:
         u.mem_write(MGR_IF + 4, struct.pack('<I', MGR_VT))
         u.mem_write(MGR_VT + 0xC, struct.pack('<I', STUB_RESOLVE))
         u.mem_write(DRAWABLE, struct.pack('<I', DRW_VT))
-        u.mem_write(DRW_VT + 0x10, struct.pack('<IIII', STUB_BACK, STUB_ROTATE,
-                                                 STUB_SETPAL, STUB_RESTORE))
+        u.mem_write(DRW_VT + 0x0C, struct.pack('<IIIII', STUB_FRONT, STUB_BACK, STUB_ROTATE,
+                                                  STUB_SETPAL, STUB_RESTORE))
         u.mem_write(DESC_UI, struct.pack('<IIII', 1, PIX_UI, GEOM, 0))
-        u.mem_write(DESC_BACK, struct.pack('<IIII', 1, PIX_BACK, GEOM, 0))
+        u.mem_write(DESC_FRONT, struct.pack('<IIII', 1, PIX_FRONT, GEOM, 0))
         u.mem_write(DESC_SUB, struct.pack('<IIII', 3, PIX_SUB, GEOM, 0))
         u.mem_write(GEOM, struct.pack('<II', W, H))
-        for stub in (STUB_RESOLVE, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE):
+        for stub in (STUB_RESOLVE, STUB_FRONT, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE):
             u.mem_write(stub, struct.pack('<I', 0xE12FFF1E))        # bx lr
         self.events, self.selectors = [], []
-        self.rotates, self.submitted = 0, []
+        self.submitted = []
         self.writes = {}
         u.hook_add(uc.UC_HOOK_CODE, self._code)
         u.hook_add(uc.UC_HOOK_MEM_WRITE, self._write, begin=PIX_UI, end=PIX_SUB + 0x200000)
@@ -116,13 +116,11 @@ class Camera:
         elif address == STUB_RESOLVE:
             self.selectors.append(u.reg_read(ar.UC_ARM_REG_R1))
             self._ret(DRAWABLE)
-        elif address == STUB_BACK:
+        elif address == STUB_FRONT:
             assert r0 == DRAWABLE
-            self._ret(DESC_BACK)
-        elif address == STUB_ROTATE:
-            assert r0 == DRAWABLE
-            self.rotates += 1
-            self._ret()
+            self._ret(DESC_FRONT)
+        elif address in (STUB_BACK, STUB_ROTATE):
+            raise AssertionError('a press must not rotate or take the back buffer')
         elif address in (STUB_SETPAL, STUB_RESTORE):
             raise AssertionError("the layer's palette setters must not be called")
         elif address == 0xC03A0798:                             # POST
@@ -192,27 +190,26 @@ def main() -> None:
         results.append(dict(case=name, passed=bool(passed)))
         print(f"{'PASS' if passed else 'FAIL'}  {name}")
 
-    # Press 1: on. No controller seen yet, so nothing to present.
+    # Press 1: on. Nothing is drawn yet.
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 1 latches the mode on, posts 0x21, presents nothing',
-          cam.state(0) == 1 and cam.events == [0x21] and cam.rotates == 0 and not cam.submitted)
+    check('press 1 latches the mode on, posts 0x21, paints nothing',
+          cam.state(0) == 1 and cam.events == [0x21] and not any(cam.pixels(PIX_FRONT))
+          and not cam.submitted)
 
     # A UI frame: passes through, teaches the hook the controller, paints nothing.
     r = cam.ui_submit()
     check('a hooked submit returns to its caller with the stack intact',
           r == 1 and cam.submitted == [(CTRL, DESC_UI, 0)])
-    check('the hook remembers the controller and paints nothing while only on',
-          cam.state(0x70) == CTRL and not cam.writes and cam.state(0x74) == 1)
+    check('the hook paints nothing while only on', not cam.writes and cam.state(0x74) == 1)
 
-    # Press 2: one frame presented through the hook.
+    # Press 2: the front buffer is painted directly, no submit.
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 2 sets the scale flag and re-asserts FC on (0x21)',
-          cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21, 0x21])
-    check('the press presents the main layer: resolve 0, rotate once, submit with sub = 0',
-          cam.rotates == 1 and cam.submitted[-1] == (CTRL, DESC_BACK, 0)
-          and cam.selectors and all(s == 0 for s in cam.selectors))
-    back = cam.pixels(PIX_BACK)
-    check('the presented buffer carries the scale and the UI buffer is untouched',
+    check('press 2 sets the scale flag without posting an event',
+          cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21])
+    check('the press paints the main layer front buffer: resolve 0, no submit',
+          len(cam.submitted) == 1 and cam.selectors and all(s == 0 for s in cam.selectors))
+    back = cam.pixels(PIX_FRONT)
+    check('the front buffer carries the scale and the UI buffer is untouched',
           any(back) and not any(cam.pixels(PIX_UI)))
 
     # The next UI frame gets the scale too, identically.
@@ -251,9 +248,9 @@ def main() -> None:
     cam.ui_submit()
     check('and not touched again once clear', not cam.writes)
     cam.ui_state(5)
-    cam.ui_submit(DESC_BACK)
+    cam.ui_submit(DESC_FRONT)
     check('the other buffer is cleared when it comes round, in the menu too',
-          not any(cam.pixels(PIX_BACK)))
+          not any(cam.pixels(PIX_FRONT)))
     cam.ui_state(2)
     cam.ui_submit()
     check('back in live view the scale returns', cam.pixels() == pixels)
@@ -267,11 +264,12 @@ def main() -> None:
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 0))
     cam.ui_state(2)
 
-    # Press 3: presents a cleared frame, posts 0x22.
+    # Press 3: the front buffer is cleared directly, 0x22 posted.
+    cam.ui_submit(DESC_FRONT)
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 3 posts 0x22 and presents once more, cleared',
-          cam.state(0) == 0 and cam.events == [0x21, 0x21, 0x22] and cam.rotates == 2
-          and cam.submitted[-1] == (CTRL, DESC_BACK, 0) and not any(cam.pixels(PIX_BACK)))
+    check('press 3 posts 0x22 and clears the front buffer without a submit',
+          cam.state(0) == 0 and cam.events == [0x21, 0x22]
+          and cam.submitted[-1] == (CTRL, DESC_FRONT, 0) and not any(cam.pixels(PIX_FRONT)))
     cam.ui_submit()
     check('the UI buffer is cleared on its next frame', not any(cam.pixels()))
     cam.ui_submit()
@@ -280,10 +278,10 @@ def main() -> None:
           cam.call('fc_release') == 1 and cam.state(8) == 1)
 
     report = dict(cases=results, code_bytes=len(cam.code), events=cam.events,
-                  submits=len(cam.submitted), rotates=cam.rotates,
+                  submits=len(cam.submitted),
                   pixel_order=card.PIXEL_ORDER,
                   faked=['display manager 0xC0698D80 and its layer resolver',
-                         'the drawable: back descriptor, rotate',
+                         'the drawable: front descriptor',
                          'the display submit body after its first instruction',
                          'the event post 0xC03A0798'],
                   real=['the payload', 'firmware memset', 'band table, palette, glyphs',

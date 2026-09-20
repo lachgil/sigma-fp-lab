@@ -34,23 +34,22 @@
  * entered through fc_submit, which paints the scale into the exact buffer
  * being sent to the panel. The layer rotates three buffers; each one is
  * tracked with a drawn flag so a buffer carrying the scale is cleared once
- * when the scale goes away. A press presents one frame itself (back buffer,
- * rotate, submit: the shell's `display osd` sequence) so the change is
- * immediate rather than at the UI's next frame.
+ * when the scale goes away. A press paints the layer's front buffer directly,
+ * the one the panel is scanning, so the change is immediate rather than at
+ * the UI's next frame (see fc_present for why not a submit).
  *
  * State block at STATE:
  *   +0x00 0 off, 1 on, 2 on with the scale   +0x3C buffer being painted
  *   +0x04 presses                            +0x40 current colour
  *   +0x08 releases swallowed                 +0x60..+0x68 drawn flag per buffer
  *   +0x0C the scale flag                     +0x6C paint lock
- *   +0x20 width in pixels, while painting    +0x70 the LCD controller, from the hook
- *   +0x24 height, while painting             +0x74 submits seen
- *   +0x28..+0x30 the layer's three buffers   +0x78 frames painted
- *   +0x7C next slot to evict                 +0x8C bytes per pixel, while painting
+ *   +0x20 width in pixels, while painting    +0x74 submits seen
+ *   +0x24 height, while painting             +0x78 frames painted
+ *   +0x28..+0x30 the layer's three buffers   +0x7C next slot to evict
+ *                                            +0x8C bytes per pixel, while painting
  */
 .equ MEMSET,     0xC0015058
 .equ POST,       0xC03A0798
-.equ SUBMIT,     0xC02E8A08         /* submit(controller, descriptor, sub) */
 .equ DRAW_MGR,   0xC0698D80         /* display manager; [r0+4]+0xC resolves a layer */
 /* Which OSD layer the scale goes on. Main is 16-bit direct colour (format 1,
  * alpha in the top nibble, 0xC052A528); sub is one byte per pixel through a
@@ -108,13 +107,13 @@ fc_press:
     cmp     r0, #3
     moveq   r0, #0
     str     r0, [r5]
-    cmp     r0, #2                  @ the scale step: the mode is already on;
-    bne     1f                      @ 0x21 is posted again so the UI produces
-    mov     r1, #1                  @ a frame for the hook to paint, in case
-    str     r1, [r5, #0xC]          @ our own present is not shown
+    cmp     r0, #2                  @ the scale step: the mode is already on
+    bne     1f
+    mov     r1, #1
+    str     r1, [r5, #0xC]
     bl      fc_present
-    mov     r1, #0x21
-    b       3f
+    add     sp, sp, #4
+    pop     {r4, r5, pc}
 1:  mov     r1, #0
     str     r1, [r5, #0xC]
     cmp     r0, #0
@@ -197,35 +196,42 @@ fc_submit:
     LDA     ip, SUBMIT_RESUME
     bx      ip
 
-/* fc_on_submit(controller, descriptor, sub). Acts only on a one-byte-per-pixel
- * descriptor of the scale's width and at least its height; anything else
- * (the 16-bit main layer, another monitor) is left alone. Remembers the
- * controller so a press can present a frame itself.
+/* fc_on_submit(controller, descriptor, sub): paint the frame on its way out. */
+fc_on_submit:
+    push    {r4, lr}
+    LDA     r4, STATE
+    ldr     r3, [r4, #0x74]
+    add     r3, r3, #1
+    str     r3, [r4, #0x74]
+    mov     r0, r1
+    bl      fc_paint
+    pop     {r4, pc}
+
+/* fc_paint(descriptor). Acts only on a descriptor of PAINT_FMT, of the
+ * scale's width and at least its height; anything else (the other layer,
+ * another monitor) is left alone.
  *
  * Each of the layer's buffers is tracked with a drawn flag: the scale is
  * painted whenever it is wanted, and a buffer that carries it is cleared once
  * when it is not, so nothing of ours stays on a buffer the UI recycles. A
- * word at +0x6C serialises this against fc_present. */
-fc_on_submit:
+ * word at +0x6C serialises the hook against a press. */
+fc_paint:
     push    {r4, r5, r6, r7, r8, lr}
     LDA     r8, STATE
-    ldr     r3, [r8, #0x74]
-    add     r3, r3, #1
-    str     r3, [r8, #0x74]
-    cmp     r1, #0
+    cmp     r0, #0
     beq     9f
-    ldr     r3, [r1]
+    ldr     r3, [r0]
     cmp     r3, #PAINT_FMT
     bne     9f
     mov     r2, #PAINT_BPP
     str     r2, [r8, #0x8C]
-    ldr     r4, [r1, #4]            @ base
+    ldr     r4, [r0, #4]            @ base
     cmp     r4, #0
     beq     9f
-    ldr     r3, [r1, #8]
+    ldr     r3, [r0, #8]
     cmp     r3, #0
     beq     9f
-    ldr     r5, [r3]                @ width, which is the byte stride
+    ldr     r5, [r3]                @ width, in pixels
     ldr     r6, [r3, #4]            @ height
     movw    ip, #SCALE_W
     cmp     r5, ip
@@ -233,7 +239,6 @@ fc_on_submit:
     movw    ip, #(CLEAR_Y + CLEAR_H)
     cmp     r6, ip
     blo     9f
-    str     r0, [r8, #0x70]
 
     ldr     r0, [r8]                @ wanted: state 2, and not in playback or
     cmp     r0, #2                  @ the camera menu. False Color has a UI
@@ -310,38 +315,29 @@ clean_range:
     dsb
     bx      lr
 
-/* Present one frame of the sub layer from a press, so the scale changes at
- * the press and not at the UI's next frame: the layer's back buffer, rotated
- * and submitted, which is the shell's own `display osd` sequence. The submit
- * runs through fc_submit, which does the painting. Needs a controller seen
- * by the hook; before the first UI frame there is nothing to present to. */
+/* fc_present: paint the layer's front buffer, the one the panel is scanning
+ * now, so a press shows or clears the scale immediately instead of at the
+ * UI's next frame. No rotate and no submit: a rotated-and-submitted frame
+ * from the press was not shown once the UI had gone quiet after the mode
+ * change (camera, 2026-09-20; a second press during the UI's own redraw
+ * was), while direct writes into the layer's buffers were seen on the panel
+ * from the first build. The hook keeps repainting whatever the UI submits
+ * afterwards. */
 fc_present:
-    push    {r4, r5, r6, lr}
-    LDA     r6, STATE
-    ldr     r4, [r6, #0x70]
-    cmp     r4, #0
-    beq     9f
+    push    {r4, lr}
     bl      layer_drawable
     cmp     r0, #0
     beq     9f
-    mov     r5, r0
-    ldr     r3, [r5]
-    ldr     r3, [r3, #0x10]         @ back descriptor
-    mov     r0, r5
+    mov     r4, r0
+    ldr     r3, [r4]
+    ldr     r3, [r3, #0x0C]         @ front descriptor
+    mov     r0, r4
     blx     r3
     cmp     r0, #0
     beq     9f
-    mov     r6, r0
-    ldr     r3, [r5]
-    ldr     r3, [r3, #0x14]         @ rotate: it becomes the front
-    mov     r0, r5
-    blx     r3
-    mov     r0, r4
-    mov     r1, r6
-    mov     r2, #PAINT_LAYER        @ the submit's sub flag: 0 main, 1 sub
-    LDA     r3, SUBMIT
-    blx     r3
-9:  pop     {r4, r5, r6, pc}
+    bl      fc_paint
+9:  pop     {r4, pc}
+
 /* draw_scale(base, wanted): clear the scale's rows, then draw it if wanted.
  * Refuses a surface the firmware's own geometry does not fit on. */
 draw_scale:
