@@ -21,9 +21,14 @@
  * builder, which writes them into fcscale_native.inc.S. Nothing about the
  * colours is invented here.
  *
- * The drawing surface is the LCD's indexed sub layer: one byte per pixel,
- * descriptor format 3, resolved through the display manager exactly as the
- * firmware's own FalseColorBarDrawer does (0xC057DA78).
+ * The drawing surface is the LCD's main OSD layer: 16-bit pixels, alpha in
+ * the top nibble, descriptor format 1, resolved through the display manager
+ * the way the firmware's own FalseColorBarDrawer resolves its layer
+ * (0xC057DA78). Colours are direct, so no palette is involved; the builder
+ * converts the firmware's A,Y,U,V scale entries with the firmware's own
+ * matrix (0xC03E4C38) and packs them 4:4:4. Routines take the pixel size
+ * from STATE +0x8C, so the same code draws an indexed layer with PAINT_*
+ * changed.
  *
  * Painting is done inside the firmware's own display submit: 0xC02E8A08 is
  * entered through fc_submit, which paints the scale into the exact buffer
@@ -33,33 +38,28 @@
  * rotate, submit: the shell's `display osd` sequence) so the change is
  * immediate rather than at the UI's next frame.
  *
- * The palette travels with the frame: the submit copies the descriptor's
- * palette pointer (+0xC -> {entries, count, generation}) into the request.
- * While the scale is up the hook points that word at our descriptor for the
- * firmware's 256-entry scale palette and keeps the layer's own pointer per
- * buffer, putting it back on the clearing pass. The layer's palette setters
- * are not used: an install through vtable +0x18 at the press did not hold on
- * the camera (2026-09-20: stock colours), and `display osdPalette` keeps the
- * layer's existing entry count, so the stock thirty never grow.
- *
  * State block at STATE:
  *   +0x00 0 off, 1 on, 2 on with the scale   +0x3C buffer being painted
  *   +0x04 presses                            +0x40 current colour
- *   +0x08 releases swallowed                 +0x50..+0x58 our palette descriptor,
- *   +0x0C the scale flag                            written by the card
- *   +0x20 stride, while painting             +0x60..+0x68 drawn flag per buffer
- *   +0x24 height, while painting             +0x6C paint lock
- *   +0x28..+0x30 the layer's three buffers   +0x70 the LCD controller, from the hook
- *   +0x74 submits seen                       +0x78 frames painted
- *   +0x7C next slot to evict                 +0x80..+0x88 the layer's palette
- *                                                   pointer per buffer
+ *   +0x08 releases swallowed                 +0x60..+0x68 drawn flag per buffer
+ *   +0x0C the scale flag                     +0x6C paint lock
+ *   +0x20 width in pixels, while painting    +0x70 the LCD controller, from the hook
+ *   +0x24 height, while painting             +0x74 submits seen
+ *   +0x28..+0x30 the layer's three buffers   +0x78 frames painted
+ *   +0x7C next slot to evict                 +0x8C bytes per pixel, while painting
  */
 .equ MEMSET,     0xC0015058
 .equ POST,       0xC03A0798
 .equ SUBMIT,     0xC02E8A08         /* submit(controller, descriptor, sub) */
 .equ DRAW_MGR,   0xC0698D80         /* display manager; [r0+4]+0xC resolves a layer */
-.equ SUB_LAYER,  1                  /* selector: LCD sub layer, the indexed one */
-.equ FMT_INDEX8, 3                  /* descriptor format: one byte per pixel */
+/* Which OSD layer the scale goes on. Main is 16-bit direct colour (format 1,
+ * alpha in the top nibble, 0xC052A528); sub is one byte per pixel through a
+ * palette (format 3). Two palette installs on the sub layer did not take on
+ * the camera (2026-09-20: setPalette at the press, then the descriptor's
+ * palette pointer at each submit), so the scale is drawn on main. */
+.equ PAINT_LAYER, 0                 /* manager selector and submit sub flag: 0 main, 1 sub */
+.equ PAINT_FMT,   1                 /* the descriptor format that layer must report */
+.equ PAINT_BPP,   2                 /* bytes per pixel there */
 .equ UI_STATE,   0xC3033A44         /* 2 live view, 4 playback, 5 camera menu */
 .equ UI_LIVEVIEW, 2
 .equ CACHE_FN,   0xC000E91C
@@ -72,7 +72,7 @@
 .equ LABEL_Y,    430
 .equ CLEAR_Y,    LABEL_Y
 .equ CLEAR_H,    (BAR_Y + BAR_H - LABEL_Y)
-.equ C_CLEAR,    0                  /* index 0 is transparent in both palettes */
+.equ C_CLEAR,    0                  /* transparent: index 0, or alpha nibble 0 */
 
 #include "fcscale_native.inc.S"
 
@@ -166,7 +166,7 @@ fc_post:
 /* The sub layer's drawable, the way the firmware's own bar drawer gets it:
  * display manager, then its interface's slot +0xC with the layer selector.
  * Returns 0 if the manager is not up. */
-sub_drawable:
+layer_drawable:
     push    {r4, lr}
     LDA     ip, DRAW_MGR
     blx     ip
@@ -174,7 +174,7 @@ sub_drawable:
     beq     9f
     ldr     r1, [r0, #4]
     ldr     r3, [r1, #0xC]
-    mov     r1, #SUB_LAYER
+    mov     r1, #PAINT_LAYER
     blx     r3
 9:  pop     {r4, pc}
 
@@ -207,8 +207,6 @@ fc_submit:
  * word at +0x6C serialises this against fc_present. */
 fc_on_submit:
     push    {r4, r5, r6, r7, r8, lr}
-    sub     sp, sp, #8              @ [sp] the descriptor; keeps sp 8-aligned
-    str     r1, [sp]
     LDA     r8, STATE
     ldr     r3, [r8, #0x74]
     add     r3, r3, #1
@@ -216,8 +214,10 @@ fc_on_submit:
     cmp     r1, #0
     beq     9f
     ldr     r3, [r1]
-    cmp     r3, #FMT_INDEX8
+    cmp     r3, #PAINT_FMT
     bne     9f
+    mov     r2, #PAINT_BPP
+    str     r2, [r8, #0x8C]
     ldr     r4, [r1, #4]            @ base
     cmp     r4, #0
     beq     9f
@@ -285,37 +285,16 @@ fc_on_submit:
     add     r0, r0, #1
     str     r0, [r8, #0x78]
     movw    r1, #CLEAR_Y            @ the panel reads memory: clean our rows
-    mla     r0, r1, r5, r4          @ out of the data cache, and only ours --
-    mov     r1, #CLEAR_H            @ the firmware's 0xC000E91C cleans every
-    mul     r1, r5, r1              @ set and way of both levels with
-    bl      clean_range             @ interrupts off, too much for every frame
-
-    /* The palette. The submit copies {entries, count, generation} from
-     * descriptor +0xC into the frame request, so this is the word that
-     * decides the frame's colours. While the scale is up it points at our
-     * copy of the firmware's scale palette (STATE +0x50, written by the
-     * card); the layer's own pointer is kept per buffer and put back on the
-     * clearing pass. Nothing goes through the layer's palette setters. */
-    ldr     r0, [sp]                @ the descriptor
-    ldr     r1, [r0, #0xC]
-    add     r2, r8, #0x50
-    cmp     r7, #0
-    beq     5f
-    cmp     r1, r2
-    beq     6f
-    str     r1, [r6, #0x80]         @ the layer's own, to give back
-    str     r2, [r0, #0xC]
-    b       6f
-5:  ldr     r1, [r6, #0x80]
-    cmp     r1, #0
-    beq     6f
-    str     r1, [r0, #0xC]
-    mov     r1, #0
-    str     r1, [r6, #0x80]
+    mul     r1, r5, r1              @ out of the data cache, and only ours --
+    ldr     r2, [r8, #0x8C]         @ the firmware's 0xC000E91C cleans every
+    mla     r0, r1, r2, r4          @ set and way of both levels with
+    mov     r1, #CLEAR_H            @ interrupts off, too much for every frame
+    mul     r1, r5, r1
+    mul     r1, r2, r1
+    bl      clean_range
 6:  mov     r0, #0
     str     r0, [r8, #0x6C]
-9:  add     sp, sp, #8
-    pop     {r4, r5, r6, r7, r8, pc}
+9:  pop     {r4, r5, r6, r7, r8, pc}
 
 /* clean_range(address, length): data cache clean by address to the point of
  * coherency, 32-byte steps (a 64-byte line is simply cleaned twice). */
@@ -340,7 +319,7 @@ fc_present:
     ldr     r4, [r6, #0x70]
     cmp     r4, #0
     beq     9f
-    bl      sub_drawable
+    bl      layer_drawable
     cmp     r0, #0
     beq     9f
     mov     r5, r0
@@ -357,7 +336,7 @@ fc_present:
     blx     r3
     mov     r0, r4
     mov     r1, r6
-    mov     r2, #SUB_LAYER
+    mov     r2, #PAINT_LAYER        @ the submit's sub flag: 0 main, 1 sub
     LDA     r3, SUBMIT
     blx     r3
 9:  pop     {r4, r5, r6, pc}
@@ -387,11 +366,14 @@ draw_scale:
     cmp     r9, #0
     beq     9f
 
-    PTR     r4, bands               @ {u16 x0, u16 x1, u8 index}, as the firmware's
+    PTR     r4, bands               @ {u16 x0, u16 x1, u8 index, u8 0, u16 colour16}
     mov     r5, #BAND_N
 1:  ldrh    r0, [r4]
     ldrh    r1, [r4, #2]
-    ldrb    r2, [r4, #4]
+    ldr     r2, [r10, #0x8C]
+    cmp     r2, #2
+    ldrheq  r2, [r4, #6]            @ direct colour on a 16-bit layer
+    ldrbne  r2, [r4, #4]            @ the palette index on an indexed one
     str     r2, [r10, #0x40]
     sub     r2, r1, r0
     add     r2, r2, #1              @ x1 is inclusive
@@ -402,7 +384,10 @@ draw_scale:
     subs    r5, r5, #1
     bne     1b
 
-    mov     r0, #C_LABEL
+    ldr     r0, [r10, #0x8C]
+    cmp     r0, #2
+    movweq  r0, #C_LABEL16
+    movne   r0, #C_LABEL
     str     r0, [r10, #0x40]
     PTR     r4, labels              @ {u16 x, u8 glyph, u8 glyph or 0xFF}
     mov     r5, #LABEL_N
@@ -424,16 +409,18 @@ draw_scale:
 
 /* fill_rect(x, y, w, h) in the current colour.
  *
- * Refuses anything that would leave the buffer, and refuses entirely if no
- * buffer or geometry is known yet. This is the last line of defence and it
- * exists because it was missing: a chart drawn from a fixed origin, with no
- * check, wrote past the end of the buffer and froze the camera.
+ * Pixels are one or two bytes (STATE +0x8C), a pixel is at
+ * base + (y * width + x) * size. Refuses anything that would leave the
+ * buffer, and refuses entirely if no buffer or geometry is known. This is
+ * the last line of defence and it exists because it was missing: a chart
+ * drawn from a fixed origin, with no check, wrote past the end of the buffer
+ * and froze the camera.
  */
 fill_rect:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
     LDA     r10, STATE
     ldr     r6, [r10, #0x3C]        @ base
-    ldr     r7, [r10, #0x20]        @ stride
+    ldr     r7, [r10, #0x20]        @ width, in pixels
     ldr     r9, [r10, #0x24]        @ height
     cmp     r6, #0
     beq     9f
@@ -443,7 +430,7 @@ fill_rect:
     beq     9f
     cmp     r2, #0
     beq     9f
-    adds    r4, r0, r2              @ x + w must stay inside the stride
+    adds    r4, r0, r2              @ x + w must stay inside the width
     bcs     9f
     cmp     r4, r7
     bhi     9f
@@ -452,13 +439,17 @@ fill_rect:
     cmp     r4, r9
     bhi     9f
     ldr     r9, [r10, #0x40]        @ colour
+    ldr     r10, [r10, #0x8C]       @ bytes per pixel
     mov     r4, r0
     mov     r5, r1
     mov     r8, r2
-1:  mla     ip, r5, r7, r6
-    add     ip, ip, r4
+1:  mla     ip, r5, r7, r4          @ y * width + x
+    mla     ip, ip, r10, r6         @ ... * size + base
     mov     lr, r8
-2:  strb    r9, [ip], #1
+2:  cmp     r10, #2
+    strheq  r9, [ip]
+    strbne  r9, [ip]
+    add     ip, ip, r10
     subs    lr, lr, #1
     bne     2b
     add     r5, r5, #1
@@ -474,7 +465,7 @@ draw_glyph:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
     LDA     r10, STATE
     ldr     r6, [r10, #0x3C]        @ base
-    ldr     r7, [r10, #0x20]        @ stride
+    ldr     r7, [r10, #0x20]        @ width, in pixels
     ldr     r8, [r10, #0x24]        @ height
     cmp     r6, #0
     beq     9f
@@ -494,8 +485,10 @@ draw_glyph:
     PTR     r3, glyph_bits
     add     r3, r3, r4, lsl #2
     ldr     r8, [r10, #0x40]        @ colour
-    mla     r6, r1, r7, r6
-    add     r6, r6, r0              @ the glyph's top-left pixel
+    ldr     r10, [r10, #0x8C]       @ bytes per pixel
+    mla     ip, r1, r7, r0          @ y * width + x
+    mla     r6, ip, r10, r6         @ the glyph's top-left pixel, in bytes...
+    mul     r7, r7, r10             @ ... and the row step
     mov     r4, #GLYPH_H
 1:  mov     ip, r6
     mov     lr, r5                  @ pixels left in this row
@@ -505,9 +498,12 @@ draw_glyph:
 3:  cmp     lr, #0
     beq     4f                      @ row complete; still consume its words
     tst     r1, #1
+    beq     5f
+    cmp     r10, #2
+    strheq  r8, [ip]
     strbne  r8, [ip]
-    lsr     r1, r1, #1
-    add     ip, ip, #1
+5:  lsr     r1, r1, #1
+    add     ip, ip, r10
     sub     lr, lr, #1
     subs    r2, r2, #1
     bne     3b
@@ -519,6 +515,3 @@ draw_glyph:
 9:  pop     {r4, r5, r6, r7, r8, r9, r10, pc}
 
 .balign 4
-thread_name:
-    .asciz "fpFCsc"
-    .balign 4

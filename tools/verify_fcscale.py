@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Run src/fcscale.S in an emulator: three presses, display submits between
-them, and the sub layer it painted rendered through the firmware's palette.
+them, and the main OSD layer it painted rendered to a PNG.
 
-Faked: the display manager, the drawable (back descriptor, rotate, palette
-setters), the event post, the cache flush, and the body of the display submit
-after its hooked first instruction. Real: the payload, the firmware's memset,
-the native band table, palette and glyphs, and the hook site's stock word.
+Faked: the display manager, the drawable (back descriptor, rotate), the
+event post, and the body of the display submit after its hooked first
+instruction. Real: the payload, the firmware's memset, the native band table,
+palette and glyphs, and the hook site's stock word.
 
-What this proves: the press cycle, the palette install/restore calls, that
-the submit hook paints only format-3 descriptors of the scale's geometry,
-that every pixel written lands inside the scale's rows, that a buffer carrying
-the scale is cleared once when it is no longer wanted, that the paint lock
-skips a frame rather than racing, and that the hooked submit still returns to
-its caller with the stack intact. Not provable here: LCD compositing of the
-sub layer in each DISP state.
+What this proves: the press cycle, that the submit hook paints only format-1
+descriptors of the scale's geometry, that every pixel written lands inside
+the scale's rows and is a 16-bit word with the alpha nibble set, that a
+buffer carrying the scale is cleared once when it is no longer wanted, that
+the paint lock skips a frame rather than racing, and that the hooked submit
+returns to its caller with the stack intact. Not provable here: the order of
+the three colour nibbles (PIXEL_ORDER in the builder) -- that is read off the
+camera.
 
     ./tools/verify_fcscale.py            -> builds/fcscale/scale.png
 """
@@ -31,7 +32,7 @@ from unicorn import arm_const as ar
 from armasm import assemble, symbols
 import build_fcscale_autorun as card
 
-W, H = 1024, 682
+W, H, BPP = 1024, 682, 2
 FAKE = 0x10000000
 SP = 0x20100000 - 0x10
 STOP = 0x20200000
@@ -42,17 +43,17 @@ MGR_IF = FAKE                   # [+4] -> MGR_VT
 MGR_VT = FAKE + 0x20            # [+0xC] -> resolve stub
 DRAWABLE = FAKE + 0x40          # [+0] -> DRW_VT
 DRW_VT = FAKE + 0x60            # +0x10 back, +0x14 rotate, +0x18 set palette, +0x1C restore
-DESC_UI = FAKE + 0xA0           # what the UI submits
+DESC_UI = FAKE + 0xA0           # what the UI submits (main, 16-bit)
 DESC_BACK = FAKE + 0xB0         # what the drawable hands a present
-DESC_MAIN = FAKE + 0xC0         # a 16-bit main-layer descriptor
+DESC_SUB = FAKE + 0xC0          # the indexed sub layer: not ours
 GEOM = FAKE + 0xD0
-LAYER_PAL = FAKE + 0xE0         # the layer's own palette descriptor {entries, 30, 7}
-OUR_PAL = card.STATE + 0x50     # ours, written by the card
 STUB_RESOLVE, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE = (FAKE + 0x100 + 8 * i
                                                                    for i in range(5))
+BUF = W * H * BPP
 PIX_UI = FAKE + 0x1000
-PIX_BACK = PIX_UI + 0x100000
-PIX_MAIN = PIX_BACK + 0x100000
+PIX_BACK = PIX_UI + 0x200000
+PIX_SUB = PIX_BACK + 0x200000
+SCALE_ROWS = set(range(430, 583))
 
 
 class Camera:
@@ -72,27 +73,24 @@ class Camera:
             '<I', card.branch(card.SUBMIT_SITE, card.CODE + self.marks['fc_submit'])))
         u.mem_map(0xC3033000, 0x1000)                       # UI_STATE
         self.ui_state(2)
-        u.mem_map(FAKE, 0x1000 + 3 * 0x100000)
+        u.mem_map(FAKE, 0x1000 + 3 * 0x200000)
         u.mem_map(0x20000000, 0x200000)                     # stack, stop
         u.mem_write(MGR_IF + 4, struct.pack('<I', MGR_VT))
         u.mem_write(MGR_VT + 0xC, struct.pack('<I', STUB_RESOLVE))
         u.mem_write(DRAWABLE, struct.pack('<I', DRW_VT))
         u.mem_write(DRW_VT + 0x10, struct.pack('<IIII', STUB_BACK, STUB_ROTATE,
                                                  STUB_SETPAL, STUB_RESTORE))
-        u.mem_write(DESC_UI, struct.pack('<IIII', 3, PIX_UI, GEOM, LAYER_PAL))
-        u.mem_write(DESC_BACK, struct.pack('<IIII', 3, PIX_BACK, GEOM, LAYER_PAL))
-        u.mem_write(DESC_MAIN, struct.pack('<IIII', 1, PIX_MAIN, GEOM, 0))
-        u.mem_write(LAYER_PAL, struct.pack('<III', FAKE + 0xF00, 30, 7))
-        u.mem_write(card.STATE + 0x50, struct.pack('<III', card.NATIVE_PAL, card.NATIVE_PAL_N,
-                                                    card.PAL_GENERATION))   # as the card does
+        u.mem_write(DESC_UI, struct.pack('<IIII', 1, PIX_UI, GEOM, 0))
+        u.mem_write(DESC_BACK, struct.pack('<IIII', 1, PIX_BACK, GEOM, 0))
+        u.mem_write(DESC_SUB, struct.pack('<IIII', 3, PIX_SUB, GEOM, 0))
         u.mem_write(GEOM, struct.pack('<II', W, H))
         for stub in (STUB_RESOLVE, STUB_BACK, STUB_ROTATE, STUB_SETPAL, STUB_RESTORE):
             u.mem_write(stub, struct.pack('<I', 0xE12FFF1E))        # bx lr
         self.events, self.selectors = [], []
         self.rotates, self.submitted = 0, []
-        self.writes = set()
+        self.writes = {}
         u.hook_add(uc.UC_HOOK_CODE, self._code)
-        u.hook_add(uc.UC_HOOK_MEM_WRITE, self._write, begin=PIX_UI, end=PIX_MAIN + 0x100000)
+        u.hook_add(uc.UC_HOOK_MEM_WRITE, self._write, begin=PIX_UI, end=PIX_SUB + 0x200000)
 
     def ui_state(self, value):
         self.u.mem_write(0xC3033A44, struct.pack('<I', value))
@@ -127,14 +125,12 @@ class Camera:
             self._ret()
         elif address in (STUB_SETPAL, STUB_RESTORE):
             raise AssertionError("the layer's palette setters must not be called")
-        elif address == card.CACHE_FN:
-            self._ret()
         elif address == 0xC03A0798:                             # POST
             self.events.append(struct.unpack('<I', u.mem_read(u.reg_read(ar.UC_ARM_REG_R1), 4))[0])
             self._ret(1)
 
     def _write(self, u, access, address, size, value, _):
-        self.writes.add(address)
+        self.writes[address] = size
 
     def _run(self, entry, r0=0, r1=0, r2=0):
         u = self.u
@@ -142,7 +138,7 @@ class Camera:
                          (ar.UC_ARM_REG_R2, r2), (ar.UC_ARM_REG_SP, SP),
                          (ar.UC_ARM_REG_LR, STOP)):
             u.reg_write(reg, val)
-        u.emu_start(entry, STOP, count=200_000_000)
+        u.emu_start(entry, STOP, count=400_000_000)
         if u.reg_read(ar.UC_ARM_REG_PC) != STOP:
             raise AssertionError(f'{entry:#x} did not return')
         if u.reg_read(ar.UC_ARM_REG_SP) != SP:
@@ -152,7 +148,7 @@ class Camera:
     def call(self, name, **regs):
         return self._run(card.CODE + self.marks[name], **regs)
 
-    def ui_submit(self, desc=DESC_UI, sub=1):
+    def ui_submit(self, desc=DESC_UI, sub=0):
         """The UI sending a frame: a call to the hooked 0xC02E8A08."""
         self.writes.clear()
         return self._run(card.SUBMIT_SITE, r0=CTRL, r1=desc, r2=sub)
@@ -160,31 +156,24 @@ class Camera:
     def state(self, offset):
         return struct.unpack('<I', self.u.mem_read(card.STATE + offset, 4))[0]
 
-    def palette_of(self, desc=DESC_UI):
-        return struct.unpack('<I', self.u.mem_read(desc + 0xC, 4))[0]
-
     def pixels(self, base=PIX_UI):
-        return bytes(self.u.mem_read(base, W * H))
+        return struct.unpack(f'<{W * H}H', self.u.mem_read(base, BUF))
 
     def rows_written(self, base=PIX_UI):
-        return {(a - base) // W for a in self.writes if base <= a < base + W * H}
+        return {(a - base) // (W * BPP) for a in self.writes if base <= a < base + BUF}
 
 
-def ayuv_to_rgb(entry):
-    a, y, u, v = entry
-    r = y + 1.402 * v
-    g = y - 0.344136 * u - 0.714136 * v
-    b = y + 1.772 * u
-    return tuple(max(0, min(255, int(c))) for c in (r, g, b)) + (a,)
-
-
-def render(pixels: bytes, pal, out: Path) -> None:
-    """A PNG of the layer through the firmware's palette; index 0 shows as grey."""
+def render(pixels, out: Path) -> None:
+    """A PNG of the layer decoded per the builder's PIXEL_ORDER; alpha 0 shows grey."""
     import zlib
-    lut = [bytes(ayuv_to_rgb(entry)[:3]) for entry in pal]
-    lut[0] = bytes((40, 40, 40))
-    raw = b''.join(b'\0' + b''.join(lut[p] for p in pixels[y * W:(y + 1) * W])
-                   for y in range(H))
+
+    def rgb(p):
+        if not p >> 12:
+            return b'\x28\x28\x28'
+        a, b_, c = (p >> 8) & 0xF, (p >> 4) & 0xF, p & 0xF
+        r, g, b = (a, b_, c) if card.PIXEL_ORDER == 'ARGB' else (c, b_, a)
+        return bytes((r * 17, g * 17, b * 17))
+    raw = b''.join(b'\0' + b''.join(rgb(p) for p in pixels[y * W:(y + 1) * W]) for y in range(H))
 
     def chunk(kind, data):
         body = kind + data
@@ -197,9 +186,6 @@ def render(pixels: bytes, pal, out: Path) -> None:
 def main() -> None:
     cam = Camera()
     image = (ROOT / 'analysis/MAIN_c0000000.bin').read_bytes()
-    pal = card.palette(image)
-    white = [i for i, e in enumerate(pal) if e == (255, 255, 0, 0)][0]
-    scale_rows = set(range(430, 583))
     results = []
 
     def check(name, passed):
@@ -214,70 +200,56 @@ def main() -> None:
     # A UI frame: passes through, teaches the hook the controller, paints nothing.
     r = cam.ui_submit()
     check('a hooked submit returns to its caller with the stack intact',
-          r == 1 and cam.submitted == [(CTRL, DESC_UI, 1)])
+          r == 1 and cam.submitted == [(CTRL, DESC_UI, 0)])
     check('the hook remembers the controller and paints nothing while only on',
           cam.state(0x70) == CTRL and not cam.writes and cam.state(0x74) == 1)
 
-    # Press 2: one frame presented through the hook, carrying our palette.
+    # Press 2: one frame presented through the hook.
     cam.call('fc_press', r0=CAMERA_IF)
     check('press 2 sets the scale flag without posting an event',
           cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21])
-    check('the press presents the back buffer: rotate once, submit it as the sub layer',
-          cam.rotates == 1 and cam.submitted[-1] == (CTRL, DESC_BACK, 1)
-          and cam.selectors and all(s == 1 for s in cam.selectors))
+    check('the press presents the main layer: resolve 0, rotate once, submit with sub = 0',
+          cam.rotates == 1 and cam.submitted[-1] == (CTRL, DESC_BACK, 0)
+          and cam.selectors and all(s == 0 for s in cam.selectors))
     back = cam.pixels(PIX_BACK)
     check('the presented buffer carries the scale and the UI buffer is untouched',
           any(back) and not any(cam.pixels(PIX_UI)))
-    check("the presented descriptor points at the firmware's 256-entry scale palette",
-          cam.palette_of(DESC_BACK) == OUR_PAL and cam.palette_of() == LAYER_PAL
-          and struct.unpack('<III', cam.u.mem_read(OUR_PAL, 12))
-          == (card.NATIVE_PAL, card.NATIVE_PAL_N, card.PAL_GENERATION))
 
-    # The next UI frame gets the scale too, identically, and our palette.
+    # The next UI frame gets the scale too, identically.
     cam.ui_submit()
     pixels = cam.pixels()
     check('the next UI frame is painted, in rows 430..582 only, identically',
-          cam.rows_written() == scale_rows and pixels == back)
-    check("the frame's palette pointer is ours and the layer's is kept for it",
-          cam.palette_of() == OUR_PAL and cam.state(0x80) == LAYER_PAL)
+          cam.rows_written() == SCALE_ROWS and pixels == back)
+    check('every write is a 16-bit pixel', set(cam.writes.values()) == {2})
     bands = card.bands(image)
-    check("the bar carries the firmware's own band indices at its edges",
-          all(pixels[y * W + x] == index
+    pal = card.palette(image)
+    check("the bar carries the firmware's colours, converted, opaque, at its edges",
+          all(pixels[y * W + x] == card.pack16(card.ayuv_to_rgb(pal[index]))
+              and pixels[y * W + x] >> 12 == 0xF
               for x0, x1, index in bands for y in (464, 523, 582) for x in (x0, x1)))
     labels = {p for y in range(430, 455) for p in pixels[y * W:(y + 1) * W]} - {0}
-    check('the labels are drawn in opaque white and nothing else',
-          labels == {white} and sum(pixels[y * W:(y + 1) * W].count(white)
-                                    for y in range(430, 455)) > 1500)
-    render(pixels, pal, ROOT / 'builds/fcscale/scale.png')
+    check('the labels are opaque white and nothing else',
+          labels == {0xFFFF} and sum(pixels[y * W:(y + 1) * W].count(0xFFFF)
+                                     for y in range(430, 455)) > 1500)
+    render(pixels, ROOT / 'builds/fcscale/scale.png')
 
-    # A main-layer frame is not ours.
-    cam.ui_submit(DESC_MAIN, sub=0)
-    check('a 16-bit main-layer descriptor is passed through untouched',
-          not cam.writes and cam.submitted[-1] == (CTRL, DESC_MAIN, 0)
-          and cam.palette_of(DESC_MAIN) == 0)
-
-    # The layer re-pointing its palette between frames does not win.
-    cam.u.mem_write(DESC_UI + 0xC, struct.pack('<I', LAYER_PAL))
-    cam.ui_submit()
-    check("a frame whose palette the layer re-pointed leaves with ours again",
-          cam.palette_of() == OUR_PAL and cam.state(0x80) == LAYER_PAL)
+    # The indexed sub layer is not ours.
+    cam.ui_submit(DESC_SUB, sub=1)
+    check('an indexed sub-layer descriptor is passed through untouched',
+          not cam.writes and cam.submitted[-1] == (CTRL, DESC_SUB, 1))
 
     # Leaving live view: each buffer carrying the scale is cleared once.
     cam.ui_state(5)
     cam.ui_submit()
     check('outside live view a buffer carrying the scale is cleared, rows 430..582 only',
-          cam.rows_written() == scale_rows and not any(cam.pixels()))
-    check("and the layer's own palette pointer is put back on it",
-          cam.palette_of() == LAYER_PAL and cam.state(0x80) == 0)
+          cam.rows_written() == SCALE_ROWS and not any(cam.pixels()))
     cam.ui_submit()
     check('and not touched again once clear', not cam.writes)
     cam.ui_submit(DESC_BACK)
-    check('the other buffer is cleared when it comes round, palette pointer restored',
-          not any(cam.pixels(PIX_BACK)) and cam.palette_of(DESC_BACK) == LAYER_PAL)
+    check('the other buffer is cleared when it comes round', not any(cam.pixels(PIX_BACK)))
     cam.ui_state(2)
     cam.ui_submit()
-    check('back in live view the scale returns, with our palette',
-          cam.pixels() == pixels and cam.palette_of() == OUR_PAL)
+    check('back in live view the scale returns', cam.pixels() == pixels)
 
     # The paint lock: a frame arriving while another paint holds it is skipped.
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 1))
@@ -288,13 +260,11 @@ def main() -> None:
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 0))
     cam.ui_state(2)
 
-    # Press 3: presents a cleared frame with the layer's palette back, posts 0x22.
+    # Press 3: presents a cleared frame, posts 0x22.
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 3 posts 0x22 and presents once more',
+    check('press 3 posts 0x22 and presents once more, cleared',
           cam.state(0) == 0 and cam.events == [0x21, 0x22] and cam.rotates == 2
-          and cam.submitted[-1] == (CTRL, DESC_BACK, 1))
-    check("the presented buffer is clear and carries the layer's own palette again",
-          not any(cam.pixels(PIX_BACK)) and cam.palette_of(DESC_BACK) == LAYER_PAL)
+          and cam.submitted[-1] == (CTRL, DESC_BACK, 0) and not any(cam.pixels(PIX_BACK)))
     cam.ui_submit()
     check('the UI buffer is cleared on its next frame', not any(cam.pixels()))
     cam.ui_submit()
@@ -304,15 +274,14 @@ def main() -> None:
 
     report = dict(cases=results, code_bytes=len(cam.code), events=cam.events,
                   submits=len(cam.submitted), rotates=cam.rotates,
+                  pixel_order=card.PIXEL_ORDER,
                   faked=['display manager 0xC0698D80 and its layer resolver',
                          'the drawable: back descriptor, rotate',
                          'the display submit body after its first instruction',
                          'the event post 0xC03A0798'],
                   real=['the payload', 'firmware memset', 'band table, palette, glyphs',
                         'the stock word at the submit site'],
-                  untested=['LCD compositing of the sub layer in each DISP state',
-                            'that the frame request programs the CLUT from the '
-                            'descriptor palette it carries'])
+                  untested=['the order of the three colour nibbles (PIXEL_ORDER)'])
     out = ROOT / 'builds/fcscale/verification.json'
     out.write_text(json.dumps(report, indent=2) + '\n')
     if not all(c['passed'] for c in results):
