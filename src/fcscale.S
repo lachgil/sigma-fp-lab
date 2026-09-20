@@ -301,15 +301,13 @@ fc_on_submit:
     orrs    r2, r2, r7
     beq     9f                      @ nothing there and nothing wanted
 
-    add     r3, r8, #0x6C           @ take the paint lock, or leave this frame
-4:  ldrex   r2, [r3]
+    add     r3, r8, #0x6C           @ take the paint lock, or leave this frame.
+    mov     r1, #1                  @ swp, which is what this firmware uses
+    swp     r2, r1, [r3]            @ (106 sites, no ldrex/strex anywhere)
     cmp     r2, #0
     bne     9f
-    mov     r2, #1
-    strex   r0, r2, [r3]
-    cmp     r0, #0
-    bne     4b
     dmb
+    add     r1, r8, r0, lsl #2      @ the slot again; r1 was the swap value
     str     r4, [r8, #0x3C]
     str     r5, [r8, #0x20]
     str     r6, [r8, #0x24]
@@ -321,12 +319,26 @@ fc_on_submit:
     ldr     r0, [r8, #0x78]
     add     r0, r0, #1
     str     r0, [r8, #0x78]
-    LDA     ip, CACHE_FN            @ the panel reads memory, not our cache
-    blx     ip
-    dmb
+    movw    r1, #CLEAR_Y            @ the panel reads memory: clean our rows
+    mla     r0, r1, r5, r4          @ out of the data cache, and only ours --
+    mov     r1, #CLEAR_H            @ the firmware's 0xC000E91C cleans every
+    mul     r1, r5, r1              @ set and way of both levels with
+    bl      clean_range             @ interrupts off, too much for every frame
     mov     r0, #0
     str     r0, [r8, #0x6C]
 9:  pop     {r4, r5, r6, r7, r8, pc}
+
+/* clean_range(address, length): data cache clean by address to the point of
+ * coherency, 32-byte steps (a 64-byte line is simply cleaned twice). */
+clean_range:
+    add     r1, r0, r1
+    bic     r0, r0, #31
+1:  mcr     p15, #0, r0, c7, c10, #1
+    add     r0, r0, #32
+    cmp     r0, r1
+    blo     1b
+    dsb
+    bx      lr
 
 /* Present one frame of the sub layer from a press, so the scale changes at
  * the press and not at the UI's next frame: the layer's back buffer, rotated
