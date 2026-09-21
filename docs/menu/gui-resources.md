@@ -438,6 +438,24 @@ object. That is a whole-scene load, which `native_scene_vm` does not model
 (it substitutes single records against a prebuilt state), so it is the concrete
 next instrument to build, not another offline guess.
 
+Clip binding decoded, same day. The record dispatcher's clip case is
+`C05E6FAA` and its group case is `C05E7274` (from the tag jump table at
+`C05E6464`). The clip handler resolves the clip's owning object **by id**:
+`C05D9E80` looks the owner up by name and `C05E82A0` (the sorted id table at
+reader `+0x48`) resolves the target, then `C05D5968` attaches the clip. So a
+clip is **self-identifying by owner id, not positional** in the stream. The
+group handler `C05E7274` builds the group through `C05E2988` from its counts.
+
+That means a grafted clip whose owner id we renumber will bind correctly
+regardless of stream order, which removes the "positional slice" fear. What it
+does NOT settle is the header's per-group `clip_tracks` reservation: the header
+reserves clips per animation group (`groups[i][2]`), while records attach per
+object, and the row's 6 groups reserve 30 while only 29 records are owned inside
+the subtree. The correct grafted reservation is still unproven, because the
+group-to-clip-track accounting is indirect. This is the number the whole-scene
+load emulator must produce; the binding mechanism above is settled, the
+reservation count is not.
+
 ## Corrections to our own notes
 
 - The compression engine's throughput, unknown in earlier notes, was **measured
