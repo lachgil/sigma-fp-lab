@@ -342,12 +342,12 @@ fc_paint:
     cmp     r6, ip
     blo     9f
 
-    ldr     r0, [r8]                @ wanted: state 2, and not in playback or
-    cmp     r0, #2                  @ the camera menu. False Color has a UI
-    moveq   r7, #1                  @ screen of its own, so "equals live view"
-    movne   r7, #0                  @ is false once the mode has settled
-    LDA     r0, UI_STATE            @ (camera, 2026-09-20: two slow presses
-    ldr     r0, [r0]                @ drew nothing, two quick ones drew).
+    ldr     r0, [r8]                @ wanted: the scale is up, and the screen is
+    cmp     r0, #2                  @ live view. UI_STATE reads 2 in live view
+    moveq   r7, #1                  @ with the mode and the scale both on, 5 in
+    movne   r7, #0                  @ the camera menu and 4 in playback (camera,
+    LDA     r0, UI_STATE            @ 2026-09-21, read off the --probe build).
+    ldr     r0, [r0]
     cmp     r0, #UI_PLAYBACK
     cmpne   r0, #UI_MENU
     moveq   r7, #0
@@ -372,12 +372,22 @@ fc_paint:
     mov     r2, #0
     str     r2, [r1, #0x60]
 2:  ldr     r2, [r1, #0x60]         @ drawn on this buffer
-    orr     r2, r2, r7
+    cmp     r7, #0
+    bne     4f                      @ wanted: paint this buffer below
+    cmp     r2, #0
+    beq     5f                      @ nothing of ours on it either
+    push    {r0, r1}                @ the gate has closed and this buffer still
+    bl      clear_all               @ carries the scale: take it off ALL of them
+    pop     {r0, r1}                @ now. One buffer per frame means the scale
+    mov     r2, #0                  @ hangs around in the menu until each one
+5:                                  @ happens to come round (camera, 2026-09-21)
 .if PROBE != 0
     orr     r2, r2, #1              @ the probe draws on every frame
 .endif
     cmp     r2, #0
     beq     9f                      @ nothing there and nothing wanted
+
+4:
 
     add     r3, r8, #0x6C           @ take the paint lock, or leave this frame.
     mov     r1, #1                  @ swp, which is what this firmware uses

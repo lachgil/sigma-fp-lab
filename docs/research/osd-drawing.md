@@ -175,12 +175,30 @@ it cannot race a frame. `tools/verify_fcscale.py` covers it: both buffers carry
 the scale, one hold takes it down, and **neither buffer has a pixel left with no
 further frames submitted** -- that case fails if the call is removed.
 
-If it still appears in the menu, the other suspect is the gate itself: it
-treats `UI_STATE` 4 as playback and 5 as the menu, and those values were read
-on one build in one mode. `--probe` builds a card that draws the value of that
-word as a row of ticks at the top left on every frame, whatever the gate
-decides, so the menu's value can be counted off the screen without a USB
-shell.
+That was not the reported symptom, and the `--probe` build settled why. It
+draws `UI_STATE` as a row of ticks at the top left on every frame whatever the
+gate decides, so the value is counted off the screen with no USB shell. Read on
+the camera, 2026-09-21:
+
+| screen | `UI_STATE` |
+| --- | --- |
+| live view, scale off | 2 |
+| live view, scale up | 2 |
+| recording | 2 |
+| camera menu | 5 |
+
+So the gate was right all along, and **the scale in the menu was never painted
+there**: it was pixels left in buffers the menu inherited. This also retires the
+note that false colour has a UI state of its own -- with the mode and the scale
+both on the state still reads 2.
+
+The clear had to move from the transition to the gate: `fc_paint` now calls
+`clear_all` on the **first** frame after the gate closes, so all three buffers
+go at once. Clearing one buffer per frame is what left the scale visible in the
+menu for about a second, until each buffer happened to be submitted again.
+`verify_fcscale.py` covers it -- both buffers carrying the scale, one frame in
+playback, neither buffer has a pixel left -- and that case fails if the call is
+removed.
 
 The button is worked by duration rather than by counting presses: the press
 switches the mode on (posting `0x21` immediately, so it feels instant), and the

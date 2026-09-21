@@ -261,12 +261,20 @@ def main() -> None:
     cam.ui_submit()
     check('a UI state other than playback or menu keeps the scale', cam.pixels() == pixels)
 
-    # Playback or the camera menu: each buffer carrying the scale is cleared once.
+    # Playback or the camera menu: every buffer carrying the scale is cleared on
+    # the FIRST frame after the gate closes, not one buffer per frame. Clearing
+    # them one at a time leaves the scale sitting in the menu until each buffer
+    # happens to come round again (camera, 2026-09-21).
+    cam.ui_submit(DESC_FRONT)
+    check('both buffers carry the scale while the gate is open',
+          any(cam.pixels(PIX_UI)) and any(cam.pixels(PIX_FRONT)))
     cam.ui_state(4)
     cam.ui_submit()
-    check(f'outside live view a buffer carrying the scale is cleared, rows '
-          f'{min(SCALE_ROWS)}..{max(SCALE_ROWS)} only',
-          cam.rows_written() == SCALE_ROWS and not any(cam.pixels()))
+    check('the first frame after the gate closes clears every buffer at once',
+          not any(cam.pixels()) and not any(cam.pixels(PIX_FRONT))
+          and cam.state(0x60) == cam.state(0x64) == cam.state(0x68) == 0)
+    check('and the rows cleared are only ours',
+          cam.rows_written() == SCALE_ROWS)
     cam.ui_submit()
     check('and not touched again once clear', not cam.writes)
     cam.ui_state(5)
