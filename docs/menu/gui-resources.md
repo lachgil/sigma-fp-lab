@@ -418,6 +418,26 @@ clip slots each consumes and how a clip record selects its slot. That is the
 one measurement between here and an animated intact row; until then the shipped
 candidate stays animation-dropped and `installable=False`.
 
+Structure decoded further, same day. The `animationClip` group record
+(`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
+groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,
+summing 28), owner object at `+0x14`, then a target object and a pool offset.
+The header `groups[i]` triple is `(word2, 0, reserved_clips)` with
+`reserved_clips` = 4,2,19,2,2,1 (30). Crucially the **clip records are owned by
+ordinary objects** (`0x1152`, `0x1155`, `0x1157`..`0x1175`, and one at
+`0x7446`), not by the group records, so `subtree` gathers them by object
+ownership. The 29/28/30 spread is therefore three different fields, not one
+miscount: 29 clip records owned by the row's objects, 28 summed from the group
+records' `word4`, 30 reserved by the header groups. `_array_slice`'s model that
+clips are "created by the group records, groups[i][2] of them each, in stream
+order" is the assumption that breaks here.
+
+The one runtime capture that settles it is how many `clip_tracks` slots the
+scene loader actually consumes per group when `B2_5` loads, versus per owning
+object. That is a whole-scene load, which `native_scene_vm` does not model
+(it substitutes single records against a prebuilt state), so it is the concrete
+next instrument to build, not another offline guess.
+
 ## Corrections to our own notes
 
 - The compression engine's throughput, unknown in earlier notes, was **measured
