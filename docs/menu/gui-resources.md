@@ -224,6 +224,35 @@ its timing relative to AutoRun. The observed count of 382 and first eight
 names must not be used as that proof. FP3K's current native UI sources also
 support late resource-pack registration during NBU interpretation.
 
+## Native menu feasibility review, 2026-09-21
+
+Upstream now publishes a [Lossless RAW fourth-row candidate](https://github.com/ijigen/fpSup/blob/main/lossless/menu/README.md):
+a private MainB2 record stream with a copied native two-choice widget, typed
+reference remapping, private strings and animation budgets. It explicitly remains
+`BLOCKED_NOT_DEPLOYABLE`: variable registration, callback lifetime, navigation,
+page loading/rebuild timing, rendering and allocator capacity are not verified.
+This is evidence for constructing native menu data, not a working custom page.
+Its referenced `research/ui/tools/native_ui_audit.py` is absent from the public
+main tree inspected today, so its complete builder was not run here.
+
+The upstream allocation finding changes the priority of our earlier blocker.
+An offline probe through our real firmware header interpreter, using B2_5,
+requested 225,336 bytes both with stock budget order and with `groups`,
+`clip_tracks`, `track_keys` and `list_items` individually reversed. Increasing
+one clip-track budget by one requested 225,372 bytes. Component registry sizes
+were modelled as zero, as in `native_scene_vm.py`; this checks header arithmetic,
+not component construction or sufficient allocation for a working page.
+Record order is therefore not a demonstrated requirement for this allocation
+calculation. The older positional-budget restriction above needs re-evaluation.
+
+Our existing row candidate still passes its 15 offline checks, but removes 18
+`controlAnimation` records, 29 clips and six groups. It is not a demonstrated
+fully functional native menu. The next useful proof is an intact donor page with
+its navigation and animations preserved, entered from a native row and exited
+through Menu/back, before adding private settings or feature callbacks.
+Retaining a whole donor page is a proposed way to reduce cross-page references,
+not an established page-registration or navigation API.
+
 ## Corrections to our own notes
 
 - The compression engine's throughput, unknown in earlier notes, was **measured
