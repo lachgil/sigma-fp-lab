@@ -46,13 +46,12 @@ ROW_SLOT = 324.0
 # row is named without touching a stock string or a localization key.
 PRIVATE_BASE = 0x00100000
 LABEL_OFFSET = PRIVATE_BASE          # "FP LAB", the first string in the blob
-# Dropped from the copy: the focus-highlight animation. Clips are allocated per
-# animation group by the header, but the clip RECORDS do not follow their group
-# in stream order (this row: six groups allocating 30 clips, 29 records in runs
-# of 0/0/0/5/0/22), so their positional header entries cannot be sliced yet.
-# A row without a highlight still draws, focuses and opens; one with a wrong
-# clip count corrupts the scene's allocation.
+# This candidate still omits the donor's animation records. Header budget
+# ordering is not a demonstrated reason to remove them; see the allocation
+# experiment in docs/menu/gui-resources.md. Drawing and focus remain unverified.
 DROP_COMPONENTS = ('controlAnimation',)
+# The native interpreter consumes this record and returns 1 to end the loop.
+TERMINATOR = 0xFFFFFFFF
 
 
 def inspect_scene(image: bytes) -> dict:
@@ -142,7 +141,7 @@ def label_record(image: bytes, scene: ns.Scene) -> tuple[int, int]:
 
 
 def build_row(image: bytes) -> dict:
-    """The real sixth row: every record except the focus animation.
+    """Build an experimental sixth row, still missing donor animations.
 
     Three kinds of rewrite happen here, and only the first was ever safe to do
     by hand:
@@ -213,7 +212,13 @@ def build_row(image: bytes) -> dict:
     menu_at = int(identity['menu_declaration'], 16) - res.LOAD
     stock_menu = image[menu_at:menu_at + 36]
     capacity = identity['menu_children']
-    tail_at, _tail_tag, tail_size = scene.records[-1]
+    # Preserve stock declaration/component order by appending at the terminator.
+    # C05E8348 calls the interpreter until its status is nonzero. The old
+    # injector overwrote success with STATE, stopping this loop at the header;
+    # zero injected records did not establish an undispatched terminator.
+    tail_at, tail_tag, tail_size = scene.records[-1]
+    if tail_tag != TERMINATOR:
+        raise ValueError('the scene does not end with a terminator')
     grown = ns.decode_header(header)
     return dict(identity=identity, scene=SCENE, scene_at=scene.start + res.LOAD,
                 header_at=scene.start + res.LOAD,
@@ -227,7 +232,7 @@ def build_row(image: bytes) -> dict:
                 label=dict(record=hex(label_at + res.LOAD),
                            offset=hex(LABEL_OFFSET), text='FP LAB'),
                 objects=(scene.header.objects, grown.objects),
-                capacity=(capacity, capacity + 1), installable=True)
+                capacity=(capacity, capacity + 1), installable=False)
 
 
 

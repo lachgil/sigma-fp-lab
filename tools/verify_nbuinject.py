@@ -60,6 +60,7 @@ class Fixture:
         self.symbols = symbols(ROOT / 'src/nbuinject.S', defines)
         self.image = image
         self.seen: list[bytes] = []
+        self.statuses: list[int] = []
         self.u = uc.Uc(uc.UC_ARCH_ARM, uc.UC_MODE_ARM)
         span = (len(image) + 4095) & ~4095
         self.u.mem_map(res.LOAD, span)
@@ -108,10 +109,12 @@ class Fixture:
         for register, value in zip(range(ar.UC_ARM_REG_R4, ar.UC_ARM_REG_R11 + 1), saved[:8]):
             u.reg_write(register, value)
         u.reg_write(ar.UC_ARM_REG_SP, sp + 36)
-        u.reg_write(ar.UC_ARM_REG_R0, 0)
+        tag = struct.unpack('>I', u.mem_read(source, 4))[0]
+        status = self.statuses.pop(0) if self.statuses else int(tag == 0xFFFFFFFF)
+        u.reg_write(ar.UC_ARM_REG_R0, status)
         u.reg_write(ar.UC_ARM_REG_PC, saved[8])
 
-    def run(self, base: int, position: int) -> None:
+    def run(self, base: int, position: int) -> int:
         self.put(READER + 4, position)
         self.put(READER + 20, 0xC18C0474)          # string pool identity
         self.put(READER + 36, base)
@@ -121,6 +124,7 @@ class Fixture:
         self.u.reg_write(ar.UC_ARM_REG_LR, STOP)
         self.u.emu_start(CODE + self.symbols['inject'] - 1, STOP, count=1000000)
         assert self.u.reg_read(ar.UC_ARM_REG_SP) == SP, 'hook left the stack unbalanced'
+        return self.u.reg_read(ar.UC_ARM_REG_R0)
 
     def counters(self) -> dict:
         return dict(seen=self.get(STATE), replaced=self.get(STATE + 4),
@@ -176,13 +180,14 @@ def main() -> None:
           and fixture.counters()['replaced'] == 0)
 
     # Header: replaced, position advanced by the stock length.
-    fixture.run(NBU, header_at - NBU)
+    status = fixture.run(NBU, header_at - NBU)
     check('the enlarged header is handed over',
           fixture.seen == [header])
     check('the header leaves the stock position and base',
           fixture.get(READER + 4) == header_at - NBU + len(stock_header)
           and fixture.get(READER + 36) == NBU
           and fixture.get(READER + 20) == 0xC18C0474)
+    check('a successful replacement returns native success', status == 0)
 
     # Menu declaration: replaced, same length.
     fixture.run(NBU, menu_at - NBU)
@@ -191,7 +196,7 @@ def main() -> None:
           and fixture.get(READER + 4) == menu_at - NBU + len(stock_menu))
 
     # Terminator: the run is injected first, the stock record last.
-    fixture.run(NBU, tail_at - NBU)
+    status = fixture.run(NBU, tail_at - NBU)
     injected = []
     at = 0
     while at < len(records):
@@ -200,6 +205,7 @@ def main() -> None:
         at += size
     check('every new record is injected before the terminator',
           fixture.seen == injected + [stock_tail])
+    check('the stock terminator still ends the native loop', status == 1)
     check('the injected run does not move the stream on',
           fixture.get(READER + 4) == tail_at - NBU + tail_size
           and fixture.get(READER + 36) == NBU)
@@ -226,6 +232,22 @@ def main() -> None:
     check('a pool base of zero leaves the scene stock',
           poolless.seen == [stock_tail]
           and poolless.counters()['injected'] == 0)
+
+    # A native error must reach the scene loader, not become a counter address.
+    failure = Fixture(image, entries)
+    failure.statuses = [0x80000001]
+    status = failure.run(NBU, header_at - NBU)
+    check('a replacement preserves native failure',
+          status == 0x80000001 and failure.get(READER + 36) == NBU)
+
+    failure = Fixture(image, entries)
+    failure.statuses = [0, 0x80000001]
+    status = failure.run(NBU, tail_at - NBU)
+    check('an injected failure stops before later records and the anchor',
+          status == 0x80000001 and failure.seen == injected[:2]
+          and failure.get(READER + 36) == NBU
+          and failure.get(READER + 4) == tail_at - NBU
+          and failure.counters()['injected'] == 1)
 
     report = dict(cases=results, payload_bytes=len(fixture.code),
                   injected_records=len(injected),

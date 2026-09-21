@@ -173,7 +173,7 @@ What it installs, and what each piece is for:
 | Piece | Where | What |
 | --- | --- | --- |
 | `src/strhook.S` | `0xC0793100`, 60 B | answers offsets above the pool out of its own blob, so the row can be NAMED |
-| `src/nbuinject.S` | `0xC0793200`, 420 B | two guarded replacements and one injected run at `0xC05E6400` |
+| `src/nbuinject.S` | `0xC0793200`, 452 B | two guarded replacements and one injected run at `0xC05E6400` |
 | enlarged header | pool `+0x54000`, 4,072 B | 285 -> 330 objects, one more `Menu` child |
 | `Menu` declaration | pool `+0x56000`, 36 B | child capacity 6 -> 7 |
 | the row | pool `+0x58000`, 10,792 B | 241 records copied from Frame Rate |
@@ -184,22 +184,20 @@ mode field grew a second flag for that: bit 1 means the buffer address is a
 pool offset, resolved from `0xC3757A7C` at parse time. A pool base of zero
 leaves the scene stock, which is checked.
 
-**v1 duplicates Frame Rate.** The row keeps the donor's bindings, so it reads
-and writes `MV_FrameRate`: opening it and picking a value changes the frame
-rate, exactly as the stock row does. That is deliberate for the first camera
-run -- it means every part of a working row is exercised (it draws, focuses,
-opens a page and acts) with no new binding to be wrong at the same time.
-Rebinding it to our own state is the next step, not this one.
+**This candidate still duplicates Frame Rate bindings.** Its copied records
+name `MV_FrameRate`, not private FP LAB settings. Earlier camera builds prevented
+Record Settings from opening, so drawing, focus, opening and setting changes
+were not demonstrated. `installable=False` describes this unfinished candidate;
+the explicit `--fplab-row` option remains an offline experimental build.
 
 The earlier `--fplab-page` option and `cards/fp-fplab-row-card.zip` are
 withdrawn: they grafted a copy of an Auto ISO limit row, with its list,
 activation and animation records dropped, into the wrong page.
 
-What the first camera run has to answer: whether the row appears at all,
-whether it lands at y=324 under Frame Rate, whether it reads `FP LAB` (the
-literal-key fallback is the one link in the label chain that no emulator can
-settle), whether Up/Down reach it, whether Right opens its page, and whether
-the five stock rows still behave. **Nothing here has been on a camera.**
+The camera reported Record Settings would not open, while the camera itself
+remained responsive. The parser-status fault identified below is fixed offline,
+not yet on the camera. Row placement, label fallback, Up/Down, Right/OK, back,
+stock-row behavior and full component allocation remain unverified.
 
 | Piece | What it is |
 | --- | --- |
@@ -208,7 +206,7 @@ the five stock rows still behave. **Nothing here has been on a camera.**
 | `tools/fplab_page.py` | Record Settings identity, the row build, and the declaration-only construction experiment |
 | `tools/native_scene_vm.py` | Runs the firmware's interpreter, object factory and id table offline |
 | `src/strhook.S`, `tools/verify_strhook.py` | Private names, and the equivalence test against the firmware's own resolver |
-| `src/nbuinject.S`, `tools/verify_nbuinject.py` | The injector, and ten cases at the real hook site |
+| `src/nbuinject.S`, `tools/verify_nbuinject.py` | Injector and fourteen hook-contract cases, including parser status and early termination |
 
 `src/nbuinject.S` keeps its own table: each entry carries the stock record's
 length and FNV-1a, so a record that does not match byte for byte is left alone
@@ -252,6 +250,94 @@ its navigation and animations preserved, entered from a native row and exited
 through Menu/back, before adding private settings or feature callbacks.
 Retaining a whole donor page is a proposed way to reduce cross-page references,
 not an established page-registration or navigation API.
+
+## Firmware loader investigation and status fix, 2026-09-21
+
+### What the shared tools actually demonstrate
+
+The supplied FP3K handoff's `analysis/engineering-progress.md:283-285` and
+`analysis/fullheight-preview.md:1-4` record the successful v0.3.2 Settings
+summary, HUD and QS result. This follows the failures in
+`analysis/native-menu-integration.md`, rather than contradicting them.
+
+The working mechanism adds a choice to the existing 89-byte Resolution CSV at
+`0xC0F8E7EC`, raises its independent controller maximum at `0xC1A709BC`,
+intercepts selection/readback, and extends native resource animations.
+`tools/fp3k_native_menu.S` keeps private 3K state separate from stock capture
+enum 3. `tools/fp3k_native_ui.S` substitutes existing NBU records and loads a
+private NBR asset pack. Its replacement path preserves the parser's return
+value. These are working native UI techniques, not a demonstrated new page or
+additional Record Settings row. The second supplied handoff offers the same
+mechanism; no complete private-page registration implementation was located.
+
+### Why our scene stopped loading
+
+Disassembly of the actual scene loader, `0xC05E82F0` Thumb:
+
+```text
+C05E8344  ldr r0, [r6, #8]       ; cached scene stream offset
+C05E8346  str r0, [r4, #4]       ; reader position
+C05E8348  mov r0, r4
+C05E834A  bl  C05E6400          ; interpret one record
+C05E834E  cmp r0, #0
+C05E8350  beq C05E8348          ; continue only on zero
+C05E8352  ldr r0, [r4, #0x50]  ; examine constructed objects
+```
+
+Our replacement path overwrote native `r0` with `INJECT_STATE` while updating
+its counter. Thus even a successfully parsed allocation header ended this
+loop. The injected-run path also ignored intermediate nonzero results.
+FP3K restores the reader position using `r1`, leaving `r0` intact.
+
+Reproduced with the real firmware header parser: direct enlarged-header
+interpretation returned `0`; through the old hook it returned `0x10210000`
+(the experiment's state address). The fixed hook returns `0`. Both requested
+239,728 arena bytes with component sizes modelled as zero.
+
+A second experiment executed the actual `C05E8348` caller loop and header
+parser. Reintroducing the old return-value corruption exited at `C05E8352`
+after `C1A5C590`; the fixed hook continued to `C1A5D574`, the next record.
+This is an offline causal reproduction, not a full GUI or camera success.
+
+The real interpreter also consumed the eight-byte `FFFFFFFF` terminator at
+`C1A792F3` and returned `1`. Earlier claims that the terminator or last record
+was never dispatched were unsupported by aggregate counters. The original
+terminator anchor is restored; the undeployed Menu-anchored mode was removed
+because it changed record ordering without addressing this return contract.
+The injector now preserves replacement status and stops a run on the first
+nonzero result, restoring the reader before returning it.
+
+Three new status regressions failed before the fix and passed afterward.
+The verifier now checks fourteen cases, including the terminator's `1`.
+Build `builds/fplab-status-fix-offline` passed the existing 30 firmware guards
+and reservation-overlap checks. No camera, card or live USB writes were made.
+
+### The missing layer for a full page
+
+Native directory construction is now exercised, not inferred from identical
+page copies. Parsing the stock directory at `C18EB48C` with the real interpreter
+constructed 221 runtime entries. Serialized entries are 32 bytes; runtime
+entries are **44 bytes**, held at reader `+0xAC`, count at `+0xA8`.
+The `B2_5` runtime entry contains name pointer `C18C9FD4` and stream offset
+`0x19C130`, resolving to `C1A5C590`.
+
+Instructions `C05E66C6..C05E6746` resolve the name, reject an existing name via
+`C05E04E8`, construct a 100-byte scene object with `C05D9080`, register it via
+`C05E0CC8` (context vector `+0x7C`), and copy the descriptor. The loader later
+reads this runtime copy, not the serialized directory word. Bounded allocator,
+reader callbacks and preallocated context-vector storage were modelled; the
+native registry insertion and descriptor construction executed. Rendering and
+application-state routing were not exercised.
+
+This gives a concrete next route: preserve an intact donor's components and
+animations, register a private scene through the native directory path, then
+resolve its application-state entry and return context together. A scene name
+in the resource registry is not by itself a selectable application state.
+`controlAppState`, Right/OK, `MENU_ReturnScreen`, focus restoration, private
+variable registration and teardown still need an end-to-end proof. Do not
+replace them with a root-only Blank/Test scene, reuse donor setting bindings as
+private controls, or infer sufficient camera allocation from the zero-size
+component model.
 
 ## Corrections to our own notes
 

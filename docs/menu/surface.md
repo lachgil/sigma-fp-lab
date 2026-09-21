@@ -104,11 +104,13 @@ What is possible, and needs no new bytes:
 
 - **Repurpose an existing row** — relabel it and retarget its jump. Both halves
   are single-word edits; the label half is confirmed on hardware.
-- Rebuilding a whole scene region from the card at boot is the only route to a
-  genuinely new row, and is unproven.
+- Parser-time substitution can add records without moving the stock stream.
+  Whole-scene relocation also needs the runtime resource descriptor, not just
+  its serialized directory entry. See
+  [the loader investigation](gui-resources.md#firmware-loader-investigation-and-status-fix-2026-09-21).
 
-So "add our own menu item" is best read as: take a row whose feature is not
-wanted, give it our label and our destination.
+Repurposing an existing row is one experiment, not a limit on the user's
+requested full native menu.
 
 ### Cautions specific to this area
 
@@ -466,7 +468,7 @@ path, and the two should not be confused while bisecting.
 Four routes were tested on the camera. **None of them put a new row on screen**,
 and the negative results are worth more than the attempts.
 
-**Relocating a page does not work: the directory pointer is cached at boot.**
+**Changing the serialized directory word did not relocate the displayed page.**
 Each scene's payload offset is one big-endian word in the directory (MainB5 at
 `0xC18EC768`, MainB1 at `0xC18EC7E8`, offset from the NBU base). A byte-identical
 127 KB copy of MainB5 was assembled in our own RAM with an on-camera memcpy and
@@ -476,11 +478,11 @@ is read or ignored. The decisive test came later: with a page relocated, an
 edit *inside our copy* changed nothing on screen. The camera is still drawing
 from the original. Do not repeat the identical-copy test and call it proof.
 
-**A rebuilt page with an extra row is structurally accepted.** Two were built and
-verified byte for byte in camera memory: MainB5 with 226 objects (up from 215)
-and MainB1 with 231 (up from 231-16). Container child count, header object count
-and the per-record census were all updated, and the loader did not complain.
-That work is sound; it is simply never read, for the reason above.
+**Rebuilt page bytes were verified in camera memory, not demonstrated as loaded.**
+MainB5 was rebuilt with 226 objects (up from 215), MainB1 with 231 (up from 215).
+Container child count, header object count and the per-record census were
+updated. Absence of a loader complaint does not establish structural acceptance
+when the relocated bytes were not shown to be consumed.
 
 **Pages are six fixed slots, not a list.** Row objects carry an absolute y in
 their `0x10004` objectBase: 0, 81, 162, 243, 324, 405. `_STILL` and `_CINE` rows
@@ -495,12 +497,14 @@ That contradicts the 2026-09-12 Zebra rename, which is recorded here as having
 worked on `MainB5`. Something differs between those two cases -- scene, record,
 or what is cached when -- and it is NOT established which.
 
-**Unexplored, and the better lead:** the menu has a second resource layer. 195
-`.cvm` list resources are named exactly after rows (`../MenuB12/data/ListB12/
-B1_5_1.cvm`, `B1_2_4_1.cvm`, ...). The NBU scene looks like the frame -- slots,
-cursor, animation -- while these lists plausibly carry the items. The row-title
-edit that worked may have been a title, not an item.
+**Follow-up, 2026-09-21:** the `.cvm` layer supplies choices within existing
+widgets, as FP3K's working third Resolution choice demonstrates. It does not
+replace native scene registration for a new page.
 
-**If this is picked up again**, the two live options are: decode the `.cvm` layer
-first, or patch the directory word from the card at boot, before the UI caches
-it, which is the only way a relocated page could ever be read.
+Real directory parsing now demonstrates the separate runtime descriptor:
+44-byte entries at reader `+0xAC`, count at `+0xA8`, with the copied scene offset
+at entry `+8`. Scene loader `C05E82F0` uses this copy. A boot-time serialized
+directory edit is therefore not the only possible intervention. The native
+constructor/registry path and its unverified application-state navigation
+boundary are documented in
+[gui-resources.md](gui-resources.md#firmware-loader-investigation-and-status-fix-2026-09-21).

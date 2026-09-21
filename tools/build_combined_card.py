@@ -194,15 +194,10 @@ def main():
                              'printed at the end. A diagnostic: it changes no '
                              'behaviour')
     parser.add_argument('--fplab-row', action='store_true',
-                        help='add an "FP LAB" row to the camera\'s own Record '
-                             'Settings page, built from the Frame Rate row and '
-                             'named through our own string resolver. Has NEVER '
-                             'run on a camera: see docs/menu/gui-resources.md')
-    # --fplab-page is withdrawn: the row it built was a copy of an Auto ISO
-    # limit row grafted with its navigation and animation records dropped, and
-    # it was never a working native FP LAB entry. src/nbuinject.S and
-    # tools/verify_nbuinject.py keep the proven injection mechanism offline;
-    # tools/fplab_page.py is now a declaration-only experiment.
+                        help='build the experimental native FP LAB row candidate. '
+                             'Earlier versions prevented Record Settings from '
+                             'opening; the parser-status fix is offline verified '
+                             'only. See docs/menu/gui-resources.md')
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
                         help='FieldAngle selector for FHD/59.94 CinemaDNG. '
                              'Default 173, measured on hardware 2026-09-11: the '
@@ -392,13 +387,16 @@ entry:
             # three answered out of the pool. Each entry carries the stock
             # record's length and FNV-1a, so a record that does not match byte
             # for byte is left alone and counted at state +0x0C.
+            # Keep the stock record order. The undeployed Menu-anchored run
+            # moved components before later stock declarations and was not a
+            # demonstrated fix for the scene-loader failure.
             pooled = (
                 (plan['header_at'], plan['header_stock_size'], INJECT_HEADER_OFF,
                  plan['header'], 2, 'enlarged scene header'),
                 (plan['menu_at'], len(plan['menu_stock']), INJECT_MENU_OFF,
-                 plan['menu'], 2, 'Menu declaration, one more child'),
+                 plan['menu'], 2, 'Menu declaration with one more child'),
                 (plan['tail_at'], plan['tail_size'], INJECT_RECORDS_OFF,
-                 plan['body'], 3, 'FP LAB row records'),
+                 plan['body'], 3, 'FP LAB row before the scene terminator'),
             )
             table = b''
             for record, length, offset, buffer, mode, why in pooled:

@@ -26,8 +26,8 @@
  * Entered with B.W (T4), so lr still belongs to the interpreter's caller.
  *
  * Table entry, 24 bytes:
- *   +0x00 stock record address      +0x0C mode: bit 0 = inject a run rather
- *   +0x04 stock record length             than replace one record,
+ *   +0x00 stock record address      +0x0C mode: bit 0 = emit a run of records
+ *   +0x04 stock record length             rather than replace one,
  *   +0x08 stock FNV-1a                    bit 1 = the buffer is a
  *                                         pool-relative offset
  *                                  +0x10 buffer address or pool offset
@@ -120,6 +120,7 @@ inject_guarded:
     str     r0, [r4, #36]
     mov     r0, r4
     bl      inject_original
+    str     r0, [sp]               @ preserve the native parser status
     str     r5, [r4, #36]
     add     r0, r7, r11
     str     r0, [r4, #4]
@@ -127,6 +128,7 @@ inject_guarded:
     ldr     r1, [r0, #4]
     add     r1, r1, #1
     str     r1, [r0, #4]
+    ldr     r0, [sp]
     b       inject_return
 
 inject_run:
@@ -141,6 +143,8 @@ inject_next:
     str     r0, [r4, #36]
     mov     r0, r4
     bl      inject_original
+    cmp     r0, #0
+    bne     inject_run_failed       @ do not parse more after a native error
     str     r7, [r4, #4]
     ldr     r0, [r10, #4]           @ this record's big-endian length
     rev     r0, r0
@@ -151,8 +155,14 @@ inject_next:
     str     r1, [r0, #8]
     b       inject_next
 inject_run_done:
+    str     r5, [r4, #36]           @ restore stock stream at the anchor
+    str     r7, [r4, #4]
+    b       inject_stock
+
+inject_run_failed:
     str     r5, [r4, #36]
     str     r7, [r4, #4]
+    b       inject_return           @ r0 still holds the native failure
 
 inject_stock:
     mov     r0, r4
