@@ -339,6 +339,85 @@ replace them with a root-only Blank/Test scene, reuse donor setting bindings as
 private controls, or infer sufficient camera allocation from the zero-size
 component model.
 
+### Application-state routing resolved, 2026-09-21
+
+A row opens a page through a `controlAppState` record whose `sync-request` names
+a destination **application state**, not a scene. `tools/native_navigation.py`
+decodes a row's key groups and reports each destination and its return context:
+
+```text
+MainB5/B5_5   Enter -> SetupHelpMenu   frame present, ...
+              Enter -> optionOn        NO frame, ...
+```
+
+`SetupHelpMenu` has a scene frame of that name; `optionOn`/`optionOff` do not.
+Both are application states. This is the decisive point: **the state name is
+resolved against a per-context state registry, not the NBU scene directory.**
+Registering a private scene in the directory (the runtime descriptor above)
+does not create a selectable state.
+
+The path, all confirmed by disassembly:
+
+- `controlAppState` schema is registered by its constructor `C05F1440`
+  (`sync-request`, `app-sync-request`, `to-uic`, `skip-anim`,
+  `send-all-shared-context`, `view-state-event`, `essential`,
+  `to-all-shared-context`).
+- action handler `C05F1398` reads those 8 properties, resolves the receiver via
+  `C05D70E8`, then calls the request path `C05DC8E0` (no app-sync) or
+  `C05DC9A0` (with `app-sync-request`/`to-uic`).
+- the request walks the context's state subsystem at object `+0x198`; the state
+  machine core is `C05DC178`. Name to state entry is `C05ED3B8` (FNV lookup);
+  `C05ED248` inserts one.
+- state tables are installed into every GUI context by
+  `C055F8F0(contexts, count, table)`; call sites `C055FCB4`, `C0560470`,
+  `C0562988`, `C0564014`, `C0564BDC`. Entries are fixed-size records, distinct
+  from scene bytes. Per-context construct/teardown is `C05DA3D0`/`C05DA51E`.
+
+So a private FP LAB page needs one of:
+
+1. reuse an existing stock state name for the row's `sync-request`, and make its
+   frame our private scene (simplest, but collides with the stock page), or
+2. register a private application state whose name our row targets, through the
+   same `C055F8F0`/`C05ED248` path a stock table uses, then point its frame at
+   the private scene.
+
+`MENU_ReturnScreen` is written by a sibling `controlAppVariable` in the same key
+group and is how the opened page returns; a private row MUST write it too, which
+is the return-context half the 2026-09-14 hardware retarget dropped. Focus
+restoration, private variable registration and teardown are still unproven end
+to end, and none of this has been on a camera.
+
+### Intact animated donor: the exact clip-allocation blocker, 2026-09-21
+
+`nbu_scene.graft` already carries animation groups, clips, tracks and keys with
+their header contributions, so keeping the Frame Rate row's animations is a
+`_array_slice` question, not new machinery. The remaining blocker is now exact
+numbers, not a vague "positional entries cannot be sliced".
+
+The Frame Rate row (`4433`) subtree holds 6 `animationClip` group records and
+**29** clip records. But its numbers do not agree three ways:
+
+| source | clips |
+| --- | --- |
+| clip records in the subtree | 29 |
+| the group records' own `+0x10` field, summed | 28 |
+| the header `groups[i][2]` reservations, summed | 30 |
+
+The header total is authoritative for the whole scene (its per-group counts sum
+to the 214 `animationClip` entries that equal `clip_tracks`' length), so the
+grafted header must reserve 30. What is unresolved is which clip slots the 29
+records fill and why the group record's own count is 28: records fewer than
+reservations implies default-filled slots, but that mapping is not proven, and
+emitting a header whose clip reservation disagrees with the interpreter's own
+per-group fill would corrupt the scene arena. `_array_slice` now raises this as
+a precise numeric error rather than a blind slice.
+
+Resolving it needs the runtime association captured from the native animation
+parser (`0xC05E7B78`, jump table `0xC05E7BC0`) for these six groups: how many
+clip slots each consumes and how a clip record selects its slot. That is the
+one measurement between here and an animated intact row; until then the shipped
+candidate stays animation-dropped and `installable=False`.
+
 ## Corrections to our own notes
 
 - The compression engine's throughput, unknown in earlier notes, was **measured

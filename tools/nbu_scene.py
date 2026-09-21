@@ -215,10 +215,14 @@ def _array_slice(image: bytes, donor: Scene, picked: list[tuple[int, int, int]]
     if not picked_groups and not clip_records and not picked_lists:
         return [], [], [], []
     wanted_clips = sum(g[2] for g in picked_groups)
-    if clip_records and clip_records != sum(
-            struct.unpack_from('>3I', image, at + 8)[2]
-            for at, tag, _s in picked if tag == GROUP):
-        raise ValueError('copied clips do not belong to the copied groups')
+    record_clips = sum(struct.unpack_from('>3I', image, at + 8)[2]
+                       for at, tag, _s in picked if tag == GROUP)
+    if clip_records and clip_records != record_clips:
+        raise ValueError(
+            'clip allocation is ambiguous: %d clip records, %d declared by the '
+            'group records (+0x10), %d reserved by the header groups. These must '
+            'agree before an intact animated row can be grafted.'
+            % (clip_records, record_clips, wanted_clips))
     if picked_groups and group_index is None:
         raise ValueError('group records are not part of the copied span')
     tracks = header.clip_tracks[clip_index:clip_index + wanted_clips] if wanted_clips else []
