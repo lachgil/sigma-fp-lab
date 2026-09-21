@@ -454,6 +454,32 @@ identify which controller bounds row travel and whether the stock rows' bound
 must grow by one for a sixth row, before flashing again. Do not flash a guessed
 bump: confirm the controller first.
 
+### Focus-ring diagnosis, 2026-09-21 (camera)
+
+User at the camera: pressing Down on Frame Rate, the highlight LEAVES Frame Rate
+but FP LAB never lights, and it never highlights on a full up/down scroll. So
+focus advances off the last stock row and wraps WITHOUT visiting ours: the row
+is a Menu child (7 children verified) with a full `MenuItem_Select` focus subtree
+copied intact, yet it is not a member of the native focus ring.
+
+What is now ruled out as the discriminator:
+- `tab-index`: every row's `MenuItem_Select` reads `tab-index 0x1` (identical),
+  so it is not a per-row focus order key.
+- `layout-item-index`: per value-choice inside a row (0..7/8), not per row.
+- `SYS_SubmenuIndex`/`SubmenuFocus`: the row's selected VALUE, sourced from the
+  row's value controller, not a row cursor.
+- child membership: ours is a proper Menu child at its slot and DRAWS.
+
+The highlight is each row's own `MenuItem_Select` `focusEvent` -> `controlAnimation`
+`Main_Focus`/`Focus_On`; the shared `Cursor`/`Cursor01..03` bars (objects
+`0x39`/`0x34..0x36`) are positioned by the focus system to the focused item. The
+rows themselves carry NO Up/Down `controlFocus` (that navigation is native), so
+the focus ring is assembled by firmware, and it excludes a sixth item. The ring
+is therefore a fixed-size or count-bounded native structure sized to the stock
+row count. Next: reverse the native focus-list builder (who enumerates the
+MenuItem_Select children and how the ring is bounded) or read it live over the
+USB shell with the menu open. Do NOT flash another guess.
+
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
 groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,
