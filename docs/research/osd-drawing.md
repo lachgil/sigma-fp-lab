@@ -132,7 +132,9 @@ and `CLEAR_H` into `src/fcscale_native.inc.S`, with the band boundaries and the
 label positions mapped onto the narrower bar and the glyph bitmaps box-averaged
 down to the smaller size. The default is 0.85 with 84 rows cropped off the bar:
 a 30-row bar 870 px wide, inset 77 px, labels 21 rows above it, and the bar's
-last row left at 582 where the firmware puts it.
+last row on the layer's own last row, 681. The firmware puts its bar's last row
+at 582, which leaves 99 rows of layer under it: on the camera that reads as the
+scale floating in the picture rather than sitting along the bottom of it.
 
 The bands stay contiguous by construction (each ends one pixel before the next
 begins) and the verifier checks the rescaled edges carry the firmware's own

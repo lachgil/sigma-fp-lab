@@ -99,7 +99,9 @@ SURFACE_W = 1024                # the layer's width, and the row the bands span
 SURFACE_H = 682
 CROP_BOTTOM = 84                # rows taken off the bottom of the firmware's bar
 SCALE = 0.85                    # what is left is drawn at this fraction of its size
-BAR_BOTTOM = 582                # the bar's last row: the firmware's own, kept
+BAR_BOTTOM = SURFACE_H - 1      # the bar's last row: the bottom of the layer.
+# The firmware puts its own bar's last row at 582, which leaves 99 rows of layer
+# under it -- on the camera that reads as floating, so the card sits it on the edge.
 # Coverage at which a resized glyph pixel is drawn. Resizing averages the
 # firmware's own coverage, so a one-pixel stroke dims instead of vanishing;
 # the threshold is lower than the unresized 128 to keep it.
