@@ -525,6 +525,20 @@ experiment, and it needs the header-array insertion to match the new stream
 position. Confirm the registration point (who builds the focusable-row list, and
 when) before reordering, ideally with a live read while the menu is open.
 
+### Focusable predicate is a context gate, 2026-09-21
+
+The navigator's is-focusable test (`C05D4078`->`C05D4020`, with `C05D40C0`
+returning `[obj+0x8c]`) is not a simple flag: it walks an ancestor/context chain
+comparing `[obj+0x8c]` (the object's owning context/screen) and `[+0x1c]` up the
+parents. That is a "is this object part of the currently active view/context"
+gate. Whether our grafted row's `+0x8c` matches the stock rows is a RUNTIME
+value; it cannot be read offline, and the emulator does not model this context
+wiring. This is the true boundary: the row is structurally a perfect clone, but
+its runtime context membership (which governs focusability) needs a live read.
+Offline disassembly past this point yields more questions than answers. Next
+real step is a live `[row+0x8c]` read with the menu open, or an on-camera A/B,
+not more static tracing.
+
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
 groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,
