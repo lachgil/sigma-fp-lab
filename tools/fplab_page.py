@@ -320,6 +320,22 @@ def verify_row(image: bytes, plan: dict) -> dict:
 
     external = set(plan['references_left_stock'])
     grown = ns.decode_header(plan['header'])
+    # Every component kind the grown header reserves must match the record census
+    # of the grafted scene (stock records + the row body), so the firmware sizes
+    # the arena for exactly what arrives. animationClip is reserved per group, so
+    # its count is the stock reservation plus the row's 30, not a record count.
+    clip_key = next(key for key, _ in scene.header.kinds
+                    if nc.pool_text(image, key) == 'animationClip')
+    census = collections.Counter(
+        struct.unpack_from('>I', image, at + 8)[0]
+        for at, tag, _s in scene.records if tag in ns.NAMED and tag != ns.CLIP)
+    pos = 0
+    while pos < len(body):
+        tag, size = struct.unpack_from('>II', body, pos)
+        if tag in ns.NAMED and tag != ns.CLIP:
+            census[struct.unpack_from('>I', body, pos + 8)[0]] += 1
+        pos += size
+    census[clip_key] = dict(scene.header.kinds)[clip_key] + 30
     checks = {
         'every emitted record decodes to its own length': lengths,
         'the row declares exactly the private ids': declared == private,
@@ -343,6 +359,8 @@ def verify_row(image: bytes, plan: dict) -> dict:
             and len(grown.groups) == len(scene.header.groups) + 6
             and len(grown.clip_tracks) == len(scene.header.clip_tracks) + 30
             and len(grown.track_keys) == len(scene.header.track_keys) + 95,
+        'the header reserves exactly the grafted component census':
+            dict(grown.kinds) == dict(census),
     }
 
     vm = SceneVM(image)
