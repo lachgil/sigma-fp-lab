@@ -480,6 +480,25 @@ row count. Next: reverse the native focus-list builder (who enumerates the
 MenuItem_Select children and how the ring is bounded) or read it live over the
 USB shell with the menu open. Do NOT flash another guess.
 
+Native enumerator traced. The row Up/Down is `controlFocus` do-loop, handler
+`C05F2020..`, no-target branch at `C05F20A4`: it reads the parent, walks its
+children by index (`C05D1760` count, `C05D1780` get-by-index), and for each
+calls the child's `vtable+8` type, skipping type `7`, taking the first focusable.
+This is DYNAMIC, so a constructed child should be found. That contradicts the
+symptom, so the cause is one of two runtime facts static analysis cannot settle:
+
+1. our row's constructed object reports type `7` (skip) to `vtable+8`, so the
+   enumerator passes it, or
+2. focus does land on our row but its `MenuItem_Select` `Main_Focus`/`Focus_On`
+   highlight is the empty animation slot (the 29-vs-30 clip), so it is
+   invisibly focused (which would also explain "can't enter" if Right was not
+   tried while invisibly on it).
+
+Deciding needs the live camera: read the constructed row's type and the focus
+state with the menu open. The USB shell times out while the menu is open
+(`moved=0/64`), so a reliable live read, or a targeted A/B (move the row far and
+watch where any highlight lands), is the next step. Not another blind flash.
+
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
 groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,
