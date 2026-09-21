@@ -200,6 +200,42 @@ menu for about a second, until each buffer happened to be submitted again.
 playback, neither buffer has a pixel left -- and that case fails if the call is
 removed.
 
+### The camera releases a key it never pressed, 2026-09-21
+
+Opening and closing the camera menu switched the scale on by itself. Two RAM
+fixes (clearing every buffer at the transition, then on the first frame the gate
+closes) did not touch it, because neither was the cause.
+
+The USB shell settled it. With the shell up and the payload armed over it
+(`tools/autorun_over_usb.py`), `tools/fcstate.py` read the state block live
+while the camera was operated:
+
+    presses=1  releases=3  held_ms=21659  holds=3  mode=2  scale=1
+
+**The camera calls the release method (`0xC0372330`, CameraIF `+0xD0`) with no
+matching call to the press method.** Our release measured one of those against a
+press timestamp 21 seconds old, read it as a 21,659 ms hold, and worked the
+scale. A press now sets an outstanding flag and only a release that finds it set
+does anything; it returns 1 on every path either way, which is what the stock
+method's callers read as success.
+
+Two things worth keeping from this:
+
+- **`+0x2C` is not free.** The flag went there first and the bug survived,
+  because `+0x28..+0x30` are the buffer slots: it read back as a buffer address,
+  was never zero, and the check never fired (`presses=1` against `holds=8`). It
+  lives at `+0x34` now. The offline suite had passed the bad version because no
+  frame had been submitted that early in its script, so the slot was still
+  zero -- the unpaired-release cases now run after the buffers are tracked, and
+  a case asserts the slots hold buffer addresses.
+- **Appending a payload's AutoRun to the shell's card does not work.** The
+  loader becomes the worker part way through the script and the rest is never
+  executed. Send the lines over the live shell instead, which also means arming
+  and re-arming without a reboot: three fix attempts were tested in minutes.
+
+Confirmed on the camera: `presses=3` against `releases=6`, `holds=1`, and the
+menu no longer disturbs it.
+
 The button is worked by duration rather than by counting presses: the press
 switches the mode on (posting `0x21` immediately, so it feels instant), and the
 release decides what else happens from the camera's own millisecond clock

@@ -234,6 +234,23 @@ def main() -> None:
     check(f"the next UI frame is painted, in rows {min(SCALE_ROWS)}..{max(SCALE_ROWS)} "
           'only, identically', cam.rows_written() == SCALE_ROWS and pixels == back)
     check('every write is a 16-bit pixel', set(cam.writes.values()) == {2})
+
+    # A release the camera makes on its own, with no press of ours behind it.
+    # It arrives on opening the menu (camera, 2026-09-21: presses=1 against
+    # releases=8), and measured against an old press timestamp it reads as a
+    # long hold, which worked the scale. The buffers are tracked by now, which
+    # is the point: the outstanding-press flag must not live in a buffer slot,
+    # or it reads back as a buffer address, is never zero and never fires.
+    check('the buffer slots hold buffers, so the flag is not among them',
+          cam.state(0x28) == PIX_UI and cam.state(0x2C) == PIX_FRONT)
+    check('an unpaired release changes nothing and still reports success',
+          cam.call('fc_release', r0=CAMERA_IF) == 1 and cam.state(0) == 2
+          and cam.state(0xC) == 1 and cam.state(0x18) == 1
+          and cam.events == [0x21])
+    cam.now += 30_000
+    check('and one arriving 30 s later is not a hold either',
+          cam.call('fc_release', r0=CAMERA_IF) == 1 and cam.state(0) == 2
+          and cam.state(0xC) == 1 and cam.state(0x18) == 1)
     bands = card.scaled_bands(image)
     pal = card.palette(image)
     check("the bar carries the firmware's colours, converted, opaque, at its edges",
@@ -330,8 +347,8 @@ def main() -> None:
     check('the UI buffer is cleared on its next frame', not any(cam.pixels()))
     cam.ui_submit()
     check('an idle frame touches nothing', not cam.writes)
-    check('every press and release was accounted for',
-          cam.state(4) == cam.state(8) == 6)
+    check('every press and release was counted, including the two unpaired ones',
+          cam.state(4) == 6 and cam.state(8) == 8)
 
     report = dict(cases=results, code_bytes=len(cam.code), events=cam.events,
                   submits=len(cam.submitted),

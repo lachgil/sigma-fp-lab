@@ -53,6 +53,7 @@
  *   +0x14 how long the last press was        +0x78 frames painted
  *   +0x18 holds acted on                     +0x7C next slot to evict
  *   +0x1C the mode when the press arrived    +0x8C bytes per pixel, while painting
+ *   +0x34 a press is outstanding
  *   +0x20 width in pixels, while painting
  *   +0x24 height, while painting
  *   +0x28..+0x30 the layer's three buffers
@@ -114,6 +115,8 @@ fc_press:
     LDA     ip, CLOCK
     blx     ip
     str     r0, [r5, #0x10]
+    mov     r1, #1
+    str     r1, [r5, #0x34]         @ a press is now outstanding
     ldr     r0, [r5]
     str     r0, [r5, #0x1C]         @ the mode this press started from
     cmp     r0, #0
@@ -136,6 +139,16 @@ fc_press:
  *   started on,  short    off, and the scale with it
  *   started on,  hold    the scale toggles, the mode stays on
  *
+ * A RELEASE IS ONLY OURS IF WE SAW ITS PRESS. The camera calls this slot on
+ * its own -- live on the camera, 2026-09-21: presses=1 with releases=3, and
+ * one of the spare releases arrived on opening the menu. Measured against a
+ * press timestamp 21 seconds old it read as a 21,659 ms hold and switched the
+ * scale on, which is the scale "coming back" after the menu. The outstanding
+ * flag at +0x34 makes an unpaired release a no-op. It is at +0x34 and not in
+ * the gap at +0x2C because +0x28..+0x30 are the buffer slots: a flag put there
+ * reads back as a buffer address, is never zero, and the check never fires
+ * (camera, 2026-09-21: presses=1 with holds=8).
+ *
  * The stock method returns the post's result and callers read it as a success
  * flag, so this returns 1 on every path. */
 .global fc_release
@@ -147,6 +160,11 @@ fc_release:
     ldr     r1, [r5, #8]
     add     r1, r1, #1
     str     r1, [r5, #8]
+    ldr     r0, [r5, #0x34]         @ ours only if its press came through here
+    cmp     r0, #0
+    beq     3f
+    mov     r0, #0
+    str     r0, [r5, #0x34]
     LDA     ip, CLOCK
     blx     ip
     ldr     r1, [r5, #0x10]
@@ -458,14 +476,17 @@ fc_present:
 9:  pop     {r4, pc}
 
 .if PROBE != 0
-/* draw_probe: a row of ticks at the top left, one per unit of the UI state
- * word at UI_STATE, drawn on every frame whatever the gate decides.
+/* draw_probe: three rows of ticks at the top left, drawn on every frame
+ * whatever the gate decides. Each row is a count in unary, so it is read off
+ * the screen with no USB shell:
  *
- * It exists to answer one question without a USB shell: what value that word
- * holds while the camera menu is open. The gate treats 4 as playback and 5 as
- * the menu, and those were read on one build in one mode; if the menu uses
- * another value the gate never closes and the scale is painted over the menu.
- * Count the ticks on screen and the value is known.
+ *   row 1   UI_STATE          2 live view, 4 playback, 5 camera menu
+ *   row 2   presses (+0x04)   every call into fc_press, whoever made it
+ *   row 3   mode (+0x00)      0 off, 1 on, 2 on with the scale
+ *
+ * Row 2 is the one that matters now: if it counts up when a key we never
+ * touched is pressed, the CameraIF slots we replaced are not private to the
+ * button the Custom menu points at. Counts are shown modulo TICK_MAX.
  *
  * Built only with `--probe`. The shipped card has PROBE = 0 and none of this
  * is assembled. */
@@ -474,50 +495,70 @@ fc_present:
 .equ TICK_W,    10
 .equ TICK_H,    14
 .equ TICK_STEP, 14
+.equ TICK_ROW,  20
 .equ TICK_MAX,  20
 draw_probe:
-    push    {r4, r5, r6, lr}
+    push    {r4, lr}
+    LDA     r4, STATE
+    LDA     r0, UI_STATE
+    ldr     r0, [r0]
+    mov     r1, #TICK_Y
+    bl      probe_row
+    ldr     r0, [r4, #4]
+    mov     r1, #(TICK_Y + TICK_ROW)
+    bl      probe_row
+    ldr     r0, [r4]
+    mov     r1, #(TICK_Y + 2 * TICK_ROW)
+    bl      probe_row
+    ldr     r5, [r4, #0x20]         @ the panel reads memory: clean the strip
+    ldr     r2, [r4, #0x8C]
+    mov     r1, #TICK_Y
+    mul     r1, r5, r1
+    ldr     r0, [r4, #0x3C]
+    mla     r0, r1, r2, r0
+    mov     r1, #(3 * TICK_ROW)
+    mul     r1, r5, r1
+    mul     r1, r2, r1
+    bl      clean_range
+    pop     {r4, pc}
+
+/* probe_row(value, y): `value` ticks, modulo TICK_MAX, at row y. */
+probe_row:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, sp, #4
     LDA     r6, STATE
+    mov     r7, r1
+    mov     r5, r0
+1:  cmp     r5, #TICK_MAX           @ modulo, without a divide
+    subhs   r5, r5, #TICK_MAX
+    bhs     1b
     mov     r0, #C_CLEAR            @ the whole strip, so a smaller count
     str     r0, [r6, #0x40]         @ cannot leave the previous one's tail
     mov     r0, #TICK_X
-    mov     r1, #TICK_Y
+    mov     r1, r7
     movw    r2, #(TICK_STEP * TICK_MAX)
     mov     r3, #TICK_H
     bl      fill_rect
-    LDA     r0, UI_STATE
-    ldr     r5, [r0]
-    cmp     r5, #TICK_MAX
-    movhi   r5, #TICK_MAX
     cmp     r5, #0
-    beq     2f
+    beq     3f
     ldr     r0, [r6, #0x8C]
     cmp     r0, #2
     movweq  r0, #C_LABEL16
     movne   r0, #C_LABEL
     str     r0, [r6, #0x40]
     mov     r4, #0
-1:  mov     r0, #TICK_STEP
+2:  mov     r0, #TICK_STEP
     mul     r0, r4, r0
     add     r0, r0, #TICK_X
-    mov     r1, #TICK_Y
+    mov     r1, r7
     mov     r2, #TICK_W
     mov     r3, #TICK_H
     bl      fill_rect
     add     r4, r4, #1
     cmp     r4, r5
-    blo     1b
-2:  ldr     r5, [r6, #0x20]         @ the panel reads memory: clean the strip
-    ldr     r2, [r6, #0x8C]
-    mov     r1, #TICK_Y
-    mul     r1, r5, r1
-    ldr     r0, [r6, #0x3C]
-    mla     r0, r1, r2, r0
-    mov     r1, #TICK_H
-    mul     r1, r5, r1
-    mul     r1, r2, r1
-    bl      clean_range
-    pop     {r4, r5, r6, pc}
+    blo     2b
+3:  add     sp, sp, #4
+    pop     {r4, r5, r6, r7, pc}
 .endif
 
 /* draw_scale(base, wanted): clear the scale's rows, then draw it if wanted.
