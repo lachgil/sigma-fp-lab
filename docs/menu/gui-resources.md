@@ -429,6 +429,31 @@ leftover stock ids, and `verify_row` passes 15/15 with the animation groups,
 clips and keys carried across. The row body is the full 17,144 bytes / 294
 records. Still offline only: drawing, focus and the camera remain unproven.
 
+### First hardware result for the intact row, 2026-09-21
+
+On the camera (SD `1749-D0A5`, intact build): **the FP LAB row appears**, named
+correctly, in its own slot under Frame Rate. That confirms end to end on
+hardware: the parser-status fix (Record Settings opens), the intact graft, the
+private string resolver (label), the enlarged header, and the y=324 slot. This
+is the first time any added row has drawn on the camera.
+
+Remaining: the row **does not highlight and cannot be entered**. It is a proper
+Menu child (7 children, verified), visible at its slot, but the cursor never
+lands on it. Row-to-row navigation is NOT in the rows' own records: each row's
+Up/Down `controlFocus` is empty, and the cursor is driven by an index/ListFocus
+bound that lives outside the copied subtree, so our identical copy of Frame Rate
+is not in the focus ring.
+
+Leads for the cursor bound (each row carries `controlValue` controllers with a
+`max-value` and `terminal-type`): the four stock rows read `max-value 7`, while
+Frame Rate (the last row) reads `max-value 8` on its two focus controllers
+(`0x1152`, `0x1156`) and `max-value 9` on `0x1158`. That per-row step is the
+likely cursor-range encoding, analogous to FP3K's resolution-list `max-value`
+bump (`C1A709BC` 1->2) that made its third choice reachable. The next step is to
+identify which controller bounds row travel and whether the stock rows' bound
+must grow by one for a sixth row, before flashing again. Do not flash a guessed
+bump: confirm the controller first.
+
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
 groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,
