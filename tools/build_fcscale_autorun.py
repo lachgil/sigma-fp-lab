@@ -6,9 +6,8 @@ One file, and nothing in it but this. No menu, no key hook, no panel, no gyro,
 no USB shell, no recording changes. The only button involved is the one the
 camera's own Custom Button Functions menu already points at False Color.
 
-    press 1   mode on, and it stays on
-    press 2   the scale appears across the bottom
-    press 3   both off
+    press         False Color / EL Zone on (or off again, from either state)
+    hold 1/2 s    on WITH the scale, and while it is on, the scale on and off
 
     ./tools/build_fcscale_autorun.py [--out DIR]
 
@@ -46,6 +45,12 @@ SITE_STOCK = 0xE92D4010         # push {r4, lr}, in both
 SUBMIT_SITE = 0xC02E8A08        # display submit(controller, descriptor, sub)
 SUBMIT_STOCK = 0xE92D48F0       # push {r4, r5, r6, r7, fp, lr}, replayed by fc_submit
 
+# How long the button was held is measured with the camera's own millisecond
+# clock, the one the firmware's logger uses. The threshold is the difference
+# between a press and a hold, and the payload takes both from here.
+CLOCK = 0xC002B920
+HOLD_MS = 500
+
 # How an AutoRun runs code: the echo command's handler pointer is repointed,
 # `echo` is issued, and the stock handler is put straight back. Same slot the
 # fpSup loader itself uses.
@@ -79,6 +84,75 @@ LABELS = [(14, 'minus', 'six'), (82, 'minus', 'five'), (150, 'minus', 'four'),
           (410, 'minus', 'half'), (503, 'zero', None), (548, 'plus', 'half'),
           (630, 'plus', 'one'), (698, 'plus', 'two'), (766, 'plus', 'three'),
           (834, 'plus', 'four'), (902, 'plus', 'five'), (970, 'plus', 'six')]
+
+# ------------------------------------------------------------------ geometry
+
+# The firmware draws this scale for its own 3:2 screen: a 119-row bar across
+# the whole 1024-pixel row, with 25-row labels above it. On a 16:9 or wider
+# live view that lands well inside the picture and is far taller than the scale
+# needs to be read, so the card reshapes it. Three knobs, and nothing else
+# about the scale changes: the colours, the band boundaries and the glyphs are
+# still the firmware's own, mapped onto the smaller bar.
+STOCK_BAR_H = 119               # 0xC057DC94 memsets row 464, 0xC057DD1C copies to 582
+STOCK_LABEL_GAP = 9             # the labels end at 455 and the bar starts at 464
+SURFACE_W = 1024                # the layer's width, and the row the bands span
+SURFACE_H = 682
+CROP_BOTTOM = 84                # rows taken off the bottom of the firmware's bar
+SCALE = 0.85                    # what is left is drawn at this fraction of its size
+BAR_BOTTOM = 582                # the bar's last row: the firmware's own, kept
+# Coverage at which a resized glyph pixel is drawn. Resizing averages the
+# firmware's own coverage, so a one-pixel stroke dims instead of vanishing;
+# the threshold is lower than the unresized 128 to keep it.
+RESIZED_COVERAGE = 96
+
+
+def geometry() -> dict:
+    """Where the scale is drawn, derived from the knobs above."""
+    if not 0 < SCALE <= 1 or not 0 <= CROP_BOTTOM < STOCK_BAR_H:
+        raise SystemExit('the geometry knobs are out of range')
+    width = round(SURFACE_W * SCALE)
+    left = (SURFACE_W - width) // 2
+    bar_h = max(1, round((STOCK_BAR_H - CROP_BOTTOM) * SCALE))
+    glyph_h = max(1, round(GLYPH_H * SCALE))
+    bar_y = BAR_BOTTOM - bar_h + 1
+    label_y = bar_y - round(STOCK_LABEL_GAP * SCALE) - glyph_h
+    if label_y < 0 or BAR_BOTTOM >= SURFACE_H:
+        raise SystemExit('the scale does not fit on the layer')
+    return dict(width=width, left=left, bar_y=bar_y, bar_h=bar_h,
+                label_y=label_y, glyph_h=glyph_h, clear_y=label_y,
+                clear_h=BAR_BOTTOM + 1 - label_y)
+
+
+def scaled_bands(image: bytes) -> list[tuple[int, int, int]]:
+    """The firmware's bands mapped onto the resized bar, still contiguous:
+    each band ends one pixel before the next one starts, by construction."""
+    place = geometry()
+    native = bands(image)
+    edges = [place['left'] + round(x0 * place['width'] / SURFACE_W)
+             for x0, _, _ in native] + [place['left'] + place['width']]
+    out = [(edges[n], edges[n + 1] - 1, index)
+           for n, (_, _, index) in enumerate(native)]
+    if any(x1 < x0 for x0, x1, _ in out):
+        raise SystemExit('a band has no pixels left at this scale')
+    return out
+
+
+def scaled_labels() -> list[tuple[int, str, str | None]]:
+    place = geometry()
+    return [(place['left'] + round(x * place['width'] / SURFACE_W), first, second)
+            for x, first, second in LABELS]
+
+
+def resize_glyph(w: int, h: int, alpha: list[int], to_w: int, to_h: int) -> list[int]:
+    """Box-average the glyph's coverage to (to_w, to_h)."""
+    out = []
+    for y in range(to_h):
+        rows = range(y * h // to_h, max(y * h // to_h + 1, (y + 1) * h // to_h))
+        for x in range(to_w):
+            cols = range(x * w // to_w, max(x * w // to_w + 1, (x + 1) * w // to_w))
+            cells = [alpha[row * w + col] for row in rows for col in cols]
+            out.append(sum(cells) // len(cells))
+    return out
 
 
 def word(image: bytes, address: int) -> int:
@@ -183,6 +257,12 @@ def pack16(rgb) -> int:
     raise SystemExit(f'unknown PIXEL_ORDER {PIXEL_ORDER}')
 
 
+def defines() -> tuple[str, ...]:
+    """What the payload takes from here rather than repeating."""
+    return (f'STATE={STATE:#x}', f'SUBMIT_RESUME={SUBMIT_SITE + 4:#x}',
+            f'CLOCK={CLOCK:#x}', f'HOLD_MS={HOLD_MS}')
+
+
 def native_include(image: bytes) -> str:
     """The include: bands, labels and glyph bitmaps, all read from MAIN."""
     pal = palette(image)
@@ -192,18 +272,26 @@ def native_include(image: bytes) -> str:
     if pal[0][0] != 0:
         raise SystemExit('native palette index 0 is not transparent')
 
+    place = geometry()
     lines = ['/* Generated by tools/build_fcscale_autorun.py from the verified',
              ' * SIGMA fp Ver.5.02 MAIN image. Do not edit; rebuild the card. */',
              f'.equ BAND_N,       {BAND_N}',
              f'.equ LABEL_N,      {len(LABELS)}',
              f'.equ GLYPH_N,      {len(GLYPHS)}',
-             f'.equ GLYPH_H,      {GLYPH_H}',
-             f'.equ GLYPH_SIGN_W, {GLYPH_SIGN_W}',
+             f'.equ GLYPH_H,      {place["glyph_h"]}',
              f'.equ C_LABEL,      {white[0]}          /* index of opaque white */',
              f'.equ C_LABEL16,    {pack16((255, 255, 255)):#06x}      /* opaque white, {PIXEL_ORDER} 4:4:4 */',
+             '',
+             f'/* The scale at {SCALE:g} of the firmware\'s size, {CROP_BOTTOM} rows cropped off the',
+             f' * bottom of its bar, the bar\'s last row left where the firmware puts it. */',
+             f'.equ BAR_Y,        {place["bar_y"]}',
+             f'.equ BAR_H,        {place["bar_h"]}',
+             f'.equ LABEL_Y,      {place["label_y"]}',
+             f'.equ CLEAR_Y,      {place["clear_y"]}',
+             f'.equ CLEAR_H,      {place["clear_h"]}',
              '.balign 4',
-             f'bands:                      /* {BAND_TABLE:#x}: x0, x1 inclusive, palette index, 16-bit colour */']
-    for x0, x1, index in bands(image):
+             f'bands:                      /* {BAND_TABLE:#x}, rescaled: x0, x1 inclusive, palette index, 16-bit colour */']
+    for x0, x1, index in scaled_bands(image):
         a, y, u, v = pal[index]
         rgb = ayuv_to_rgb(pal[index])
         lines.append(f'    .short {x0}, {x1}; .byte {index}, 0; .short {pack16(rgb):#06x}'
@@ -211,26 +299,35 @@ def native_include(image: bytes) -> str:
 
     names = [name for name, _ in GLYPHS]
     lines.append('labels:                     /* x, first glyph, second glyph or 0xFF */')
-    for x, first, second in LABELS:
+    for x, first, second in scaled_labels():
         lines.append(f'    .short {x}; .byte {names.index(first)}, '
                      f'{names.index(second) if second else NONE}')
 
-    headers, bits = [], []
+    headers, bits, sign_w = [], [], None
     for name, address in GLYPHS:
         w, h, alpha = decode_xci(image, address)
         if h != GLYPH_H:
             raise SystemExit(f'glyph {name} is {h} rows, expected {GLYPH_H}')
         if name in ('minus', 'plus') and w != GLYPH_SIGN_W:
             raise SystemExit(f'sign glyph {name} is {w} wide, expected {GLYPH_SIGN_W}')
+        to_w, to_h = max(1, round(w * SCALE)), place['glyph_h']
+        coverage = 128                          # the icons are white; alpha is coverage
+        if (to_w, to_h) != (w, h):
+            alpha = resize_glyph(w, h, alpha, to_w, to_h)
+            coverage = RESIZED_COVERAGE
+            w, h = to_w, to_h
+        if name == 'minus':
+            sign_w = w
         per_row = (w + 31) // 32
         headers.append((len(bits), w, per_row, name))
         for row in range(h):
             value = 0
             for x in range(w):
-                if alpha[row * w + x] >= 128:       # the icons are white; alpha is coverage
+                if alpha[row * w + x] >= coverage:
                     value |= 1 << x
             for n in range(per_row):
                 bits.append((value >> (32 * n)) & 0xFFFFFFFF)
+    lines.insert(7, f'.equ GLYPH_SIGN_W, {sign_w}')
     lines.append('.balign 4')
     lines.append('glyph_hdr:                  /* offset in words, width, words per row */')
     for offset, w, per_row, name in headers:
@@ -257,9 +354,8 @@ def build(out: Path) -> str:
         raise SystemExit(f'the display submit at {SUBMIT_SITE:#x} does not start '
                          f'{SUBMIT_STOCK:#x}')
     NATIVE_INC.write_text(native_include(image))
-    defines = (f'STATE={STATE:#x}', f'SUBMIT_RESUME={SUBMIT_SITE + 4:#x}')
-    code = assemble(ROOT / 'src/fcscale.S', defines)
-    marks = symbols(ROOT / 'src/fcscale.S', defines)
+    code = assemble(ROOT / 'src/fcscale.S', defines())
+    marks = symbols(ROOT / 'src/fcscale.S', defines())
     if STATE + STATE_SIZE > CODE:
         raise SystemExit('the state block runs into the code')
     for address, length, why in ((STATE, STATE_SIZE, 'state'), (CODE, len(code), 'code')):
@@ -282,9 +378,10 @@ def build(out: Path) -> str:
         '# (this changes what that button does; it does not create it)',
         '#',
         '# Then, on that button:',
-        '#   press 1  False Color / EL Zone on, and it STAYS on',
-        '#   press 2  the EL Zone scale appears across the bottom',
-        '#   press 3  both off',
+        '#   press          False Color / EL Zone ON',
+        '#   hold 1/2 sec   ON with the EL Zone scale across the bottom',
+        '#   hold again     the scale off, or back on, while it stays ON',
+        '#   press          OFF, from either state, no holding needed',
         '#',
         '# EL Zone or False Color is your own False Color Style setting.',
         '# Nothing else is touched: no menu, no other buttons, no',
@@ -325,13 +422,25 @@ def build(out: Path) -> str:
     print(f'  press   {PRESS_SITE:#010x} -> {press:#010x}')
     print(f'  release {RELEASE_SITE:#010x} -> {release:#010x}')
     print(f'  submit  {SUBMIT_SITE:#010x} -> {submit:#010x}   state {STATE:#010x}')
+    place = geometry()
+    print(f"  scale   {SCALE:g}x, {CROP_BOTTOM} rows cropped: bar {place['bar_h']} rows "
+          f"at y={place['bar_y']}, labels {place['glyph_h']} rows at y={place['label_y']}, "
+          f"{place['width']} px wide from x={place['left']}")
     return text
 
 
 def main() -> None:
+    global SCALE, CROP_BOTTOM, BAR_BOTTOM
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT / 'builds/fcscale')
+    parser.add_argument('--scale', type=float, default=SCALE,
+                        help='fraction of the size the firmware draws the scale at')
+    parser.add_argument('--crop-bottom', type=int, default=CROP_BOTTOM,
+                        help="rows taken off the bottom of the firmware's bar")
+    parser.add_argument('--bar-bottom', type=int, default=BAR_BOTTOM,
+                        help="the bar's last row on the 682-row layer")
     args = parser.parse_args()
+    SCALE, CROP_BOTTOM, BAR_BOTTOM = args.scale, args.crop_bottom, args.bar_bottom
     build(args.out)
 
 

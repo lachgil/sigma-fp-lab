@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Run src/fcscale.S in an emulator: three presses, display submits between
-them, and the main OSD layer it painted rendered to a PNG.
+"""Run src/fcscale.S in an emulator: presses and holds on the button, display
+submits between them, and the main OSD layer it painted rendered to a PNG.
 
 Faked: the display manager, the drawable (back descriptor, rotate), the
-event post, and the body of the display submit after its hooked first
-instruction. Real: the payload, the firmware's memset, the native band table,
-palette and glyphs, and the hook site's stock word.
+event post, the camera's millisecond clock, and the body of the display submit
+after its hooked first instruction. Real: the payload, the firmware's memset,
+the native band table, palette and glyphs, and the hook site's stock word.
 
-What this proves: the press cycle, that the submit hook paints only format-1
-descriptors of the scale's geometry, that every pixel written lands inside
-the scale's rows and is a 16-bit word with the alpha nibble set, that a
-buffer carrying the scale is cleared once when it is no longer wanted, that
-the paint lock skips a frame rather than racing, and that the hooked submit
-returns to its caller with the stack intact. Not provable here: the order of
-the three colour nibbles (PIXEL_ORDER in the builder) -- that is read off the
-camera.
+What this proves: that a press switches the mode and a half-second hold works
+the scale, in every combination; that the submit hook paints only format-1
+descriptors of the scale's geometry; that every pixel written lands inside the
+scale's own rows and is a 16-bit word with the alpha nibble set; that a buffer
+carrying the scale is cleared once when it is no longer wanted; that the paint
+lock skips a frame rather than racing; and that the hooked submit returns to
+its caller with the stack intact. Not provable here: the order of the three
+colour nibbles (PIXEL_ORDER in the builder) -- that is read off the camera.
 
     ./tools/verify_fcscale.py            -> builds/fcscale/scale.png
 """
@@ -53,16 +53,19 @@ BUF = W * H * BPP
 PIX_UI = FAKE + 0x1000
 PIX_FRONT = PIX_UI + 0x200000
 PIX_SUB = PIX_FRONT + 0x200000
-SCALE_ROWS = set(range(430, 583))
+PLACE = card.geometry()
+SCALE_ROWS = set(range(PLACE['clear_y'], PLACE['clear_y'] + PLACE['clear_h']))
+BAR_ROWS = (PLACE['bar_y'], PLACE['bar_y'] + PLACE['bar_h'] // 2,
+            PLACE['bar_y'] + PLACE['bar_h'] - 1)
+LABEL_ROWS = range(PLACE['label_y'], PLACE['label_y'] + PLACE['glyph_h'])
 
 
 class Camera:
     def __init__(self):
         image = (ROOT / 'analysis/MAIN_c0000000.bin').read_bytes()
         card.NATIVE_INC.write_text(card.native_include(image))
-        defines = (f'STATE={card.STATE:#x}', f'SUBMIT_RESUME={card.SUBMIT_SITE + 4:#x}')
-        self.code = assemble(ROOT / 'src/fcscale.S', defines)
-        self.marks = symbols(ROOT / 'src/fcscale.S', defines)
+        self.code = assemble(ROOT / 'src/fcscale.S', card.defines())
+        self.marks = symbols(ROOT / 'src/fcscale.S', card.defines())
         u = self.u = uc.Uc(uc.UC_ARCH_ARM, uc.UC_MODE_ARM)
         span = (len(image) + 4095) & ~4095
         u.mem_map(card.BASE, span)
@@ -89,6 +92,7 @@ class Camera:
         self.events, self.selectors = [], []
         self.submitted = []
         self.writes = {}
+        self.now = 1000             # the camera's millisecond clock
         u.hook_add(uc.UC_HOOK_CODE, self._code)
         u.hook_add(uc.UC_HOOK_MEM_WRITE, self._write, begin=PIX_UI, end=PIX_SUB + 0x200000)
 
@@ -126,6 +130,8 @@ class Camera:
         elif address == 0xC03A0798:                             # POST
             self.events.append(struct.unpack('<I', u.mem_read(u.reg_read(ar.UC_ARM_REG_R1), 4))[0])
             self._ret(1)
+        elif address == card.CLOCK:
+            self._ret(self.now)
 
     def _write(self, u, access, address, size, value, _):
         self.writes[address] = size
@@ -160,6 +166,12 @@ class Camera:
     def rows_written(self, base=PIX_UI):
         return {(a - base) // (W * BPP) for a in self.writes if base <= a < base + BUF}
 
+    def hold(self, ms):
+        """The button down for `ms` milliseconds, and let go."""
+        self.call('fc_press', r0=CAMERA_IF)
+        self.now += ms
+        return self.call('fc_release', r0=CAMERA_IF)
+
 
 def render(pixels, out: Path) -> None:
     """A PNG of the layer decoded per the builder's PIXEL_ORDER; alpha 0 shows grey."""
@@ -190,11 +202,15 @@ def main() -> None:
         results.append(dict(case=name, passed=bool(passed)))
         print(f"{'PASS' if passed else 'FAIL'}  {name}")
 
-    # Press 1: on. Nothing is drawn yet.
+    # A press: the mode comes on at the press itself, without the scale.
     cam.call('fc_press', r0=CAMERA_IF)
-    check('press 1 latches the mode on, posts 0x21, paints nothing',
+    check('the press latches the mode on, posts 0x21, paints nothing',
           cam.state(0) == 1 and cam.events == [0x21] and not any(cam.pixels(PIX_FRONT))
           and not cam.submitted)
+    cam.now += 120
+    check('letting go of a short press changes nothing and reports success',
+          cam.call('fc_release', r0=CAMERA_IF) == 1
+          and cam.state(0) == 1 and cam.state(0xC) == 0 and cam.events == [0x21])
 
     # A UI frame: passes through, teaches the hook the controller, paints nothing.
     r = cam.ui_submit()
@@ -202,11 +218,11 @@ def main() -> None:
           r == 1 and cam.submitted == [(CTRL, DESC_UI, 0)])
     check('the hook paints nothing while only on', not cam.writes and cam.state(0x74) == 1)
 
-    # Press 2: the front buffer is painted directly, no submit.
-    cam.call('fc_press', r0=CAMERA_IF)
-    check('press 2 sets the scale flag without posting an event',
-          cam.state(0) == 2 and cam.state(0xC) == 1 and cam.events == [0x21])
-    check('the press paints the main layer front buffer: resolve 0, no submit',
+    # A hold while the mode is on: the scale comes up, and no event is posted.
+    check('a hold puts the scale up without posting an event',
+          cam.hold(card.HOLD_MS) == 1 and cam.state(0) == 2
+          and cam.state(0xC) == 1 and cam.events == [0x21])
+    check('the hold paints the main layer front buffer: resolve 0, no submit',
           len(cam.submitted) == 1 and cam.selectors and all(s == 0 for s in cam.selectors))
     back = cam.pixels(PIX_FRONT)
     check('the front buffer carries the scale and the UI buffer is untouched',
@@ -215,19 +231,24 @@ def main() -> None:
     # The next UI frame gets the scale too, identically.
     cam.ui_submit()
     pixels = cam.pixels()
-    check('the next UI frame is painted, in rows 430..582 only, identically',
-          cam.rows_written() == SCALE_ROWS and pixels == back)
+    check(f"the next UI frame is painted, in rows {min(SCALE_ROWS)}..{max(SCALE_ROWS)} "
+          'only, identically', cam.rows_written() == SCALE_ROWS and pixels == back)
     check('every write is a 16-bit pixel', set(cam.writes.values()) == {2})
-    bands = card.bands(image)
+    bands = card.scaled_bands(image)
     pal = card.palette(image)
     check("the bar carries the firmware's colours, converted, opaque, at its edges",
           all(pixels[y * W + x] == card.pack16(card.ayuv_to_rgb(pal[index]))
               and pixels[y * W + x] >> 12 == 0xF
-              for x0, x1, index in bands for y in (464, 523, 582) for x in (x0, x1)))
-    labels = {p for y in range(430, 455) for p in pixels[y * W:(y + 1) * W]} - {0}
+              for x0, x1, index in bands for y in BAR_ROWS for x in (x0, x1)))
+    check('the bar spans exactly the rescaled width, and nothing outside it',
+          all(pixels[BAR_ROWS[1] * W + x] == 0
+              for x in (bands[0][0] - 1, bands[-1][1] + 1))
+          and bands[0][0] == PLACE['left']
+          and bands[-1][1] == PLACE['left'] + PLACE['width'] - 1)
+    labels = {p for y in LABEL_ROWS for p in pixels[y * W:(y + 1) * W]} - {0}
     check('the labels are opaque white and nothing else',
           labels == {0xFFFF} and sum(pixels[y * W:(y + 1) * W].count(0xFFFF)
-                                     for y in range(430, 455)) > 1500)
+                                     for y in LABEL_ROWS) > 1000)
     render(pixels, ROOT / 'builds/fcscale/scale.png')
 
     # The indexed sub layer is not ours.
@@ -243,7 +264,8 @@ def main() -> None:
     # Playback or the camera menu: each buffer carrying the scale is cleared once.
     cam.ui_state(4)
     cam.ui_submit()
-    check('outside live view a buffer carrying the scale is cleared, rows 430..582 only',
+    check(f'outside live view a buffer carrying the scale is cleared, rows '
+          f'{min(SCALE_ROWS)}..{max(SCALE_ROWS)} only',
           cam.rows_written() == SCALE_ROWS and not any(cam.pixels()))
     cam.ui_submit()
     check('and not touched again once clear', not cam.writes)
@@ -264,18 +286,36 @@ def main() -> None:
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 0))
     cam.ui_state(2)
 
-    # Press 3: the front buffer is cleared directly, 0x22 posted.
+    # A second hold while the mode is on: the scale goes, the mode stays.
     cam.ui_submit(DESC_FRONT)
-    cam.call('fc_press', r0=CAMERA_IF)
-    check('press 3 posts 0x22 and clears the front buffer without a submit',
-          cam.state(0) == 0 and cam.events == [0x21, 0x22]
-          and cam.submitted[-1] == (CTRL, DESC_FRONT, 0) and not any(cam.pixels(PIX_FRONT)))
+    check('a second hold takes the scale down and leaves the mode on',
+          cam.hold(card.HOLD_MS + 400) == 1 and cam.state(0) == 1
+          and cam.state(0xC) == 0 and cam.events == [0x21]
+          and not any(cam.pixels(PIX_FRONT)))
+    check('a hold is counted, and the press it followed measured',
+          cam.state(0x18) == 2 and cam.state(0x14) == card.HOLD_MS + 400)
+
+    # And a hold from off brings the mode up with the scale in one gesture.
+    cam.hold(10)
+    check('a press from on turns the mode off and posts 0x22',
+          cam.state(0) == 0 and cam.state(0xC) == 0 and cam.events == [0x21, 0x22])
+    check('a hold from off comes up with the scale, posting 0x21 once',
+          cam.hold(card.HOLD_MS) == 1 and cam.state(0) == 2 and cam.state(0xC) == 1
+          and cam.events == [0x21, 0x22, 0x21])
+    cam.ui_submit()
+    check('that hold draws the same scale', cam.pixels() == pixels)
+
+    # Off again from the scale state: one press, no hold needed.
+    cam.hold(80)
+    check('one press from the scale state turns everything off',
+          cam.state(0) == 0 and cam.state(0xC) == 0
+          and cam.events == [0x21, 0x22, 0x21, 0x22])
     cam.ui_submit()
     check('the UI buffer is cleared on its next frame', not any(cam.pixels()))
     cam.ui_submit()
     check('an idle frame touches nothing', not cam.writes)
-    check('release is swallowed and reports success',
-          cam.call('fc_release') == 1 and cam.state(8) == 1)
+    check('every press and release was accounted for',
+          cam.state(4) == cam.state(8) == 6)
 
     report = dict(cases=results, code_bytes=len(cam.code), events=cam.events,
                   submits=len(cam.submitted),

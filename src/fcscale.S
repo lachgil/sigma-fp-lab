@@ -8,9 +8,15 @@
  * The only button involved is the one the camera's own Custom Button
  * Functions menu already points at False Color.
  *
- *   press 1   mode on, and it stays on
- *   press 2   the scale appears
- *   press 3   both off
+ *   press         mode on. Press again, from either state, and it is off:
+ *                 turning it off never needs a hold
+ *   hold 1/2 s    mode on WITH the scale; and once the mode is on, a hold
+ *                 puts the scale up or takes it down, whenever you like
+ *
+ * The mode itself is switched at the press, so the button feels immediate; the
+ * scale follows at the release, because only the release knows how long the
+ * button was held. The camera's own clock (0xC002B920, milliseconds, the one
+ * the firmware's logger uses) measures it.
  *
  * The camera calls CameraIF vtable +0xCC on press and +0xD0 on release; both
  * are replaced outright (see docs/research/false-colour-el-zone.md).
@@ -41,12 +47,15 @@
  * State block at STATE:
  *   +0x00 0 off, 1 on, 2 on with the scale   +0x3C buffer being painted
  *   +0x04 presses                            +0x40 current colour
- *   +0x08 releases swallowed                 +0x60..+0x68 drawn flag per buffer
+ *   +0x08 releases                           +0x60..+0x68 drawn flag per buffer
  *   +0x0C the scale flag                     +0x6C paint lock
- *   +0x20 width in pixels, while painting    +0x74 submits seen
- *   +0x24 height, while painting             +0x78 frames painted
- *   +0x28..+0x30 the layer's three buffers   +0x7C next slot to evict
- *                                            +0x8C bytes per pixel, while painting
+ *   +0x10 this press, in ms                  +0x74 submits seen
+ *   +0x14 how long the last press was        +0x78 frames painted
+ *   +0x18 holds acted on                     +0x7C next slot to evict
+ *   +0x1C the mode when the press arrived    +0x8C bytes per pixel, while painting
+ *   +0x20 width in pixels, while painting
+ *   +0x24 height, while painting
+ *   +0x28..+0x30 the layer's three buffers
  */
 .equ MEMSET,     0xC0015058
 .equ POST,       0xC03A0798
@@ -63,15 +72,11 @@
 .equ UI_PLAYBACK, 4
 .equ UI_MENU,     5
 .equ CACHE_FN,   0xC000E91C
-/* Where the firmware draws its own scale, in sub-layer pixels: the bar is
- * memset row 464 and copied down to row 582 (0xC057DC94, 0xC057DD1C); the
- * labels sit in the 25-row band above it. */
-.equ SCALE_W,    1024
-.equ BAR_Y,      464
-.equ BAR_H,      119
-.equ LABEL_Y,    430
-.equ CLEAR_Y,    LABEL_Y
-.equ CLEAR_H,    (BAR_Y + BAR_H - LABEL_Y)
+/* The scale's geometry comes out of the builder, which rescales the
+ * firmware's own: see fcscale_native.inc.S for BAR_Y, BAR_H, LABEL_Y,
+ * CLEAR_Y and CLEAR_H, and tools/build_fcscale_autorun.py for the knobs.
+ * SURFACE_W is the layer, not the scale: the bar may be narrower. */
+.equ SURFACE_W,  1024
 .equ C_CLEAR,    0                  /* transparent: index 0, or alpha nibble 0 */
 
 #include "fcscale_native.inc.S"
@@ -92,7 +97,11 @@
 
 /* ---------------------------------------------------------------- the hooks */
 
-/* Replaces 0xC03722E8, the press. r0 = the CameraIF object. */
+/* Replaces 0xC03722E8, the press. r0 = the CameraIF object.
+ *
+ * The press does two things and no more: it timestamps itself, and if the mode
+ * was off it switches the mode on straight away. Everything that depends on
+ * how long the button was held happens in fc_release. */
 .global fc_press
 fc_press:
     push    {r4, r5, lr}
@@ -102,42 +111,80 @@ fc_press:
     ldr     r1, [r5, #4]
     add     r1, r1, #1
     str     r1, [r5, #4]
+    LDA     ip, CLOCK
+    blx     ip
+    str     r0, [r5, #0x10]
     ldr     r0, [r5]
-    add     r0, r0, #1
-    cmp     r0, #3
-    moveq   r0, #0
-    str     r0, [r5]
-    cmp     r0, #2                  @ the scale step: the mode is already on
-    bne     1f
-    mov     r1, #1
-    str     r1, [r5, #0xC]
-    bl      fc_present
-    add     sp, sp, #4
-    pop     {r4, r5, pc}
-1:  mov     r1, #0
-    str     r1, [r5, #0xC]
+    str     r0, [r5, #0x1C]         @ the mode this press started from
     cmp     r0, #0
-    bne     2f
-    bl      fc_present              @ take the scale down now
-    mov     r1, #0x22               @ off
-    b       3f
-2:  mov     r1, #0x21               @ on
-3:  mov     r0, r4
+    bne     1f                      @ already on: the release decides
+    mov     r1, #1
+    str     r1, [r5]                @ on, without the scale, now
+    mov     r1, #0
+    str     r1, [r5, #0xC]
+    mov     r0, r4
+    mov     r1, #0x21
     bl      fc_post
-    add     sp, sp, #4
+1:  add     sp, sp, #4
     pop     {r4, r5, pc}
 
-/* Replaces 0xC0372330, the release: swallowed, so letting go does not cancel.
+/* Replaces 0xC0372330, the release. Letting go never cancels the mode; what it
+ * does depends on how long the button was down and on what the press found:
+ *
+ *   started off, short   nothing: the press already switched the mode on
+ *   started off, hold    the scale comes up with it
+ *   started on,  short    off, and the scale with it
+ *   started on,  hold    the scale toggles, the mode stays on
+ *
  * The stock method returns the post's result and callers read it as a success
- * flag, so this returns 1. */
+ * flag, so this returns 1 on every path. */
 .global fc_release
 fc_release:
-    LDA     r1, STATE
-    ldr     r0, [r1, #8]
+    push    {r4, r5, lr}
+    sub     sp, sp, #4
+    mov     r4, r0
+    LDA     r5, STATE
+    ldr     r1, [r5, #8]
+    add     r1, r1, #1
+    str     r1, [r5, #8]
+    LDA     ip, CLOCK
+    blx     ip
+    ldr     r1, [r5, #0x10]
+    sub     r0, r0, r1              @ how long it was held, in ms
+    str     r0, [r5, #0x14]
+    movw    r1, #HOLD_MS
+    cmp     r0, r1
+    blo     2f
+
+    ldr     r0, [r5, #0x18]         @ a hold
     add     r0, r0, #1
-    str     r0, [r1, #8]
-    mov     r0, #1
-    bx      lr
+    str     r0, [r5, #0x18]
+    ldr     r0, [r5, #0xC]          @ started off: the scale comes up.
+    ldr     r1, [r5, #0x1C]         @ already on: the scale flips
+    cmp     r1, #0
+    moveq   r0, #1
+    eorne   r0, r0, #1
+    str     r0, [r5, #0xC]
+    cmp     r0, #0
+    movne   r1, #2
+    moveq   r1, #1
+    str     r1, [r5]
+    bl      fc_present              @ put it up, or take it down, now
+    b       3f
+
+2:  ldr     r0, [r5, #0x1C]         @ a press. Started off: the press already
+    cmp     r0, #0                  @ did it. Started on: off, both parts
+    beq     3f
+    mov     r1, #0
+    str     r1, [r5]
+    str     r1, [r5, #0xC]
+    bl      fc_present              @ take the scale down now
+    mov     r0, r4
+    mov     r1, #0x22
+    bl      fc_post
+3:  mov     r0, #1
+    add     sp, sp, #4
+    pop     {r4, r5, pc}
 
 /* r0 = the CameraIF object, r1 = event id. The stock method body, reproduced,
  * so nothing calls back into a patched method. */
@@ -233,7 +280,7 @@ fc_paint:
     beq     9f
     ldr     r5, [r3]                @ width, in pixels
     ldr     r6, [r3, #4]            @ height
-    movw    ip, #SCALE_W
+    movw    ip, #SURFACE_W
     cmp     r5, ip
     bne     9f
     movw    ip, #(CLEAR_Y + CLEAR_H)
@@ -346,7 +393,7 @@ draw_scale:
     str     r0, [r10, #0x3C]
     mov     r9, r1
     ldr     r7, [r10, #0x20]        @ stride
-    movw    r0, #SCALE_W
+    movw    r0, #SURFACE_W
     cmp     r7, r0
     blo     9f
     ldr     r8, [r10, #0x24]        @ height
@@ -358,7 +405,7 @@ draw_scale:
     str     r0, [r10, #0x40]
     mov     r0, #0
     movw    r1, #CLEAR_Y
-    movw    r2, #SCALE_W
+    movw    r2, #SURFACE_W
     mov     r3, #CLEAR_H
     bl      fill_rect
     cmp     r9, #0

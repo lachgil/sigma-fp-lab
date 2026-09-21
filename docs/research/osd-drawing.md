@@ -121,6 +121,34 @@ reads all of it out of the verified image and `src/fcscale.S` redraws it;
 `tools/verify_fcscale.py` runs the result in an emulator and renders it
 through that palette to `builds/fcscale/scale.png`.
 
+### Redrawn smaller, 2026-09-21
+
+That geometry is built for the camera's own 3:2 screen, so on a 16:9 or wider
+picture the bar lands across the middle of the frame. The card now rescales it
+instead of copying it: `tools/build_fcscale_autorun.py` has three knobs
+(`SCALE`, `CROP_BOTTOM`, `BAR_BOTTOM`, also `--scale` / `--crop-bottom` /
+`--bar-bottom`) and emits the resulting `BAR_Y`, `BAR_H`, `LABEL_Y`, `CLEAR_Y`
+and `CLEAR_H` into `src/fcscale_native.inc.S`, with the band boundaries and the
+label positions mapped onto the narrower bar and the glyph bitmaps box-averaged
+down to the smaller size. The default is 0.85 with 84 rows cropped off the bar:
+a 30-row bar 870 px wide, inset 77 px, labels 21 rows above it, and the bar's
+last row left at 582 where the firmware puts it.
+
+The bands stay contiguous by construction (each ends one pixel before the next
+begins) and the verifier checks the rescaled edges carry the firmware's own
+colours, that nothing is drawn outside the bar's new width, and that every
+painted pixel lands inside `CLEAR_Y..CLEAR_Y+CLEAR_H`. Resized glyph pixels are
+drawn at coverage 96 rather than 128, because averaging dims a one-pixel stroke
+instead of removing it. **Geometry is verified offline only; it has not been on
+a camera.**
+
+The button is worked by duration rather than by counting presses: the press
+switches the mode on (posting `0x21` immediately, so it feels instant), and the
+release decides what else happens from the camera's own millisecond clock
+(`0xC002B920`, `HOLD_MS` = 500). Press for the mode, hold for the mode with the
+scale, hold again to take the scale down or put it back, press to turn
+everything off from either state. Nothing is posted from the display submit.
+
 ## Capturing the screen
 
 ```

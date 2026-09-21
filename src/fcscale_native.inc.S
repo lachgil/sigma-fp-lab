@@ -3,123 +3,120 @@
 .equ BAND_N,       15
 .equ LABEL_N,      15
 .equ GLYPH_N,      10
-.equ GLYPH_H,      25
-.equ GLYPH_SIGN_W, 22
+.equ GLYPH_H,      21
 .equ C_LABEL,      21          /* index of opaque white */
+.equ GLYPH_SIGN_W, 19
 .equ C_LABEL16,    0xffff      /* opaque white, ARGB 4:4:4 */
+
+/* The scale at 0.85 of the firmware's size, 84 rows cropped off the
+ * bottom of its bar, the bar's last row left where the firmware puts it. */
+.equ BAR_Y,        553
+.equ BAR_H,        30
+.equ LABEL_Y,      524
+.equ CLEAR_Y,      524
+.equ CLEAR_H,      59
 .balign 4
-bands:                      /* 0xc0d1b74c: x0, x1 inclusive, palette index, 16-bit colour */
-    .short 0, 67; .byte 7, 0; .short 0xf000    /* a255 y0 u0 v0 -> rgb (0, 0, 0) */
-    .short 68, 135; .byte 20, 0; .short 0xf549    /* a255 y84 u39 v5 -> rgb (91, 67, 153) */
-    .short 136, 203; .byte 19, 0; .short 0xf15a    /* a255 y77 u51 v-39 -> rgb (22, 87, 167) */
-    .short 204, 271; .byte 18, 0; .short 0xf08d    /* a255 y106 u61 v-75 -> rgb (0, 138, 214) */
-    .short 272, 339; .byte 17, 0; .short 0xf153    /* a255 y65 u-11 v-31 -> rgb (21, 90, 45) */
-    .short 340, 407; .byte 16, 0; .short 0xf283    /* a255 y98 u-22 v-41 -> rgb (40, 134, 59) */
-    .short 408, 477; .byte 15, 0; .short 0xf8b2    /* a255 y160 u-72 v-12 -> rgb (143, 193, 32) */
-    .short 478, 545; .byte 14, 0; .short 0xf888    /* a255 y137 u0 v0 -> rgb (137, 137, 137) */
-    .short 546, 615; .byte 13, 0; .short 0xffe0    /* a255 y218 u-122 v27 -> rgb (255, 240, 1) */
-    .short 616, 683; .byte 12, 0; .short 0xfffa    /* a255 y243 u-37 v9 -> rgb (255, 249, 177) */
-    .short 684, 751; .byte 11, 0; .short 0xfe83    /* a255 y154 u-61 v62 -> rgb (240, 130, 45) */
-    .short 752, 819; .byte 10, 0; .short 0xfda5    /* a255 y177 u-55 v31 -> rgb (220, 173, 79) */
-    .short 820, 887; .byte 9, 0; .short 0xfd03    /* a255 y74 u-15 v111 -> rgb (229, 0, 47) */
-    .short 888, 955; .byte 8, 0; .short 0xfe65    /* a255 y145 u-32 v65 -> rgb (236, 109, 88) */
-    .short 956, 1023; .byte 21, 0; .short 0xffff    /* a255 y255 u0 v0 -> rgb (255, 255, 255) */
+bands:                      /* 0xc0d1b74c, rescaled: x0, x1 inclusive, palette index, 16-bit colour */
+    .short 77, 134; .byte 7, 0; .short 0xf000    /* a255 y0 u0 v0 -> rgb (0, 0, 0) */
+    .short 135, 192; .byte 20, 0; .short 0xf549    /* a255 y84 u39 v5 -> rgb (91, 67, 153) */
+    .short 193, 249; .byte 19, 0; .short 0xf15a    /* a255 y77 u51 v-39 -> rgb (22, 87, 167) */
+    .short 250, 307; .byte 18, 0; .short 0xf08d    /* a255 y106 u61 v-75 -> rgb (0, 138, 214) */
+    .short 308, 365; .byte 17, 0; .short 0xf153    /* a255 y65 u-11 v-31 -> rgb (21, 90, 45) */
+    .short 366, 423; .byte 16, 0; .short 0xf283    /* a255 y98 u-22 v-41 -> rgb (40, 134, 59) */
+    .short 424, 482; .byte 15, 0; .short 0xf8b2    /* a255 y160 u-72 v-12 -> rgb (143, 193, 32) */
+    .short 483, 540; .byte 14, 0; .short 0xf888    /* a255 y137 u0 v0 -> rgb (137, 137, 137) */
+    .short 541, 599; .byte 13, 0; .short 0xffe0    /* a255 y218 u-122 v27 -> rgb (255, 240, 1) */
+    .short 600, 657; .byte 12, 0; .short 0xfffa    /* a255 y243 u-37 v9 -> rgb (255, 249, 177) */
+    .short 658, 715; .byte 11, 0; .short 0xfe83    /* a255 y154 u-61 v62 -> rgb (240, 130, 45) */
+    .short 716, 773; .byte 10, 0; .short 0xfda5    /* a255 y177 u-55 v31 -> rgb (220, 173, 79) */
+    .short 774, 830; .byte 9, 0; .short 0xfd03    /* a255 y74 u-15 v111 -> rgb (229, 0, 47) */
+    .short 831, 888; .byte 8, 0; .short 0xfe65    /* a255 y145 u-32 v65 -> rgb (236, 109, 88) */
+    .short 889, 946; .byte 21, 0; .short 0xffff    /* a255 y255 u0 v0 -> rgb (255, 255, 255) */
 labels:                     /* x, first glyph, second glyph or 0xFF */
-    .short 14; .byte 0, 9
-    .short 82; .byte 0, 8
-    .short 150; .byte 0, 7
-    .short 218; .byte 0, 6
-    .short 286; .byte 0, 5
-    .short 354; .byte 0, 4
-    .short 410; .byte 0, 2
-    .short 503; .byte 3, 255
-    .short 548; .byte 1, 2
-    .short 630; .byte 1, 4
-    .short 698; .byte 1, 5
-    .short 766; .byte 1, 6
-    .short 834; .byte 1, 7
-    .short 902; .byte 1, 8
-    .short 970; .byte 1, 9
+    .short 89; .byte 0, 9
+    .short 147; .byte 0, 8
+    .short 204; .byte 0, 7
+    .short 262; .byte 0, 6
+    .short 320; .byte 0, 5
+    .short 378; .byte 0, 4
+    .short 425; .byte 0, 2
+    .short 504; .byte 3, 255
+    .short 543; .byte 1, 2
+    .short 612; .byte 1, 4
+    .short 670; .byte 1, 5
+    .short 728; .byte 1, 6
+    .short 786; .byte 1, 7
+    .short 843; .byte 1, 8
+    .short 901; .byte 1, 9
 .balign 4
 glyph_hdr:                  /* offset in words, width, words per row */
-    .short 0; .byte 22, 1    /* minus */
-    .short 25; .byte 22, 1    /* plus */
-    .short 50; .byte 44, 2    /* half */
-    .short 100; .byte 18, 1    /* zero */
-    .short 125; .byte 18, 1    /* one */
-    .short 150; .byte 18, 1    /* two */
-    .short 175; .byte 18, 1    /* three */
-    .short 200; .byte 18, 1    /* four */
-    .short 225; .byte 18, 1    /* five */
-    .short 250; .byte 18, 1    /* six */
+    .short 0; .byte 19, 1    /* minus */
+    .short 21; .byte 19, 1    /* plus */
+    .short 42; .byte 37, 2    /* half */
+    .short 84; .byte 15, 1    /* zero */
+    .short 105; .byte 15, 1    /* one */
+    .short 126; .byte 15, 1    /* two */
+    .short 147; .byte 15, 1    /* three */
+    .short 168; .byte 15, 1    /* four */
+    .short 189; .byte 15, 1    /* five */
+    .short 210; .byte 15, 1    /* six */
 .balign 4
 glyph_bits:
     .word 0x00000000, 0x00000000, 0x00000000, 0x00000000
     .word 0x00000000, 0x00000000, 0x00000000, 0x00000000
-    .word 0x00000000, 0x00000000, 0x00000000, 0x000ffffc
-    .word 0x000ffffc, 0x000ffffc, 0x00000000, 0x00000000
+    .word 0x00000000, 0x00000000, 0x0003fffc, 0x0003fffc
     .word 0x00000000, 0x00000000, 0x00000000, 0x00000000
     .word 0x00000000, 0x00000000, 0x00000000, 0x00000000
     .word 0x00000000, 0x00000000, 0x00000000, 0x00000000
-    .word 0x00000c00, 0x00000c00, 0x00000c00, 0x00000c00
-    .word 0x00000c00, 0x00000c00, 0x00000c00, 0x00000c00
-    .word 0x000ffffc, 0x000ffffc, 0x000ffffc, 0x00000c00
-    .word 0x00000c00, 0x00000c00, 0x00000c00, 0x00000c00
-    .word 0x00000c00, 0x00000c00, 0x00000c00, 0x00000000
+    .word 0x00000600, 0x00000600, 0x00000600, 0x00000600
+    .word 0x00000600, 0x00000600, 0x00000600, 0x0003fffc
+    .word 0x0003fffc, 0x00000600, 0x00000600, 0x00000600
+    .word 0x00000600, 0x00000600, 0x00000600, 0x00000600
     .word 0x00000000, 0x00000000, 0x00000000, 0x00000000
-    .word 0x06000000, 0x0000000c, 0x87000f00, 0x0000007f
-    .word 0xc7000fc0, 0x000000ff, 0xe3800fe0, 0x000000ff
-    .word 0xe3800fe0, 0x000001f1, 0xe3800f60, 0x000001e1
-    .word 0xf1c00f00, 0x000001e0, 0xe1c00f00, 0x000001e0
-    .word 0x00e00f00, 0x000001e0, 0x00e00f00, 0x000001f0
-    .word 0x00e00f00, 0x000000f8, 0x00700f00, 0x00000078
-    .word 0x00700f00, 0x0000003c, 0x00380f00, 0x0000003e
-    .word 0x00380f00, 0x0000001f, 0x80380f00, 0x0000000f
-    .word 0x801c0f00, 0x00000007, 0xc01c0f00, 0x00000007
-    .word 0xe00e0f00, 0x00000003, 0xf00e0f00, 0x000003ff
-    .word 0xf00e0f00, 0x000003ff, 0xf0070f00, 0x000003ff
-    .word 0x00070000, 0x00000000, 0x00000000, 0x00000000
-    .word 0x00000000, 0x00000300, 0x00001fe0, 0x00003ff0
-    .word 0x00007ff8, 0x00007cf8, 0x00007878, 0x0000f03c
-    .word 0x0000f03c, 0x0000f03c, 0x0000f03c, 0x0000f03c
-    .word 0x0000f03c, 0x0000f03c, 0x0000f03c, 0x0000f03c
-    .word 0x0000f03c, 0x0000f03c, 0x0000f03c, 0x00007878
-    .word 0x00007ff8, 0x00003ff0, 0x00001fe0, 0x00000780
-    .word 0x00000000, 0x00000000, 0x00000000, 0x00000f00
-    .word 0x00000fc0, 0x00000fe0, 0x00000fe0, 0x00000f60
-    .word 0x00000f00, 0x00000f00, 0x00000f00, 0x00000f00
-    .word 0x00000f00, 0x00000f00, 0x00000f00, 0x00000f00
-    .word 0x00000f00, 0x00000f00, 0x00000f00, 0x00000f00
-    .word 0x00000f00, 0x00000f00, 0x00000f00, 0x00000f00
-    .word 0x00000000, 0x00000000, 0x00000000, 0x00000300
-    .word 0x00001fe0, 0x00003ff0, 0x00003ff8, 0x00007c78
-    .word 0x00007878, 0x0000783c, 0x00007838, 0x00007800
-    .word 0x00007c00, 0x00003e00, 0x00001e00, 0x00000f00
-    .word 0x00000f80, 0x000007c0, 0x000003e0, 0x000001e0
-    .word 0x000001f0, 0x000000f8, 0x0000fffc, 0x0000fffc
-    .word 0x0000fffc, 0x00000000, 0x00000000, 0x00000000
-    .word 0x00000000, 0x00001fe0, 0x00003ff0, 0x00007ff8
-    .word 0x00007c78, 0x0000783c, 0x0000f03c, 0x00007000
-    .word 0x00007800, 0x00007f00, 0x00003f80, 0x00003f80
-    .word 0x00007f80, 0x00007800, 0x0000f000, 0x0000f000
-    .word 0x0000f03c, 0x0000f03c, 0x0000f878, 0x00007ff8
-    .word 0x00003ff0, 0x00001fe0, 0x00000780, 0x00000000
-    .word 0x00000000, 0x00000000, 0x00003e00, 0x00003f00
-    .word 0x00003f80, 0x00003f80, 0x00003fc0, 0x00003fc0
-    .word 0x00003de0, 0x00003de0, 0x00003cf0, 0x00003cf8
-    .word 0x00003c78, 0x00003c7c, 0x00003c3c, 0x0000fffe
-    .word 0x0001fffe, 0x0001fffe, 0x0001fffe, 0x00003c00
-    .word 0x00003c00, 0x00003c00, 0x00003c00, 0x00000000
-    .word 0x00000000, 0x00000000, 0x00000000, 0x00007ff8
-    .word 0x00007ff8, 0x00007ff8, 0x00007ff8, 0x00000038
-    .word 0x00000038, 0x00000038, 0x00001fb8, 0x00003ff8
-    .word 0x00007ffc, 0x0000fcfc, 0x0000f07c, 0x0000f000
-    .word 0x0000f000, 0x0000f000, 0x0000f018, 0x0000f03c
-    .word 0x0000f878, 0x00007ff8, 0x00003ff0, 0x00001fe0
-    .word 0x00000780, 0x00000000, 0x00000000, 0x00000000
-    .word 0x00001fc0, 0x00003ff0, 0x00007ff0, 0x00007878
-    .word 0x00007878, 0x0000003c, 0x0000003c, 0x00000fbc
-    .word 0x00003ffc, 0x00007ffc, 0x00007cfc, 0x0000f07c
-    .word 0x0000f03c, 0x0000f03c, 0x0000f03c, 0x0000f03c
-    .word 0x0000f078, 0x0000f878, 0x00007ff8, 0x00003ff0
-    .word 0x00001fe0, 0x00000700, 0x00000000
+    .word 0x60600000, 0x00000000, 0xf8600780, 0x00000001
+    .word 0xfc6007e0, 0x00000003, 0xfe7007e0, 0x00000007
+    .word 0x8e3007e0, 0x00000007, 0x07380780, 0x00000007
+    .word 0x07180780, 0x00000007, 0x801c0780, 0x00000007
+    .word 0x801c0780, 0x00000007, 0xc00e0780, 0x00000003
+    .word 0xe00e0780, 0x00000001, 0xf00f0780, 0x00000000
+    .word 0xf8070780, 0x00000000, 0x78070780, 0x00000000
+    .word 0x3c038780, 0x00000000, 0x1e038780, 0x00000000
+    .word 0xff018780, 0x0000000f, 0xff01c780, 0x0000000f
+    .word 0xff00c780, 0x0000000f, 0x00000000, 0x00000000
+    .word 0x00000000, 0x00000180, 0x000007e0, 0x00000ff0
+    .word 0x00001ff8, 0x00001e38, 0x00003c1c, 0x00003c1c
+    .word 0x00003c1c, 0x00003c1c, 0x00003c1c, 0x00003c1c
+    .word 0x00003c1c, 0x00003c1c, 0x00003c1c, 0x00003c1c
+    .word 0x00001e78, 0x00001ff8, 0x00000ff0, 0x000007f0
+    .word 0x00000000, 0x00000000, 0x00000000, 0x00000380
+    .word 0x000003e0, 0x000003f0, 0x000003f0, 0x00000380
+    .word 0x00000380, 0x00000380, 0x00000380, 0x00000380
+    .word 0x00000380, 0x00000380, 0x00000380, 0x00000380
+    .word 0x00000380, 0x00000380, 0x00000380, 0x00000380
+    .word 0x00000380, 0x00000000, 0x00000000, 0x00000180
+    .word 0x000007e0, 0x00000ff0, 0x00001ff8, 0x00001e38
+    .word 0x00001c1c, 0x00001c1c, 0x00001e00, 0x00001e00
+    .word 0x00000f00, 0x00000780, 0x000003c0, 0x000003e0
+    .word 0x000001e0, 0x000000f0, 0x00000078, 0x00003ffc
+    .word 0x00003ffc, 0x00003ffc, 0x00000000, 0x00000000
+    .word 0x00000100, 0x000007e0, 0x00000ff0, 0x00001ff8
+    .word 0x00001e3c, 0x00003c1c, 0x00003c00, 0x00001e00
+    .word 0x00001fc0, 0x00000fc0, 0x00001fc0, 0x00001e00
+    .word 0x00003c00, 0x00003c00, 0x00003c1c, 0x00003e3c
+    .word 0x00001ff8, 0x00001ff0, 0x000007f0, 0x00000000
+    .word 0x00000000, 0x00000000, 0x00000f80, 0x00000f80
+    .word 0x00000fc0, 0x00000fc0, 0x00000fe0, 0x00000ee0
+    .word 0x00000ef0, 0x00000e70, 0x00000e38, 0x00000e3c
+    .word 0x00000e1c, 0x00003ffe, 0x00003ffe, 0x00003ffe
+    .word 0x00000e00, 0x00000e00, 0x00000e00, 0x00000e00
+    .word 0x00000000, 0x00000000, 0x00000000, 0x00001ff8
+    .word 0x00001ff8, 0x00001ff8, 0x00000018, 0x00000018
+    .word 0x00000018, 0x000007d8, 0x00000ffc, 0x00001ffc
+    .word 0x00003c3c, 0x00003c00, 0x00003c00, 0x00003c00
+    .word 0x00003c1c, 0x00003e3c, 0x00001ff8, 0x00001ff0
+    .word 0x000007f0, 0x00000000, 0x00000000, 0x00000180
+    .word 0x000007e0, 0x00000ff0, 0x00001ff8, 0x00001e38
+    .word 0x0000001c, 0x0000001c, 0x000007dc, 0x00000ffc
+    .word 0x00001ffc, 0x00003c3c, 0x00003c1c, 0x00003c1c
+    .word 0x00003c1c, 0x00003c1c, 0x00003e78, 0x00001ff8
+    .word 0x00001ff0, 0x000007e0, 0x00000000
