@@ -198,6 +198,11 @@ def main():
                              'Earlier versions prevented Record Settings from '
                              'opening; the parser-status fix is offline verified '
                              'only. See docs/menu/gui-resources.md')
+    parser.add_argument('--fplab-after-rows', action='store_true',
+                        help='inject the FP LAB row right after the last stock '
+                             'row (before the footer/focus controllers) instead '
+                             'of at the terminator. Focus-enrollment experiment; '
+                             'see docs/menu/gui-resources.md')
     parser.add_argument('--og60-sel', type=lambda s: int(s, 0), default=173,
                         help='FieldAngle selector for FHD/59.94 CinemaDNG. '
                              'Default 173, measured on hardware 2026-09-11: the '
@@ -395,8 +400,11 @@ entry:
                  plan['header'], 2, 'enlarged scene header'),
                 (plan['menu_at'], len(plan['menu_stock']), INJECT_MENU_OFF,
                  plan['menu'], 2, 'Menu declaration with one more child'),
-                (plan['tail_at'], plan['tail_size'], INJECT_RECORDS_OFF,
-                 plan['body'], 3, 'FP LAB row before the scene terminator'),
+                ((plan['after_rows_at'] if args.fplab_after_rows else plan['tail_at']),
+                 (plan['after_rows_size'] if args.fplab_after_rows else plan['tail_size']),
+                 INJECT_RECORDS_OFF, plan['body'], 3,
+                 'FP LAB row, after last row' if args.fplab_after_rows
+                 else 'FP LAB row before the scene terminator'),
             )
             table = b''
             for record, length, offset, buffer, mode, why in pooled:

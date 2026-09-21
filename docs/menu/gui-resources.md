@@ -539,6 +539,23 @@ Offline disassembly past this point yields more questions than answers. Next
 real step is a live `[row+0x8c]` read with the menu open, or an on-camera A/B,
 not more static tracing.
 
+### Focus-enrollment experiment prepared, 2026-09-21
+
+After Frame Rate's subtree the stream continues with the `Footer`/`FooterSelect`
+block (object `0x1f`, carrying `focusEvent`/`controlFocus`/`controlValue`), a
+focus controller constructed AFTER the rows. Our row, injected at the terminator,
+is built after that controller, which is a concrete mechanism for the row drawing
+but never being enrolled as focusable.
+
+`--fplab-after-rows` injects the row at the first record after the last row
+(the `Footer` declaration, `0xC1A77B36`) instead of the terminator, so the row
+constructs within the row block, before the footer/focus controllers. This is
+safe for accounting: objects store in a sorted-id table and clips bind by owner
+id, so neither depends on stream position; the header reservations are unchanged.
+Built clean to `builds/fplab-afterrows` (30 guards, no overlap). It is the
+mechanism-driven focus experiment to flash next; it cannot be validated offline
+(focus enrollment is runtime), so it is a considered test, not a proven fix.
+
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
 groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,

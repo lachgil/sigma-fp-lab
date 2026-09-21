@@ -217,6 +217,18 @@ def build_row(image: bytes) -> dict:
     tail_at, tail_tag, tail_size = scene.records[-1]
     if tail_tag != TERMINATOR:
         raise ValueError('the scene does not end with a terminator')
+    # A second candidate anchor: the record immediately after the last row's
+    # subtree (the Footer block). Injecting here constructs our row within the
+    # row block, BEFORE the scene's focus/footer controllers -- the fix for the
+    # camera focus-enrollment bug, where a row built at the terminator (after
+    # those controllers) draws but is never enrolled as focusable. Safe for
+    # accounting: objects store by sorted id and clips bind by owner id, neither
+    # depends on stream position.
+    last_row_end = max(at for at, _t, _s in ns.subtree(image, scene, DONOR_ROW)[0])
+    after = next((r for r in scene.records if r[0] > last_row_end), None)
+    if after is None or after[1] == TERMINATOR:
+        raise ValueError('no record follows the last row before the terminator')
+    after_at, _after_tag, after_size = after
     grown = ns.decode_header(header)
     return dict(identity=identity, scene=SCENE, scene_at=scene.start + res.LOAD,
                 header_at=scene.start + res.LOAD,
@@ -229,7 +241,7 @@ def build_row(image: bytes) -> dict:
                 references_left_stock=dict(external),
                 label=dict(record=hex(label_at + res.LOAD),
                            offset=hex(LABEL_OFFSET), text='FP LAB'),
-                objects=(scene.header.objects, grown.objects),
+                after_rows_at=after_at + res.LOAD, after_rows_size=after_size,
                 capacity=(capacity, capacity + 1), installable=False)
 
 
