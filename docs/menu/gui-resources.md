@@ -499,6 +499,32 @@ state with the menu open. The USB shell times out while the menu is open
 (`moved=0/64`), so a reliable live read, or a targeted A/B (move the row far and
 watch where any highlight lands), is the next step. Not another blind flash.
 
+### Runtime boundary reached: construction order, 2026-09-21
+
+Camera A/B: on Frame Rate, Down then Right does NOTHING, so focus is not on our
+row (not merely an invisible highlight). Yet offline the row is a provably exact
+clone of a working row: through the real interpreter our row (`0xF000`) has one
+child (`MenuItem_Select 0xF001`) with 12 grandchildren, identical to Frame Rate
+(`0x1151`/`0x1152`), parents correct; and the focus names are shared across all
+rows (`Main_Focus`, `Focus_On/Off`, `List_Focus`, `Sub_Focus`), not per-row, so
+there is no name aliasing (`B2_n5_ListFocus4` is Frame-Rate-specific, not a
+per-row index). Structure and naming are not the cause.
+
+Leading hypothesis: **construction order**. Our row is injected just before the
+scene terminator, so it is interpreted LAST, after the focus/list controller has
+already registered the rows that existed at its construction point. A row added
+after that registration draws but is never enrolled as focusable, which fits all
+symptoms. The stock rows are declared inline, before that point.
+
+The tension: the graft appends the row's header arrays at the end
+(`clip_tracks[214:244]`, objects last), which assumes our records construct
+LAST. Injecting the row earlier in the stream (right after Frame Rate, before the
+focus registration) would require inserting our header-array entries in the
+MIDDLE, not appending, and re-checking clip-slot alignment. That is the next
+experiment, and it needs the header-array insertion to match the new stream
+position. Confirm the registration point (who builds the focusable-row list, and
+when) before reordering, ideally with a live read while the menu is open.
+
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six
 groups, equal to the header entry's first field), `0`, `word4` (3,2,19,1,2,1,
