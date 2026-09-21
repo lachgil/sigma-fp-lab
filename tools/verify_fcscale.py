@@ -286,12 +286,20 @@ def main() -> None:
     cam.u.mem_write(card.STATE + 0x6C, struct.pack('<I', 0))
     cam.ui_state(2)
 
-    # A second hold while the mode is on: the scale goes, the mode stays.
+    # A second hold while the mode is on: the scale goes, the mode stays -- and
+    # it comes off EVERY buffer it was on, not just the one being shown. The
+    # camera menu can claim a buffer before that buffer next comes round in
+    # live view, and then the menu draws with our scale still on it.
     cam.ui_submit(DESC_FRONT)
+    carried = [base for base in (PIX_UI, PIX_FRONT) if any(cam.pixels(base))]
+    check('both buffers carry the scale before it is taken down',
+          carried == [PIX_UI, PIX_FRONT])
     check('a second hold takes the scale down and leaves the mode on',
           cam.hold(card.HOLD_MS + 400) == 1 and cam.state(0) == 1
-          and cam.state(0xC) == 0 and cam.events == [0x21]
-          and not any(cam.pixels(PIX_FRONT)))
+          and cam.state(0xC) == 0 and cam.events == [0x21])
+    check('taking it down clears every buffer it was on, with no further frames',
+          not any(cam.pixels(PIX_FRONT)) and not any(cam.pixels(PIX_UI))
+          and cam.state(0x60) == cam.state(0x64) == cam.state(0x68) == 0)
     check('a hold is counted, and the press it followed measured',
           cam.state(0x18) == 2 and cam.state(0x14) == card.HOLD_MS + 400)
 

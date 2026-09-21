@@ -155,6 +155,33 @@ drawn at coverage 96 rather than 128, because averaging dims a one-pixel stroke
 instead of removing it. **Geometry is verified offline only; it has not been on
 a camera.**
 
+### The scale showing up inside the camera menu, 2026-09-21
+
+Reported on the camera: with the mode and the scale off, opening the camera
+menu brought the scale back and disturbed the menu.
+
+A buffer was only ever cleared when it came round again **in live view**: the
+submit hook clears a buffer whose drawn flag is set once the scale is not
+wanted. Taking the scale down painted the front buffer immediately
+(`fc_present`) and left the layer's other two carrying it. If the camera menu
+claimed one of those before live view did, the menu was drawn on top of our
+rows and the scale reappeared with it.
+
+`clear_all` now runs at the moment the scale goes off, walking the tracked
+buffers (`+0x28..+0x30`), clearing the scale's rows on each with the geometry
+of the last paint and cleaning those rows out of the data cache. The drawn
+flags are reset with them. It takes the same `+0x6C` paint lock as the hook, so
+it cannot race a frame. `tools/verify_fcscale.py` covers it: both buffers carry
+the scale, one hold takes it down, and **neither buffer has a pixel left with no
+further frames submitted** -- that case fails if the call is removed.
+
+If it still appears in the menu, the other suspect is the gate itself: it
+treats `UI_STATE` 4 as playback and 5 as the menu, and those values were read
+on one build in one mode. `--probe` builds a card that draws the value of that
+word as a row of ticks at the top left on every frame, whatever the gate
+decides, so the menu's value can be counted off the screen without a USB
+shell.
+
 The button is worked by duration rather than by counting presses: the press
 switches the mode on (posting `0x21` immediately, so it feels instant), and the
 release decides what else happens from the camera's own millisecond clock

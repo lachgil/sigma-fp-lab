@@ -51,6 +51,12 @@ SUBMIT_STOCK = 0xE92D48F0       # push {r4, r5, r6, r7, fp, lr}, replayed by fc_
 CLOCK = 0xC002B920
 HOLD_MS = 500
 
+# The diagnostic build. With it on, the payload draws a row of ticks at the top
+# left, one per unit of the UI state word, on every frame whatever the paint
+# gate decides -- which is how that word's value while the camera menu is open
+# gets read off the screen without a USB shell. Off in every shipped card.
+PROBE = False
+
 # How an AutoRun runs code: the echo command's handler pointer is repointed,
 # `echo` is issued, and the stock handler is put straight back. Same slot the
 # fpSup loader itself uses.
@@ -268,7 +274,8 @@ def pack16(rgb) -> int:
 def defines() -> tuple[str, ...]:
     """What the payload takes from here rather than repeating."""
     return (f'STATE={STATE:#x}', f'SUBMIT_RESUME={SUBMIT_SITE + 4:#x}',
-            f'CLOCK={CLOCK:#x}', f'HOLD_MS={HOLD_MS}')
+            f'CLOCK={CLOCK:#x}', f'HOLD_MS={HOLD_MS}',
+            f'PROBE={1 if PROBE else 0}')
 
 
 def native_include(image: bytes) -> str:
@@ -449,7 +456,10 @@ def main() -> None:
                         help="the bar's last row on the 682-row layer")
     parser.add_argument('--label-gap', type=int, default=LABEL_GAP,
                         help='rows between the labels and the bar')
+    parser.add_argument('--probe', action='store_true',
+                        help='draw the UI state word as ticks, top left, every frame')
     args = parser.parse_args()
+    globals()['PROBE'] = args.probe
     SCALE, CROP_BOTTOM, BAR_BOTTOM = args.scale, args.crop_bottom, args.bar_bottom
     LABEL_GAP = args.label_gap
     build(args.out)

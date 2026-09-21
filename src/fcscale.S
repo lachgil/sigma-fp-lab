@@ -170,6 +170,10 @@ fc_release:
     moveq   r1, #1
     str     r1, [r5]
     bl      fc_present              @ put it up, or take it down, now
+    ldr     r0, [r5, #0xC]          @ taken down: get it off the buffers the
+    cmp     r0, #0                  @ panel is not showing as well, before the
+    bne     3f                      @ camera menu can claim one of them
+    bl      clear_all
     b       3f
 
 2:  ldr     r0, [r5, #0x1C]         @ a press. Started off: the press already
@@ -179,6 +183,7 @@ fc_release:
     str     r1, [r5]
     str     r1, [r5, #0xC]
     bl      fc_present              @ take the scale down now
+    bl      clear_all
     mov     r0, r4
     mov     r1, #0x22
     bl      fc_post
@@ -254,6 +259,56 @@ fc_on_submit:
     bl      fc_paint
     pop     {r4, pc}
 
+/* clear_all: take the scale off every buffer we have painted, not just the one
+ * the panel is showing.
+ *
+ * Without this, a buffer that still carried the scale when the scale went off
+ * keeps it until that buffer comes round again IN LIVE VIEW, because that is
+ * the only path that clears it. If the camera menu claims the buffer first,
+ * the menu draws over our rows, and the scale shows up inside the menu
+ * (camera, 2026-09-21). Clearing at the moment the scale goes off, while we
+ * still know which buffers carry it, closes that window.
+ *
+ * Geometry comes from the last paint (+0x20/+0x24): if nothing has ever been
+ * painted there is nothing of ours to clear, and it returns. */
+clear_all:
+    push    {r4, r5, r6, r7, r8, lr}
+    LDA     r8, STATE
+    ldr     r5, [r8, #0x20]
+    cmp     r5, #0
+    beq     9f
+    add     r3, r8, #0x6C           @ the same paint lock the hook takes
+    mov     r1, #1
+    swp     r2, r1, [r3]
+    cmp     r2, #0
+    bne     9f
+    dmb
+    mov     r4, #0
+1:  add     r6, r8, r4, lsl #2
+    ldr     r7, [r6, #0x28]
+    cmp     r7, #0
+    beq     2f
+    mov     r0, r7
+    mov     r1, #0
+    bl      draw_scale
+    mov     r0, #0
+    str     r0, [r6, #0x60]
+    ldr     r5, [r8, #0x20]
+    ldr     r2, [r8, #0x8C]
+    movw    r1, #CLEAR_Y
+    mul     r1, r5, r1
+    mla     r0, r1, r2, r7
+    mov     r1, #CLEAR_H
+    mul     r1, r5, r1
+    mul     r1, r2, r1
+    bl      clean_range
+2:  add     r4, r4, #1
+    cmp     r4, #3
+    blo     1b
+    mov     r0, #0
+    str     r0, [r8, #0x6C]
+9:  pop     {r4, r5, r6, r7, r8, pc}
+
 /* fc_paint(descriptor). Acts only on a descriptor of PAINT_FMT, of the
  * scale's width and at least its height; anything else (the other layer,
  * another monitor) is left alone.
@@ -317,7 +372,11 @@ fc_paint:
     mov     r2, #0
     str     r2, [r1, #0x60]
 2:  ldr     r2, [r1, #0x60]         @ drawn on this buffer
-    orrs    r2, r2, r7
+    orr     r2, r2, r7
+.if PROBE != 0
+    orr     r2, r2, #1              @ the probe draws on every frame
+.endif
+    cmp     r2, #0
     beq     9f                      @ nothing there and nothing wanted
 
     add     r3, r8, #0x6C           @ take the paint lock, or leave this frame.
@@ -346,6 +405,9 @@ fc_paint:
     mul     r1, r5, r1
     mul     r1, r2, r1
     bl      clean_range
+.if PROBE != 0
+    bl      draw_probe
+.endif
 6:  mov     r0, #0
     str     r0, [r8, #0x6C]
 9:  pop     {r4, r5, r6, r7, r8, pc}
@@ -384,6 +446,69 @@ fc_present:
     beq     9f
     bl      fc_paint
 9:  pop     {r4, pc}
+
+.if PROBE != 0
+/* draw_probe: a row of ticks at the top left, one per unit of the UI state
+ * word at UI_STATE, drawn on every frame whatever the gate decides.
+ *
+ * It exists to answer one question without a USB shell: what value that word
+ * holds while the camera menu is open. The gate treats 4 as playback and 5 as
+ * the menu, and those were read on one build in one mode; if the menu uses
+ * another value the gate never closes and the scale is painted over the menu.
+ * Count the ticks on screen and the value is known.
+ *
+ * Built only with `--probe`. The shipped card has PROBE = 0 and none of this
+ * is assembled. */
+.equ TICK_X,    16
+.equ TICK_Y,    16
+.equ TICK_W,    10
+.equ TICK_H,    14
+.equ TICK_STEP, 14
+.equ TICK_MAX,  20
+draw_probe:
+    push    {r4, r5, r6, lr}
+    LDA     r6, STATE
+    mov     r0, #C_CLEAR            @ the whole strip, so a smaller count
+    str     r0, [r6, #0x40]         @ cannot leave the previous one's tail
+    mov     r0, #TICK_X
+    mov     r1, #TICK_Y
+    movw    r2, #(TICK_STEP * TICK_MAX)
+    mov     r3, #TICK_H
+    bl      fill_rect
+    LDA     r0, UI_STATE
+    ldr     r5, [r0]
+    cmp     r5, #TICK_MAX
+    movhi   r5, #TICK_MAX
+    cmp     r5, #0
+    beq     2f
+    ldr     r0, [r6, #0x8C]
+    cmp     r0, #2
+    movweq  r0, #C_LABEL16
+    movne   r0, #C_LABEL
+    str     r0, [r6, #0x40]
+    mov     r4, #0
+1:  mov     r0, #TICK_STEP
+    mul     r0, r4, r0
+    add     r0, r0, #TICK_X
+    mov     r1, #TICK_Y
+    mov     r2, #TICK_W
+    mov     r3, #TICK_H
+    bl      fill_rect
+    add     r4, r4, #1
+    cmp     r4, r5
+    blo     1b
+2:  ldr     r5, [r6, #0x20]         @ the panel reads memory: clean the strip
+    ldr     r2, [r6, #0x8C]
+    mov     r1, #TICK_Y
+    mul     r1, r5, r1
+    ldr     r0, [r6, #0x3C]
+    mla     r0, r1, r2, r0
+    mov     r1, #TICK_H
+    mul     r1, r5, r1
+    mul     r1, r2, r1
+    bl      clean_range
+    pop     {r4, r5, r6, pc}
+.endif
 
 /* draw_scale(base, wanted): clear the scale's rows, then draw it if wanted.
  * Refuses a surface the firmware's own geometry does not fit on. */
