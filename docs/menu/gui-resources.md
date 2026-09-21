@@ -176,7 +176,7 @@ What it installs, and what each piece is for:
 | `src/nbuinject.S` | `0xC0793200`, 452 B | two guarded replacements and one injected run at `0xC05E6400` |
 | enlarged header | pool `+0x54000`, 4,072 B | 285 -> 330 objects, one more `Menu` child |
 | `Menu` declaration | pool `+0x56000`, 36 B | child capacity 6 -> 7 |
-| the row | pool `+0x58000`, 10,792 B | 241 records copied from Frame Rate |
+| the row | pool `+0x58000`, 17,144 B | 294 records copied from Frame Rate, animations intact |
 
 The kilobyte buffers ride in the loader's DMA pool, the way the menu's own code
 does, because no cave in the image is both free and that big. The injector's
@@ -185,10 +185,13 @@ pool offset, resolved from `0xC3757A7C` at parse time. A pool base of zero
 leaves the scene stock, which is checked.
 
 **This candidate still duplicates Frame Rate bindings.** Its copied records
-name `MV_FrameRate`, not private FP LAB settings. Earlier camera builds prevented
-Record Settings from opening, so drawing, focus, opening and setting changes
-were not demonstrated. `installable=False` describes this unfinished candidate;
-the explicit `--fplab-row` option remains an offline experimental build.
+name `MV_FrameRate`, not private FP LAB settings, so it reads and writes the
+frame rate exactly as the stock row does. It is now grafted with its animation
+groups and clips intact (see the clip-allocation resolution below), so focus
+highlight and visibility travel with it. Earlier camera builds prevented Record
+Settings from opening (the parser-status fault, since fixed offline), so drawing,
+focus and opening are still not demonstrated on a camera. `installable=False`
+because none of it has run on hardware; `--fplab-row` is an offline build.
 
 The earlier `--fplab-page` option and `cards/fp-fplab-row-card.zip` are
 withdrawn: they grafted a copy of an Auto ISO limit row, with its list,
@@ -387,7 +390,7 @@ is the return-context half the 2026-09-14 hardware retarget dropped. Focus
 restoration, private variable registration and teardown are still unproven end
 to end, and none of this has been on a camera.
 
-### Intact animated donor: the exact clip-allocation blocker, 2026-09-21
+### Intact animated donor: resolved, 2026-09-21
 
 `nbu_scene.graft` already carries animation groups, clips, tracks and keys with
 their header contributions, so keeping the Frame Rate row's animations is a
@@ -412,11 +415,19 @@ emitting a header whose clip reservation disagrees with the interpreter's own
 per-group fill would corrupt the scene arena. `_array_slice` now raises this as
 a precise numeric error rather than a blind slice.
 
-Resolving it needs the runtime association captured from the native animation
-parser (`0xC05E7B78`, jump table `0xC05E7BC0`) for these six groups: how many
-clip slots each consumes and how a clip record selects its slot. That is the
-one measurement between here and an animated intact row; until then the shipped
-candidate stays animation-dropped and `installable=False`.
+**Resolved.** `clip_tracks` is reserved per animation GROUP, not per clip
+record: for the whole scene its length equals the group reservation total (214
+for B2_5), not the clip-record count (190). So records fewer than reservations
+is the stock norm, and clips bind to their owner by id (`C05E6FAA`), never
+positionally. The row's 6 groups are contiguous in group order (indices 42-47),
+so their reservation slices cleanly: **30 `clip_tracks`, 95 `track_keys`**. The
+grafted header therefore adds exactly those, matching how the stock scene is
+laid out. `_array_slice` now enforces the real invariants (contiguous groups,
+clip records <= reserved) instead of a false equality, and `build_row` keeps
+every record. A stale-reference scan of the whole renumbered subtree finds zero
+leftover stock ids, and `verify_row` passes 15/15 with the animation groups,
+clips and keys carried across. The row body is the full 17,144 bytes / 294
+records. Still offline only: drawing, focus and the camera remain unproven.
 
 Structure decoded further, same day. The `animationClip` group record
 (`0x1000B`) is: tag, size, `word2` (a small count: 3,2,2,1,2,2 for the six

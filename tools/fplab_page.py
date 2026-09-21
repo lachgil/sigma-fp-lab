@@ -141,7 +141,7 @@ def label_record(image: bytes, scene: ns.Scene) -> tuple[int, int]:
 
 
 def build_row(image: bytes) -> dict:
-    """Build an experimental sixth row, still missing donor animations.
+    """Build the sixth row, animations intact.
 
     Three kinds of rewrite happen here, and only the first was ever safe to do
     by hand:
@@ -160,14 +160,11 @@ def build_row(image: bytes) -> dict:
     identity = inspect_scene(image)
     scene = ns.scene(image, SCENE)
     picked, _ = ns.subtree(image, scene, DONOR_ROW)
-    kept, dropped = [], collections.Counter()
-    for at, tag, size in picked:
-        name = (nc.pool_text(image, ns.component_of(image, at, tag))
-                if tag in ns.NAMED else None)
-        if tag in (ns.GROUP, ns.CLIP) or name in DROP_COMPONENTS:
-            dropped[name or f'{tag:#x}'] += 1
-            continue
-        kept.append((at, tag, size))
+    # Keep every record. Animation groups and clips are carried with their exact
+    # header contribution by `ns.graft`; clips bind to their owner object by id
+    # (firmware C05E6FAA), so nothing here is positional. See
+    # docs/menu/gui-resources.md.
+    kept, dropped = list(picked), collections.Counter()
     inside = [struct.unpack_from('>I', image, at + 20)[0]
               for at, tag, size in kept if tag == ns.DECLARATION]
     identifiers = {obj: PRIVATE_ID + index for index, obj in enumerate(inside)}
@@ -206,8 +203,9 @@ def build_row(image: bytes) -> dict:
             struct.pack_into('>2f', record(at, size), place['position'] - at,
                              0.0, ROW_SLOT)
 
-    donor = ns.Scene(scene.name, scene.start, scene.end, scene.header, kept)
-    header, body = ns.graft(image, scene, donor, DONOR_ROW, MENU, identifiers,
+    # The donor is the whole scene: `graft` recomputes the subtree, and
+    # `_array_slice` needs the full group order to index the header's reservations.
+    header, body = ns.graft(image, scene, scene, DONOR_ROW, MENU, identifiers,
                             {at: bytes(raw) for at, raw in rewrites.items()})
     menu_at = int(identity['menu_declaration'], 16) - res.LOAD
     stock_menu = image[menu_at:menu_at + 36]
@@ -331,7 +329,7 @@ def verify_row(image: bytes, plan: dict) -> dict:
             all(ref in private or ref in stock_ids for ref in refs),
         'references that leave the row are only the page\'s own':
             external <= {1, 37} and all(ref in stock_ids for ref in external),
-        'nothing references an object the animation drop removed':
+        'no reference is left stale (all resolve to a declared object)':
             not (set(refs) - private - stock_ids),
         'exactly one label, and it is our private offset':
             labels == [LABEL_OFFSET],
@@ -340,9 +338,11 @@ def verify_row(image: bytes, plan: dict) -> dict:
         'the header still round-trips': ns.encode_header(grown) == plan['header'],
         'the list component brought its header entry':
             len(grown.list_items) == len(scene.header.list_items) + 1,
-        'no animation was claimed in the header':
-            grown.groups == scene.header.groups
-            and grown.clip_tracks == scene.header.clip_tracks,
+        'the animation groups and their clips came across':
+            grown.groups[:len(scene.header.groups)] == scene.header.groups
+            and len(grown.groups) == len(scene.header.groups) + 6
+            and len(grown.clip_tracks) == len(scene.header.clip_tracks) + 30
+            and len(grown.track_keys) == len(scene.header.track_keys) + 95,
     }
 
     vm = SceneVM(image)

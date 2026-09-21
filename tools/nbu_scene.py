@@ -191,45 +191,35 @@ def _array_slice(image: bytes, donor: Scene, picked: list[tuple[int, int, int]]
     records of that kind that precede the copied span.
     """
     header = donor.header
-    span = {at for at, _tag, _size in picked}
-    group_index = clip_index = track_index = list_index = None
-    groups = clips = lists = 0
-    clip_records = 0
-    for at, tag, _size in donor.records:
-        if tag == GROUP:
-            if at in span and group_index is None:
-                group_index, clip_index = groups, clips
-                track_index = sum(header.clip_tracks[:clips])
-            clips += header.groups[groups][2]
-            groups += 1
-        elif tag == CLIP and at in span:
-            clip_records += 1
-        elif tag == LIST:
-            if at in span and list_index is None:
-                list_index = lists
-            lists += 1
-    picked_groups = [g for at, tag, _s in picked if tag == GROUP
-                     for g in [header.groups[[a for a, t, _ in donor.records
-                                              if t == GROUP].index(at)]]]
-    picked_lists = sum(1 for _at, tag, _s in picked if tag == LIST)
-    if not picked_groups and not clip_records and not picked_lists:
+    group_order = [at for at, tag, _s in donor.records if tag == GROUP]
+    list_order = [at for at, tag, _s in donor.records if tag == LIST]
+    group_positions = [group_order.index(at) for at, tag, _s in picked if tag == GROUP]
+    list_positions = [list_order.index(at) for at, tag, _s in picked if tag == LIST]
+    clip_records = sum(1 for _at, tag, _s in picked if tag == CLIP)
+    if not group_positions and not clip_records and not list_positions:
         return [], [], [], []
+    # The header reserves clips per animation GROUP (groups[i][2]); clip records
+    # bind to their owner object by id (C05E6FAA), so records may be FEWER than
+    # the reserved slots -- the stock scene itself reserves 214 for 190 records.
+    # The reservation is only sliceable if the copied groups are a contiguous
+    # run in group order, because clip_tracks is laid out in that order.
+    def contiguous(positions: list[int], what: str) -> None:
+        if positions and positions != list(range(positions[0], positions[0] + len(positions))):
+            raise ValueError(f'copied {what} are not contiguous; the slice would be wrong')
+    contiguous(group_positions, 'animation groups')
+    contiguous(list_positions, 'list records')
+    picked_groups = [header.groups[i] for i in group_positions]
     wanted_clips = sum(g[2] for g in picked_groups)
-    record_clips = sum(struct.unpack_from('>3I', image, at + 8)[2]
-                       for at, tag, _s in picked if tag == GROUP)
-    if clip_records and clip_records != record_clips:
-        raise ValueError(
-            'clip allocation is ambiguous: %d clip records, %d declared by the '
-            'group records (+0x10), %d reserved by the header groups. These must '
-            'agree before an intact animated row can be grafted.'
-            % (clip_records, record_clips, wanted_clips))
-    if picked_groups and group_index is None:
-        raise ValueError('group records are not part of the copied span')
+    if clip_records > wanted_clips:
+        raise ValueError('more clip records (%d) than reserved slots (%d)'
+                         % (clip_records, wanted_clips))
+    clip_index = sum(g[2] for g in header.groups[:group_positions[0]]) if group_positions else 0
+    track_index = sum(header.clip_tracks[:clip_index])
+    list_index = list_positions[0] if list_positions else 0
     tracks = header.clip_tracks[clip_index:clip_index + wanted_clips] if wanted_clips else []
     keys = header.track_keys[track_index:track_index + sum(tracks)] if tracks else []
-    items = (header.list_items[list_index:list_index + picked_lists]
-             if picked_lists else [])
-    if len(tracks) != wanted_clips or len(keys) != sum(tracks) or len(items) != picked_lists:
+    items = header.list_items[list_index:list_index + len(list_positions)] if list_positions else []
+    if len(tracks) != wanted_clips or len(keys) != sum(tracks) or len(items) != len(list_positions):
         raise ValueError('donor header arrays are shorter than the copied span')
     return picked_groups, tracks, keys, items
 
