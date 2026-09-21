@@ -10,11 +10,11 @@
 
 /* The scale at 0.85 of the firmware's size, 84 rows cropped off the
  * bottom of its bar, the bar's last row left where the firmware puts it. */
-.equ BAR_Y,        589
+.equ BAR_Y,        599
 .equ BAR_H,        30
-.equ LABEL_Y,      560
-.equ CLEAR_Y,      560
-.equ CLEAR_H,      59
+.equ LABEL_Y,      568
+.equ CLEAR_Y,      568
+.equ CLEAR_H,      61
 .balign 4
 bands:                      /* 0xc0d1b74c, rescaled: x0, x1 inclusive, palette index, 16-bit colour */
     .short 77, 134; .byte 7, 0; .short 0xf000    /* a255 y0 u0 v0 -> rgb (0, 0, 0) */

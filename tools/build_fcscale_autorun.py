@@ -95,16 +95,18 @@ LABELS = [(14, 'minus', 'six'), (82, 'minus', 'five'), (150, 'minus', 'four'),
 # still the firmware's own, mapped onto the smaller bar.
 STOCK_BAR_H = 119               # 0xC057DC94 memsets row 464, 0xC057DD1C copies to 582
 STOCK_LABEL_GAP = 9             # the labels end at 455 and the bar starts at 464
+LABEL_GAP = 10                  # rows between labels and bar; None scales the stock gap
 SURFACE_W = 1024                # the layer's width, and the row the bands span
 SURFACE_H = 682
 CROP_BOTTOM = 84                # rows taken off the bottom of the firmware's bar
 SCALE = 0.85                    # what is left is drawn at this fraction of its size
-# The bar's last row. The firmware uses 582, which leaves 99 rows of layer under
-# it and reads as the scale floating in the picture. The layer's own last row
-# (681) sits it on the edge, but the camera draws its FPS/shutter/ISO strip down
-# there and we paint after the UI does, so that wipes it (camera, 2026-09-21).
-# 618 is as low as the scale goes without touching the strip.
-BAR_BOTTOM = 618
+# The bar's last row, and the rows between the labels and the bar. Both were
+# settled by eye on the camera (2026-09-21). The firmware uses 582 with a 9-row
+# gap, which floats mid-picture; the layer's own last row (681) sits the scale
+# on the edge but the camera draws its FPS/shutter/ISO strip inside 623..681 and
+# the hook paints after the UI, so that wiped the strip. 628 with the labels
+# held at 568 is the placement that looked right and leaves the strip alone.
+BAR_BOTTOM = 628
 # Coverage at which a resized glyph pixel is drawn. Resizing averages the
 # firmware's own coverage, so a one-pixel stroke dims instead of vanishing;
 # the threshold is lower than the unresized 128 to keep it.
@@ -120,7 +122,8 @@ def geometry() -> dict:
     bar_h = max(1, round((STOCK_BAR_H - CROP_BOTTOM) * SCALE))
     glyph_h = max(1, round(GLYPH_H * SCALE))
     bar_y = BAR_BOTTOM - bar_h + 1
-    label_y = bar_y - round(STOCK_LABEL_GAP * SCALE) - glyph_h
+    gap = round(STOCK_LABEL_GAP * SCALE) if LABEL_GAP is None else LABEL_GAP
+    label_y = bar_y - gap - glyph_h
     if label_y < 0 or BAR_BOTTOM >= SURFACE_H:
         raise SystemExit('the scale does not fit on the layer')
     return dict(width=width, left=left, bar_y=bar_y, bar_h=bar_h,
@@ -435,7 +438,7 @@ def build(out: Path) -> str:
 
 
 def main() -> None:
-    global SCALE, CROP_BOTTOM, BAR_BOTTOM
+    global SCALE, CROP_BOTTOM, BAR_BOTTOM, LABEL_GAP
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT / 'builds/fcscale')
     parser.add_argument('--scale', type=float, default=SCALE,
@@ -444,8 +447,11 @@ def main() -> None:
                         help="rows taken off the bottom of the firmware's bar")
     parser.add_argument('--bar-bottom', type=int, default=BAR_BOTTOM,
                         help="the bar's last row on the 682-row layer")
+    parser.add_argument('--label-gap', type=int, default=LABEL_GAP,
+                        help='rows between the labels and the bar')
     args = parser.parse_args()
     SCALE, CROP_BOTTOM, BAR_BOTTOM = args.scale, args.crop_bottom, args.bar_bottom
+    LABEL_GAP = args.label_gap
     build(args.out)
 
 

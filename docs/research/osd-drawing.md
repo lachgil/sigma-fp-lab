@@ -131,15 +131,21 @@ instead of copying it: `tools/build_fcscale_autorun.py` has three knobs
 and `CLEAR_H` into `src/fcscale_native.inc.S`, with the band boundaries and the
 label positions mapped onto the narrower bar and the glyph bitmaps box-averaged
 down to the smaller size. The default is 0.85 with 84 rows cropped off the bar:
-a 30-row bar 870 px wide, inset 77 px, labels 21 rows above it, and the bar's
-last row at 618.
+a 30-row bar 870 px wide, inset 77 px, its last row at 628, and the labels 21
+rows tall ending at 588, 10 rows above it.
 
-Where the bar's last row goes was settled on the camera (2026-09-21). The
-firmware's own 582 leaves 99 rows of layer under it and reads as the scale
-floating in the picture. The layer's last row, 681, sits it on the edge, but
-the camera draws its FPS/shutter/ISO strip inside rows 623..681 and the submit
-hook paints after the UI, so the scale's clear wiped that strip. 618 is the
-lowest row that leaves it alone.
+Placement was settled by eye on the camera (2026-09-21), which is the only
+oracle for it:
+
+- the firmware's own 582 leaves 99 rows of layer under the bar and reads as the
+  scale floating in the picture;
+- the layer's last row, 681, sits it on the edge, but the camera draws its
+  FPS/shutter/ISO strip inside rows 623..681 and the submit hook paints after
+  the UI, so the scale's clear wiped that strip;
+- 640 left the strip intact, so the strip begins below 640;
+- 628 with the labels held at 568 is the placement that looked right. The label
+  gap is its own knob (`LABEL_GAP`, `--label-gap`) because the bar and the
+  labels wanted moving in opposite directions.
 
 The bands stay contiguous by construction (each ends one pixel before the next
 begins) and the verifier checks the rescaled edges carry the firmware's own
