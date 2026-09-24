@@ -31,18 +31,63 @@ Only the runtime understands the module catalog; upstream VBIN is unchanged.
 
 ### Developer entry point for Bei
 
-Build an independent ARM assembly module and optionally package its boot card:
+**C modules are supported.** Start with `src/module_c_example.c`; no assembly,
+firmware addresses or hand-written module header are required in that source.
+Install Clang and LLD (Arch: `sudo pacman -S clang lld`; Debian/Ubuntu:
+`sudo apt install clang lld`). Use the pinned upstream checkout described below.
+
+```sh
+.venv/bin/python -B tools/build_module.py src/module_c_example.c \
+  --module-id 513 --upstream builds/module-upstream \
+  --out builds/my-c-tool.bin --card-out builds/my-c-card --debug
+```
+
+Write these two callbacks, including `module_abi.h`:
+```c
+int32_t fp_module_init(const struct fp_api *api, const struct fp_record *record);
+uint32_t fp_module_invoke(const struct fp_api *api,
+                          const struct fp_record *record, uint32_t argument);
+```
+
+Initialization returns zero or an error. Invocation returns the tool's value;
+the runtime wraps it in its status/value convention. Use `api->report`,
+`api->ticks`, `api->lookup` and `api->call` for shared services.
+The example demonstrates initialized and zero-initialized globals, a const
+table/string, data pointers and a function pointer. The builder supplies the
+header and bootstrap, links PIC ARM code, checks every dynamic relocation,
+materializes zero data, and relocates pointers once before C initialization.
+The runtime ABI itself is unchanged.
+
+This is freestanding C11, one translation unit, ARM soft-float. No libc,
+allocator, compiler support library, constructors, TLS, C++ or unwinder is
+supplied. Missing helpers/imports fail the build instead of becoming fake stubs.
+Only checked `R_ARM_RELATIVE` data/GOT relocations are supported; unsupported
+sections/relocations and alignment requirements above eight bytes are rejected.
+Additional source can be included into the translation unit. Repeated `-D`
+sets preprocessor definitions. `--compiler`/`--linker` or `FP_MODULE_CLANG`/
+`FP_MODULE_LLD` select tool paths. A local `builds/toolchain/bin/ld.lld` fallback
+is supported but is not distributed in the repository; install LLD normally.
+
+```sh
+.venv/bin/python -B tools/verify_module_c.py --upstream builds/module-upstream
+```
+
+Six C scenarios passed through the real emitted ARM loader/runtime code:
+two heap bases produced identical values178,260,350,448,514 after staging was
+unmapped, with fresh heap memory poisoned. Repeated initialization did not
+relocate pointers twice. Init failure preserved -77 and freed the failed module
+while its assembly sibling remained callable. Missing callbacks and unresolved
+imports were rejected before publishing binaries. All18 existing registry
+scenarios still pass. Report: `builds/module-c-proof/report.json`.
+**C modules have not yet been tested on the physical camera.**
+
+The original assembly workflow remains available:
 ```sh
 .venv/bin/python -B tools/build_module.py src/module_probe.S \
   --upstream builds/module-upstream --out builds/my-tool.bin \
   -D MODULE_ID=513 -D INITIAL_VALUE=10 -D STEP=1 \
   --card-out builds/my-card --debug
 ```
-
-`module_probe.S` is the small service-using example; `module_abi.h` defines the
-header, callbacks and C layouts. For a real tool, supply its own `.S` source
-with that header and position-independent code/data. Repeated `-D NAME=VALUE`
-arguments go to the upstream assembler. This command does not compile C.
 
 Use repeated `--dependency path/to/already-built.bin` to load existing modules
 before the newly compiled module, in command-line order. Dependencies are not
