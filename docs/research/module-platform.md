@@ -264,7 +264,7 @@ migrated onto the generic drawing provider.
 native on/off latch to C. It installs two guarded hooks and uses 16 cave bytes,
 with no display hook or custom renderer. Do not combine it with `0x102` or an
 active UI provider button hook. Its 980-byte image passes eight offline ARM
-scenarios; physical validation is pending. See the
+scenarios and was confirmed working on the camera on 2026-09-25. See the
 [C tool walkthrough](c-modules.md#a-real-tool-native-false-color-toggle) for
 build, verification, installation, and behavior.
 

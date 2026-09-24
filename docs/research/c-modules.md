@@ -50,9 +50,10 @@ native on/off events at two heap bases, ignored/unmatched releases, repeated
 initialization, native return propagation, and rejection of owned hooks or
 unsafe cave space without leaving live hooks into freed memory.
 
-**Physical validation of this C toggle is pending.** The previously tested
-False Color module `0x102` is assembly; it is not evidence for this C tool.
-Do not package both, or activate the UI provider's competing button hook.
+**Camera-validated 2026-09-25:** booted from the card on firmware 5.02, the
+assigned button toggled native False Color on and off, staying on after release.
+Do not package it with the assembly False Color module `0x102`, or activate the
+UI provider's competing button hook.
 The generated card contains only `0x103` plus the debug shell.
 
 Installation uses `AutoRun.txt` and `fpSup.BIN` from that card directory.
