@@ -1,9 +1,10 @@
 # The fp module platform
 
-A way to put multiple independent tools on a Sigma fp from one SD card, give them
-a shared service table, and let them find and call each other, without each tool
-hard-coding firmware addresses or fighting over memory. Modules can be written in
-C (see `c-modules.md`) or ARM assembly.
+A way to put multiple tools on a Sigma fp from one SD card, allocate their
+resident images, and let them find and call each other through a service table.
+Modules can be written in [C](c-modules.md) or ARM assembly. Hardware-facing
+modules still need firmware bindings and must avoid competing for the same hooks;
+the runtime does not arbitrate hook ownership.
 
 **Status:** the registry was camera-validated on 2026-09-23, a compiled C example
 on 2026-09-25, and an autonomous False Color tool loads as a module and works on
@@ -50,12 +51,14 @@ others can build on, rather than one hard-coded feature. It is early and trusted
 | `src/module_ui.{h,S}` | Experimental drawing + button-observe provider |
 | `src/module_ui_demo.S` | Consumer that draws counters via the provider |
 | `src/module_fcscale.S` | False Color tool packaged as a module |
+| [`src/module_fclatch.c`](../../src/module_fclatch.c) | C native False Color on/off toggle, no scale |
 | `tools/build_module.py` | Build one C or assembly module, optionally a card |
 | `tools/build_module_card.py` | Package prebuilt modules into a boot card |
 | `tools/verify_modules.py` | Execute the boot chain and consume the registry |
 | `tools/verify_module_c.py` | Execute compiled C modules |
 | `tools/verify_module_ui.py` | Execute the drawing/input provider |
 | `tools/verify_module_fcscale.py` | Execute the False Color module |
+| `tools/verify_module_fclatch.py` | Execute C native toggle and hook-conflict scenarios |
 
 Pinned upstream:
 [`3a87d8238fbb89e2836d5b2df6f4d70fbd82c7da`](https://github.com/ijigen/fpSup/tree/3a87d8238fbb89e2836d5b2df6f4d70fbd82c7da).
@@ -237,8 +240,8 @@ a bounded experimental drawing service, not a compositor or native menu API.
 `src/module_fcscale.S` wraps the existing `fcscale.S` toggle/scale as ABI1 module
 `0x102`. Its initializer installs three guarded press/release/display hooks
 through 24 bytes of checked cave veneers; code, native scale data and state live
-in the module's USER allocation. It loads alone with the registry and debug
-shell.
+in the module's USER allocation. It needs no generic UI provider and has also
+run alongside the C example.
 
 ```sh
 .venv/bin/python -B tools/verify_module_fcscale.py \
@@ -254,6 +257,16 @@ toggles the mode, hold about 500 ms controls the scale. This establishes basic
 autonomous tool operation through the loader, not exhaustive menu-transition or
 recording safety. This packages an existing tool as a module; it has not been
 migrated onto the generic drawing provider.
+
+### Plain native toggle in C
+
+[`module_fclatch.c`](../../src/module_fclatch.c), module `0x103`, ports the plain
+native on/off latch to C. It installs two guarded hooks and uses 16 cave bytes,
+with no display hook or custom renderer. Do not combine it with `0x102` or an
+active UI provider button hook. Its 980-byte image passes eight offline ARM
+scenarios; physical validation is pending. See the
+[C tool walkthrough](c-modules.md#a-real-tool-native-false-color-toggle) for
+build, verification, installation, and behavior.
 
 ## See also
 

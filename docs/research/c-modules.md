@@ -2,24 +2,66 @@
 
 You can now write a camera module in plain C instead of ARM assembly, build it
 with one command, and run it on the fp through the module loader. This doc is a
-short, practical walkthrough. For the loader/registry internals it sits on top
-of, see `module-platform.md`; for the older SD-loading research, see `sideload.md`.
+short, practical walkthrough. See [module-platform.md](module-platform.md) for
+loader/registry internals and [sideload.md](sideload.md) for older SD research.
 
 ## What "C support" means here
 
-- You write two ordinary C functions. No assembly, no firmware addresses, no
-  hand-written module header.
+- You write two ordinary C functions. The builder supplies the module header.
+  Hardware-facing tools can bind firmware functions and install hooks in C.
 - `tools/build_module.py` compiles them (Clang + LLD), adds the module header
   and a tiny bootstrap, and produces one `.bin` the loader accepts.
-- The build makes the code position independent: it works wherever the camera
-  puts it in memory, so you never hard-code an address.
-- It is **freestanding C11**: the language and your own code, nothing else. There
-  is no `printf`, no `malloc`, no standard library. You talk to the camera only
-  through the small service table the loader hands you.
+- The build makes the module position independent: its own code and data work
+  wherever the camera allocates them. Firmware bindings remain version-specific.
+- It is **freestanding C11**: no bundled `printf`, `malloc`, or standard library.
+  Use the runtime service table, other modules, or known firmware bindings.
 
-This is real and camera-tested (2026-09-25), but it is a foundation, not a full
-SDK. It does not by itself draw to the screen, read buttons, or add menu items;
-those need the drawing/input modules described in `module-platform.md`.
+C support is camera-tested (2026-09-25), but this is not a complete SDK.
+The language does not limit tools to counters or demos. The native False Color
+toggle below needs no drawing provider because the camera renders False Color.
+
+## A real tool: native False Color toggle
+
+[src/module_fclatch.c](../../src/module_fclatch.c) implements the same plain
+on/off behavior as the older assembly latch, for **SIGMA fp firmware 5.02**:
+
+- Assign native False Color using the camera's existing Custom Button Functions.
+- Press once to turn it on. Release leaves it on. Press again to turn it off.
+- No scale, custom renderer, extra menu, background task, or USB call to activate.
+- Boot installs two hooks but does not turn False Color on.
+
+The toggle and native event construction are C. Small inline ARM instructions
+mask/restore interrupts and publish instruction changes safely. The builder's
+shared assembly bootstrap handles module relocation, not the tool's behavior.
+Only 16 bytes of branch veneers occupy the cave; code/state live in USER memory.
+
+Build and verify from the repository root:
+
+```sh
+.venv/bin/python -B tools/build_module.py src/module_fclatch.c \
+  --module-id 0x103 --upstream builds/module-upstream \
+  --out builds/module-fclatch/module.bin \
+  --card-out builds/module-fclatch/card --debug
+.venv/bin/python -B tools/verify_module_fclatch.py
+```
+
+The compiled module is 980 bytes. Eight offline ARM scenarios pass, including
+native on/off events at two heap bases, ignored/unmatched releases, repeated
+initialization, native return propagation, and rejection of owned hooks or
+unsafe cave space without leaving live hooks into freed memory.
+
+**Physical validation of this C toggle is pending.** The previously tested
+False Color module `0x102` is assembly; it is not evidence for this C tool.
+Do not package both, or activate the UI provider's competing button hook.
+The generated card contains only `0x103` plus the debug shell.
+
+Installation uses `AutoRun.txt` and `fpSup.BIN` from that card directory.
+Back up existing boot files, preserve media, and safely eject the card.
+With the camera off, remove the battery before booting the replacement card
+to clear stale RAM hooks. No flash or persistent-setting patch is involved.
+
+The latch tracks what it requested, not a native state getter. Menu/mode changes
+can reset the camera display independently; this retains the old latch behavior.
 
 ## The smallest possible module
 
@@ -62,8 +104,9 @@ invoke 41 -> 42
 invoke 99 -> 100
 ```
 
-So the C you wrote actually executed on emulated fp hardware and returned
-`argument + 1`. The same shape ran on the physical camera on 2026-09-25.
+The emitted ARM code executed in the offline model and returned `argument + 1`.
+A larger C example, not this minimal source, ran on the physical camera on
+2026-09-25 (see Evidence).
 
 ## Talking to the camera: the service table
 
@@ -144,8 +187,9 @@ tools/build_module.py my.c --module-id 0x301 --upstream builds/module-upstream \
 - **One translation unit, ARM soft-float.** No C++, TLS, constructors/destructors
   or exceptions. Only checked `R_ARM_RELATIVE` data/GOT relocations are supported;
   anything else is rejected.
-- **No screen or buttons by itself.** Drawing and input come from separate
-  modules (`module_platform.md`), reached via `api->call`.
+- **No general screen/button API in the runtime.** Modules can use providers
+  through `api->call` or implement firmware-specific bindings themselves, as
+  the C native toggle does. See [module-platform.md](module-platform.md).
 - **No on-demand loading yet.** Modules load at boot, not when a menu item is
   chosen. That loader-on-demand workflow is described, and not built, in
   `module-platform.md`.
