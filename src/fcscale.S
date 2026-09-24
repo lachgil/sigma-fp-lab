@@ -96,6 +96,16 @@
 992:
 .endm
 
+/* The standalone card owns an absolute STATE cave. A registry wrapper can
+ * instead name its resident state label without changing the behavior below. */
+.macro FC_STATE reg
+#ifdef FCSCALE_PIC_STATE
+    PTR \reg, FCSCALE_PIC_STATE
+#else
+    LDA \reg, STATE
+#endif
+.endm
+
 /* ---------------------------------------------------------------- the hooks */
 
 /* Replaces 0xC03722E8, the press. r0 = the CameraIF object.
@@ -108,7 +118,7 @@ fc_press:
     push    {r4, r5, lr}
     sub     sp, sp, #4              @ three registers: keep sp 8-aligned
     mov     r4, r0
-    LDA     r5, STATE
+    FC_STATE r5
     ldr     r1, [r5, #4]
     add     r1, r1, #1
     str     r1, [r5, #4]
@@ -156,7 +166,7 @@ fc_release:
     push    {r4, r5, lr}
     sub     sp, sp, #4
     mov     r4, r0
-    LDA     r5, STATE
+    FC_STATE r5
     ldr     r1, [r5, #8]
     add     r1, r1, #1
     str     r1, [r5, #8]
@@ -269,7 +279,7 @@ fc_submit:
 /* fc_on_submit(controller, descriptor, sub): paint the frame on its way out. */
 fc_on_submit:
     push    {r4, lr}
-    LDA     r4, STATE
+    FC_STATE r4
     ldr     r3, [r4, #0x74]
     add     r3, r3, #1
     str     r3, [r4, #0x74]
@@ -291,7 +301,7 @@ fc_on_submit:
  * painted there is nothing of ours to clear, and it returns. */
 clear_all:
     push    {r4, r5, r6, r7, r8, lr}
-    LDA     r8, STATE
+    FC_STATE r8
     ldr     r5, [r8, #0x20]
     cmp     r5, #0
     beq     9f
@@ -337,7 +347,7 @@ clear_all:
  * word at +0x6C serialises the hook against a press. */
 fc_paint:
     push    {r4, r5, r6, r7, r8, lr}
-    LDA     r8, STATE
+    FC_STATE r8
     cmp     r0, #0
     beq     9f
     ldr     r3, [r0]
@@ -499,7 +509,7 @@ fc_present:
 .equ TICK_MAX,  20
 draw_probe:
     push    {r4, lr}
-    LDA     r4, STATE
+    FC_STATE r4
     LDA     r0, UI_STATE
     ldr     r0, [r0]
     mov     r1, #TICK_Y
@@ -526,7 +536,7 @@ draw_probe:
 probe_row:
     push    {r4, r5, r6, r7, lr}
     sub     sp, sp, #4
-    LDA     r6, STATE
+    FC_STATE r6
     mov     r7, r1
     mov     r5, r0
 1:  cmp     r5, #TICK_MAX           @ modulo, without a divide
@@ -565,7 +575,7 @@ probe_row:
  * Refuses a surface the firmware's own geometry does not fit on. */
 draw_scale:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
-    LDA     r10, STATE
+    FC_STATE r10
     str     r0, [r10, #0x3C]
     mov     r9, r1
     ldr     r7, [r10, #0x20]        @ stride
@@ -639,7 +649,7 @@ draw_scale:
  */
 fill_rect:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
-    LDA     r10, STATE
+    FC_STATE r10
     ldr     r6, [r10, #0x3C]        @ base
     ldr     r7, [r10, #0x20]        @ width, in pixels
     ldr     r9, [r10, #0x24]        @ height
@@ -684,7 +694,7 @@ fill_rect:
  * Refuses a glyph that would leave the buffer. */
 draw_glyph:
     push    {r4, r5, r6, r7, r8, r9, r10, lr}
-    LDA     r10, STATE
+    FC_STATE r10
     ldr     r6, [r10, #0x3C]        @ base
     ldr     r7, [r10, #0x20]        @ width, in pixels
     ldr     r8, [r10, #0x24]        @ height
