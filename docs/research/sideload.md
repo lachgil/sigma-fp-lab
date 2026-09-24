@@ -7,6 +7,40 @@ The separate drawing/input provider is experimental. There is no native
 custom-menu API, script engine, general hook broker or hot reload.
 RAM-only does not mean zero risk or guarantee recovery. No flash work.
 
+## Loading status: boot-resident, not on demand
+
+The present implementation loads every packaged module from the combined boot
+image, allocates it and calls its initializer at startup. A small AutoRun script
+does not make that work lazy. Turning a loaded feature on/off is not loading its
+code from SD on demand. No boot-time improvement has been measured or claimed.
+
+The proposed workflow, boot only a small loader and load a selected module when
+a user chooses a menu item, is **not implemented**. It needs a resident SD-file
+loading service, serialized load requests outside display/button callbacks,
+dependency and hook-conflict handling, failure cleanup and an actual menu
+integration. The existing ABI and C compilation provide reusable building
+blocks, not that complete workflow. Open-gate/downsampled-mode modules have not
+been integrated into this registry. Unload/hot reload are separate problems.
+
+### C hardware-test candidate, 2026-09-25
+
+`builds/module-c-hardware/card/` combines the working False Color module `0x102`
+with C example `0x201` and the debug shell. An offline run of this exact card
+confirmed both records ready, C results171 then246 with a fixed modeled clock,
+the expected False Color scale pixels and debug task startup. These numeric
+results are not hardware expectations: the C example also measures elapsed time.
+The C example adds no visible menu/tile; its initialization and calls are checked
+through the debug registry. No camera installation is implied by this build.
+
+Reproduce the candidate after building the False Color artifact:
+```sh
+.venv/bin/python -B tools/build_module.py src/module_c_example.c \
+  --module-id 513 --upstream builds/module-upstream \
+  --out builds/module-c-hardware/example.bin \
+  --dependency builds/module-fcscale-proof/card/module_fcscale.bin \
+  --card-out builds/module-c-hardware/card --debug
+```
+
 ## Shared module registry and services, 2026-09-23
 
 The earlier two-blob lifetime probe has been replaced, not kept as a second ABI.
