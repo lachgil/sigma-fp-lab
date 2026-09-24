@@ -113,7 +113,15 @@ relocate pointers twice. Init failure preserved -77 and freed the failed module
 while its assembly sibling remained callable. Missing callbacks and unresolved
 imports were rejected before publishing binaries. All18 existing registry
 scenarios still pass. Report: `builds/module-c-proof/report.json`.
-**C modules have not yet been tested on the physical camera.**
+**C example hardware-confirmed, 2026-09-25.** The combined debug card booted
+with False Color0x102 and C example0x201 both ready; the C initializer reported100.
+Three actual registry calls with arguments0,1,2 returned dispatch success and
+updated the C report to84879344,93811928,93839267. Values include elapsed firmware
+microseconds, so they are not the fixed-clock emulator expectations. USB remained
+responsive and the borrowed echo handler was restored. The user confirmed
+False Color still works and perceived a quick boot; boot duration was not measured.
+Capture: `builds/module-c-hardware/hardware.json`. This confirms the example's
+initialization and invocation on hardware, not arbitrary C programs or recording safety.
 
 The original assembly workflow remains available:
 ```sh
