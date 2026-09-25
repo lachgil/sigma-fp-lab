@@ -31,6 +31,10 @@ class Model:
         self.u.mem_map(BASE, (len(image) + 4095) & ~4095)
         self.u.mem_write(BASE, image)
         self.u.mem_map(RAM, 0x10000)
+        self.u.mem_write(MANAGER + 0x128, struct.pack('<II', 77, 88))
+        self.receive_result = 0
+        self.receive_timeout = 0xFFFFFFFF
+        self.cleanup_holders = []
         self.rows = rows
         self.policy = 1
         self.queue_result = 0
@@ -70,13 +74,29 @@ class Model:
             assert self.reg(2) == ALLOCATION
             self.queued = bytes(u.mem_read(ALLOCATION, 0xC0))
             self.trace.append('queue')
-            self.ret(self.queue_result)
         elif address == 0xC036D818:
             assert self.reg(0) == MANAGER + 0x12C
             assert self.reg(1) == 1 and self.reg(2) == 0x21
             assert struct.unpack('<I', u.mem_read(u.reg_read(ar.UC_ARM_REG_SP), 4))[0] == 0xFFFFFFFF
             self.trace.append('wait')
+        elif address == 0xC0016C08:
+            assert self.reg(0) == 88
             self.ret(self.wait_result)
+        elif address == 0xC00011D0:
+            selector = u.reg_read(ar.UC_ARM_REG_R12)
+            assert self.reg(0) == 77
+            if selector == 0x80280200:
+                assert self.reg(1) == ALLOCATION
+                self.ret(self.queue_result)
+            elif selector == 0x80290300:
+                assert self.reg(2) == self.receive_timeout
+                if self.receive_result == 0:
+                    u.mem_write(self.reg(1), struct.pack('<I', ALLOCATION))
+                self.ret(self.receive_result)
+            else:
+                raise AssertionError(f'unmodeled syscall {selector:#x}')
+        elif address == 0xC03A3B40:
+            self.cleanup_holders.append(struct.unpack('<I', u.mem_read(self.reg(0), 4))[0])
         elif address == 0xC03A2438:
             self.trace.append('consumer_policy')
             self.ret(self.policy)
@@ -121,15 +141,31 @@ def main():
         value, _ = m.call(0xC03A0798, event)
         assert value == 0 and not m.trace
     observations.append('Disabled producer requests return zero without allocation or queue submission')
-    for asynchronous, queue_result, wait_result in ((1, 0, 0), (1, -5, 0), (0, 0, 0), (0, 0, -5)):
+    for asynchronous, queue_result, wait_result in ((1, 0, 0), (1, -5, 0), (0, 0, 0), (0, 0, -5), (0, -5, -50)):
         m = Model(image, rows)
         m.queue_result, m.wait_result = queue_result, wait_result
         value, request = m.call(0xC03A0798, 0x21, asynchronous)
         assert m.queued == bytes(4) + request
         assert m.trace == ['allocate', 'queue'] + ([] if asynchronous else ['wait'])
-        expected = queue_result & 0xFFFFFFFF if asynchronous else int(wait_result == 0)
+        expected = int(queue_result == 0) if asynchronous else int(wait_result == 0)
         assert value == expected
-    observations.append('Producer shallow-copies exactly 0xBC bytes into a 0xC0 envelope; async returns queue result; sync waits indefinitely and returns wait-success boolean')
+        assert m.cleanup_holders == [0], 'sender no longer owns the envelope after send attempt'
+    observations.append('Native queue wrapper maps OS success to 1 and failure to 0; producer copies 0xBC bytes; synchronous requests still wait after failed send; sender holder is null on cleanup')
+    for os_result, expected in ((0, 0), (-50, 1), (-25, 3), (-5, 2)):
+        m = Model(image, rows)
+        m.receive_result = os_result
+        sentinel = 0x12345678
+        m.u.mem_write(REQUEST, struct.pack('<I', sentinel))
+        m.u.mem_write(SP, struct.pack('<I', m.receive_timeout))
+        m.u.reg_write(ar.UC_ARM_REG_SP, SP)
+        m.u.reg_write(ar.UC_ARM_REG_LR, STOP)
+        for n, v in enumerate((MANAGER + 0x128, 77, REQUEST, 0)):
+            m.u.reg_write(getattr(ar, f'UC_ARM_REG_R{n}'), v)
+        m.u.emu_start(0xC036D9C0, STOP, count=1000)
+        assert m.reg(0) == expected and m.u.reg_read(ar.UC_ARM_REG_PC) == STOP
+        assert m.u.reg_read(ar.UC_ARM_REG_SP) == SP
+        assert struct.unpack('<I', m.u.mem_read(REQUEST, 4))[0] == (ALLOCATION if os_result == 0 else sentinel)
+    observations.append('Native receive translates OS 0/-50/-25/other into 0/1/3/2 and forwards caller timeout to OS')
     for event, allocation in ((51, True), (0x21, False)):
         m = Model(image, rows)
         m.allocate = allocation
@@ -154,14 +190,15 @@ def main():
     report = {'firmware_sha256': SHA, 'observations': observations,
               'event_table': [{'event': e, 'this_adjustment': d, 'dispatch_kind': hex(k), 'handler': hex(t)} for e, d, k, t in rows],
               'limits': ['No live camera access', 'Consumer policy and business handlers stubbed',
-                         'OS queues, waits, logger and allocator modeled',
+                         'OS syscall results, logger and allocator modeled; native queue/wait wrappers execute',
                          'No deep-copy or payload pointer lifetime guarantee',
                          'No recording safety, concurrency or task scheduling proof',
                          'Event IDs are local to this manager, not global firmware IDs']}
     (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     cs = Cs(CS_ARCH_ARM, CS_MODE_ARM)
     ranges = [(0xC03A0798, 0xC03A096C), (0xC03A3398, 0xC03A3440),
-              (0xC03A34A8, 0xC03A35C8), (0xC00913F8, 0xC009148C)]
+              (0xC03A34A8, 0xC03A35C8), (0xC00913F8, 0xC009148C),
+              (0xC036D948, 0xC036DA48), (0xC036D818, 0xC036D880)]
     lines = [f'{i.address:08x}: {i.mnemonic:8} {i.op_str}' for a, b in ranges for i in cs.disasm(image[a-BASE:b-BASE], a)]
     (out / 'disassembly.txt').write_text('\n'.join(lines) + '\n')
     for observation in observations:

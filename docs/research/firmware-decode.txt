@@ -219,13 +219,18 @@ event-specific and are not all decoded. Producer policy C03A0988 runs before
 allocation; a separate consumer policy runs after dequeue, so queue submission
 and permission to execute are different facts.
 
-Asynchronous requests return the queue routine's result, including errors.
+Asynchronous requests return a boolean: native queue wrapper C036D948 maps OS
+zero to 1, any nonzero to 0. The earlier syscall-stub boundary allowed arbitrary
+error codes; the extended experiment now executes this wrapper too.
 Synchronous requests wait on manager+12C with mask1, mode21, timeout FFFFFFFF;
 their return is a wait-success boolean, NOT the target handler's result.
 The worker signals completion after dispatch even if consumer policy declined
 the request. Do not call this synchronously from the same consumer task.
-The sender nulls its holder before queue submission; send-failure ownership
-depends on C036D948, which has not been traced here. Do not assume rollback/free.
+The sender nulls its holder before queue submission. The wrapper neither frees
+nor reclaims it on OS-send failure, and synchronous submission STILL enters its
+infinite wait after that failure. Both paths execute in the offline experiment.
+This exposes a potential hang/lost-envelope path, not a reproduced camera fault;
+actual OS failure conditions and kernel ownership remain unmeasured.
 Allocation failure and the tested invalid ID51 reach an assertion boundary.
 
 Original ARM experiment:
@@ -233,10 +238,11 @@ Original ARM experiment:
   builds/dispatch-research/report.json
   builds/dispatch-research/disassembly.txt
 Executes all 51 original dispatch rows with allowed/refused policy; disabled
-producer entries; full request copying; async error propagation; synchronous
-wait success/failure; allocation and invalid-ID assertion paths.
-OS queue/wait, allocation, logging, consumer policy and business handlers are
-explicit modeled boundaries. No scheduler, hardware or recording proof.
+producer entries; full request copying; native queue-result translation;
+synchronous wait success/failure and failed-send wait; receive status mapping;
+allocation and invalid-ID assertion paths. Original queue/wait wrappers execute.
+OS syscall results, allocation, logging, consumer policy and business handlers
+remain explicit modeled boundaries. No scheduler, hardware or recording proof.
 
 Related property infrastructure: C00913F8 validates an index against a domain
 count, not a generic property-value clamp. count1 normalizes to index0; count>1
@@ -251,7 +257,94 @@ handler and state-policy rejection, rather than treating every successful post
 as a successful action. That would support discovery across native operations,
 not just a single feature. No tracer is installed or claimed complete.
 
-Next architecture boundary: map C036D948/C036D9C0 queue ownership and the worker's
-task identity, then decode producer and consumer policy inputs. Before any live
-tracer, establish bounded logging, no pointer retention, caller/task context and
-shutdown detachment. Do not issue unknown requests or bypass native policy.
+Queue layers now resolved:
+  C036D948 -> C01F8D48 -> C00011D0 selector 80280200 (send boundary)
+  C036D9C0 -> C01F8B74 -> C00011D0 selector 80290300 (receive boundary)
+Receive maps OS 0/-50/-25/other to wrapper 0/1/3/2 and forwards caller timeout.
+These numeric mappings are executed, not inferred from OS error-code names.
+The completion wrapper C036D818 calls C0016C08, maps OS0 to 0, -50 to 2,
+other errors to 1. CameraFunction reduces that to a success boolean.
+
+10. NATIVE TASK REGISTRY AND WORKER LIFECYCLE, 2026-09-26
+
+Original XC_ThreadImpl constructor C036ECA8 bounds index to <44 and reads a
+32-byte row at C0B97F90 + index*32. An enabled byte at +0 is mandatory.
+Verified fields: priority +0C, stack bytes +10, eight-byte task name +14.
+Other row fields remain uninterpreted. All 44 stock rows are enabled.
+
+Constructor builds the native task descriptor at object+0C:
+  exinf=object+4, attributes=41, entry=C036EE50, priority, stack, name[8].
+C0016A58 creates the task and returns the ID stored at object+0.
+C036EE08 attaches the body at object+4/+8, then starts the existing task via
+C0016BC0(task_id, object). C036EE50 calls body's vtable+0C before task exit.
+These are native object/body lifetimes, not interchangeable raw code pointers.
+
+Rec-manager is concretely linked to registry index0, RecPMgr:
+  C03A0508 -> C036DD40(manager+4, index0) -> C036ECA8
+  native body vtable C0B9DD4C, slot+0C = C03A34A8 (consumer loop)
+  C036DDF8 -> C036EE08 binds manager as body and starts its task.
+This is stronger evidence than a nearby string or guessed task label.
+
+Index Name      Priority Stack bytes
+ 0    RecPMgr    16       4000
+ 1    RecPTmr    12       1000
+ 2    SRecMgr     9       4000
+ 3    SRecRaw    15       5000
+ 4    SRecYuv    16       4000
+ 5    SRecJpeg   16       4000
+ 6    SRecFile    6       4000
+ 7    PlyMgr     16       4000
+ 8    MRecMgr    15       4000
+ 9    CamMgr     16       1000
+10    WiFiMgr    16       1000
+11    Sdcard     16       2500
+12    SdHost     16       2500
+13    CamSch     15       4000
+14    ImgCtrl     7       2000
+15    BtrMgr     16       1000
+16    LedBlink   11       1000
+17    ExtStrb    16       1000
+18    ESCycl     16       1000
+19    Strb       10       1000
+20    usbctrl    12       4000
+21    usb_ds     14       4000
+22    EventMgr   13       2800
+23    TP          9       1000
+24    DrawMgr    17       4000
+25    AeDev      14       2000
+26    AfMgr      14       4000
+27    AeIris     14       1000
+28    Level      16       1000
+29    Poff       16       2000
+30    KeyMon     16        400
+31    PlayEve    13        800
+32    EyeDtctn   17       1000
+33    Tracking   17       2000
+34    PlaySub    22       4000
+35    PicCorr    13       2000
+36    UserTim    16        400
+37    PFileR     10       2000
+38    GyroData   20       2000
+39    ImgCorr    16       2000
+40    QrRead     15       2000
+41    QrReadE    26       2000
+42    AfIfMgr    14       2000
+43    GpsMgr     18       1000
+Indices/priorities decimal; stack sizes hexadecimal.
+Names alone do not establish subsystem capability, hardware presence or activity.
+This is ONE indexed thread family, not a count of all firmware tasks.
+Stock stacks above 2000 are not permission to enlarge custom task stacks or
+reuse existing reservations; retain the conservative custom-task safety limit.
+
+Reproduce:
+  .venv/bin/python -B tools/research_tasks.py
+  builds/dispatch-research/tasks.json
+Executes all 44 original constructors through modeled OS task creation, verifies
+their emitted descriptors, rejects index44, and follows RecPMgr body attachment
+through the original vtable into the worker boundary. OS create/start/exit and
+libc are modeled. Worker scheduling, shutdown/join and live task IDs are unproven.
+
+Next architecture boundary: map other task indices to their body/vtable and
+message receivers, decode policy inputs, and trace kernel mailbox failure
+ownership. Before a live tracer, establish bounded logging, no pointer retention,
+caller/task context and shutdown detachment. Never bypass native policy.
