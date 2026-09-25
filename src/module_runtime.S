@@ -14,6 +14,27 @@
 .equ F_DCACHE,    0xC000E91C
 .equ F_ICACHE,    0xC000EABC
 .equ F_TICK_US,   0xC002B6E0
+.equ F_POWEROFF_MGR, 0xC0023A98
+.equ F_POWEROFF_REGISTER, 0xC0024118
+
+/* Private cave layout. Nothing below HC_CODE dereferences USER memory. */
+.equ HC_MAGIC, 16
+.equ HC_STATE, 20
+.equ HC_API, 24
+.equ HC_OBJECT, 28
+.equ HC_VTABLE, 32
+.equ HC_CODE, 48
+.equ HC_TAG, 0x314B4846
+.equ HC_INERT, 0
+.equ HC_LIVE, 1
+.equ HC_CLOSED, 2
+.equ HE_SITE, 0
+.equ HE_ORIGINAL, 4
+.equ HE_BRANCH, 8
+.equ HE_OWNER, 12
+.equ HE_VENEER, 16
+.equ HE_TARGET, 20
+.equ HE_SIZE, 24
 
 .macro constant reg, value
     movw \reg, #:lower16:\value
@@ -41,35 +62,37 @@
     add \reg, \base, \reg
 .endm
 
+/* Reject closed and previous-boot APIs before dereferencing caller memory. */
+.macro require_live failure
+    cmp r0, #0
+    beq \failure
+    pc_address ip, lifecycle_root
+    ldr ip, [ip]
+    cmp ip, #0
+    beq \failure
+    ldr ip, [ip, #HC_STATE]
+    cmp ip, #HC_LIVE
+    bne \failure
+    pc_address ip, lifecycle_root
+    ldr ip, [ip]
+    ldr ip, [ip, #HC_API]
+    cmp r0, ip
+    bne \failure
+.endm
+
 .global entry
 entry:
     push {r4, r5, r6, lr}
     sub sp, sp, #16                  @ private runtime allocation descriptor
 
-    /* Reserve the directory only if the complete aligned range fits. The
-     * upstream arena is reset each boot; no fixed result slot is borrowed.
+    /* The cleanup object is cave-resident and published before either native
+     * registration. Failure never releases or overwrites registered storage.
      */
-    constant r0, FP_CAVE_BUMP
-    ldr r4, [r0]
-    constant r1, FP_CAVE_BEGIN
-    cmp r4, r1
-    blo boot_no_directory
-    tst r4, #3
-    bne boot_no_directory
-    adds r2, r4, #DIR_SIZE
-    bcs boot_no_directory
-    constant r1, FP_CAVE_END
-    cmp r2, r1
-    bhi boot_no_directory
-    str r2, [r0]
-
+    bl hooks_prepare
+    mov r4, r0
+    cmp r4, #0
+    beq boot_no_directory
     mov r0, #0
-    str r0, [r4, #DIR_RUNTIME]
-    str r0, [r4, #DIR_BYTES]
-    mov r1, #FP_INITIALIZING
-    str r1, [r4, #DIR_STATUS]
-    constant r1, FP_DIRECTORY_MAGIC
-    str r1, [r4, #DIR_MAGIC]
     str r0, [sp]
     str r0, [sp, #4]
     str r0, [sp, #8]
@@ -85,6 +108,9 @@ entry:
     mov r5, r0
     cmp r5, #0
     beq boot_no_memory              @ no owned allocation: do not call H_FREE
+    ldr r0, [r4, #HC_STATE]
+    cmp r0, #HC_LIVE
+    bne boot_no_directory           @ shutdown during allocation: retain, do not init
 
     pc_address r1, resident
     mov r2, r5
@@ -96,27 +122,57 @@ boot_copy:
     bne boot_copy
     call_fw F_DCACHE
     call_fw F_ICACHE
+    dsb sy
+    isb sy
+    mrs r6, cpsr
+    cpsid if
+    ldr r0, [r4, #HC_STATE]
+    cmp r0, #HC_LIVE
+    bne boot_publish_closed
+    instance_address r0, r5, lifecycle_root
+    str r4, [r0]
+    str r5, [r4, #HC_API]
+    msr cpsr_c, r6
 
     mov r0, r5
     pc_address r1, catalog
     instance_address ip, r5, initialize
     blx ip
+    cmp r0, #FP_ENOTREADY
+    beq boot_no_directory           @ some module code may already be in flight
     cmp r0, #FP_OK
     bne boot_bad_catalog
+    /* Shutdown may have revoked startup while module initialization ran.
+     * Successful images are not freed: a callback can still be in flight.
+     */
+    mrs r6, cpsr
+    cpsid if
+    ldr r0, [r4, #HC_STATE]
+    cmp r0, #HC_LIVE
+    bne boot_publish_closed
 
     /* No staging pointer is published. Status becomes ready only after all
      * records, service pointers, module copies and init results are final.
      */
+    dsb sy
     str r5, [r4, #DIR_RUNTIME]
     constant r0, (resident_end - resident)
     str r0, [r4, #DIR_BYTES]
     mov r0, #FP_OK
+    dsb sy
     str r0, [r4, #DIR_STATUS]
     mov r0, r5
+    msr cpsr_c, r6
     b boot_return
+boot_publish_closed:
+    msr cpsr_c, r6
+    b boot_no_directory
 
 boot_bad_catalog:
     mov r6, r0
+    add r0, r4, #HC_OBJECT
+    add ip, r4, #(cave_cleanup - cave_template)
+    blx ip
     mov r0, sp
     mov r1, #2
     call_fw H_FREE                  @ executing staging, not the freed runtime
@@ -124,6 +180,9 @@ boot_bad_catalog:
     b boot_no_directory
 
 boot_no_memory:
+    add r0, r4, #HC_OBJECT
+    add ip, r4, #(cave_cleanup - cave_template)
+    blx ip
     mov r0, #FP_ENOMEM
     str r0, [r4, #DIR_STATUS]
 boot_no_directory:
@@ -144,6 +203,10 @@ resident:
     .word 0                         @ API_CALL
     .word 0                         @ API_REPORT
     .word 0                         @ API_TICKS
+    .word 0                         @ API_INSTALL_HOOKS
+.global lifecycle_root
+lifecycle_root:
+    .word 0                         @ cave pointer; never read by cave cleanup
 .global records
 records:
     .space (FP_CAPACITY * REC_SIZE), 0
@@ -181,11 +244,15 @@ initialize:
     str r0, [r4, #API_REPORT]
     instance_address r0, r4, service_ticks
     str r0, [r4, #API_TICKS]
+    instance_address r0, r4, service_install_hooks
+    str r0, [r4, #API_INSTALL_HOOKS]
     mov r10, #0
     str r10, [r4, #API_COUNT]
     add r9, r5, #8
 
 catalog_next:
+    mov r0, r4
+    require_live catalog_closed    @ initialization must not continue after revocation
     cmp r10, r6
     bhs catalog_done
     ldr r2, [r9]                    @ offset relative to catalog, not runtime
@@ -231,6 +298,9 @@ catalog_done:
 catalog_invalid:
     mov r0, #FP_EFORMAT
     pop {r4, r5, r6, r7, r8, r9, r10, pc}
+catalog_closed:
+    mov r0, #FP_ENOTREADY
+    pop {r4, r5, r6, r7, r8, r9, r10, pc}
 
 /* module_load(api, record, bounded source, bytes) -> record status.
  * This source has a complete aligned header. Preserve the ID even when header
@@ -242,6 +312,7 @@ module_load:
     mov r5, r1
     mov r6, r2
     mov r7, r3
+    require_live module_not_ready
     ldr r1, [r6, #MOD_ID]
     str r1, [r5, #REC_ID]
     cmp r1, #0
@@ -296,6 +367,10 @@ module_copy:
     bne module_copy
     call_fw F_DCACHE
     call_fw F_ICACHE
+    dsb sy
+    isb sy
+    mov r0, r4
+    require_live module_not_ready  @ shutdown in allocator/cache calls forbids init
 
     str r8, [r5, #REC_IMAGE]
     str r7, [r5, #REC_BYTES]
@@ -311,17 +386,30 @@ module_copy:
     str r0, [r5, #REC_INIT_RESULT]
     cmp r0, #0
     bne module_init_failed
+    mov r0, r4
+    require_live module_not_ready
     mov r0, #FP_OK
     b module_set_status
 
 module_init_failed:
     mov r0, #FP_EINIT
-    str r0, [r5, #REC_STATUS]        @ disable services before freeing its image
+    str r0, [r5, #REC_STATUS]        @ make the failed module uncallable first
+    /* Detach before considering free. A published hook can already have a
+     * suspended callback, so its image and retired veneer survive this boot.
+     */
+    pc_address r0, lifecycle_root
+    ldr r0, [r0]
+    add ip, r0, #(cave_detach_owner - cave_template)
+    add r0, r0, #HC_OBJECT
+    mov r1, r5
+    blx ip
     mov r0, #0
     str r0, [r5, #REC_IMAGE]
     str r0, [r5, #REC_BYTES]
     str r0, [r5, #REC_INIT]
     str r0, [r5, #REC_INVOKE]
+    cmp r1, #0                     @ cave detach reports current OR retired ownership
+    bne module_return              @ keep descriptor/image allocation for in-flight code
     add r0, r5, #REC_ALLOC
     mov r1, #2
     call_fw H_FREE
@@ -337,6 +425,10 @@ module_clear_descriptor:
     str r0, [r5, #(REC_ALLOC + 8)]
     str r0, [r5, #(REC_ALLOC + 12)]
     b module_return
+
+module_not_ready:
+    mov r0, #FP_ENOTREADY
+    b module_set_status
 
 module_duplicate:
     mov r0, #FP_EDUPLICATE
@@ -357,6 +449,7 @@ module_return:
  */
 .global service_lookup
 service_lookup:
+    require_live lookup_missing
     cmp r1, #0
     beq lookup_missing
     ldr r2, [r0, #API_COUNT]
@@ -382,6 +475,7 @@ service_call:
     push {r4, r5, r6, lr}
     mov r4, r0
     mov r5, r2
+    require_live call_not_ready
     bl service_lookup
     cmp r0, #0
     beq call_missing
@@ -412,6 +506,7 @@ call_failure:
 service_report:
     push {r4, lr}
     mov r4, r2
+    require_live report_not_ready
     bl service_lookup
     cmp r0, #0
     beq report_missing
@@ -436,8 +531,14 @@ report_not_ready:
  */
 .global service_ticks
 service_ticks:
+    require_live ticks_not_ready
     constant ip, F_TICK_US
     bx ip
+ticks_not_ready:
+    mov r0, #FP_ENOTREADY
+    bx lr
+
+#include "module_hooks.S"
 .balign 4
 .global resident_end
 resident_end:

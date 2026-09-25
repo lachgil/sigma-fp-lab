@@ -4,16 +4,14 @@
 .arm
 .text
 
-/* Optional fp 5.02 provider. Firmware ownership is confined to this module;
- * consumers use the unchanged ABI1 service table. All local pointers are PIC.
+/* Optional fp 5.02 provider. The runtime owns firmware hook publication and
+ * shutdown restoration; UI consumers use ABI1 services. Local pointers are PIC.
  */
 .equ UI_SUBMIT_SITE,  0xC02E8A08
 .equ UI_SUBMIT_STOCK, 0xE92D48F0
 .equ UI_PRESS_SITE,   0xC03722E8
 .equ UI_PRESS_STOCK,  0xE92D4010
 .equ UI_STATE_WORD,   0xC3033A44
-.equ UI_DCACHE,       0xC000E91C
-.equ UI_ICACHE,       0xC000EABC
 .equ UI_H_GET,        0xC001D740
 .equ UI_H_ADDR,       0xC001D7F0
 .equ UI_H_FREE,       0xC001D7A0
@@ -25,6 +23,9 @@
 .equ UI_VENEER,       20
 .equ UI_SUBMIT_BRANCH,24
 .equ UI_PRESS_BRANCH, 28
+.equ UI_API,          32
+.equ UI_RECORD,       36
+.equ UI_PRESS_VENEER, 40
 .equ SLOT_DESC,       0
 .equ SLOT_BASE,       4
 .equ SLOT_GEOMETRY,   8
@@ -35,7 +36,7 @@
 .equ TILE_BYTES,      (FP_UI_WIDTH * FP_UI_HEIGHT * 2)
 .equ TILE_OFFSET,     ((FP_UI_Y * FP_UI_SURFACE_WIDTH + FP_UI_X) * 2)
 .equ SURFACE_STRIDE,  (FP_UI_SURFACE_WIDTH * 2)
-.equ UI_SLOTS_OFFSET, 32
+.equ UI_SLOTS_OFFSET, 48
 .equ UI_CANVAS_OFFSET,(UI_SLOTS_OFFSET + 3 * SLOT_BYTES)
 .equ UI_PIXELS_OFFSET,(UI_CANVAS_OFFSET + TILE_BYTES)
 .equ UI_STORAGE_BYTES,(UI_PIXELS_OFFSET + 3 * 2 * TILE_BYTES)
@@ -92,7 +93,9 @@ initialize:
     ldr r2, [r0, #API_BYTES]
     cmp r2, #API_SIZE
     blo initialize_bad_api
-    push {r4, r5, r6, lr}
+    push {r4, r5, r6, r7, r8, lr}
+    mov r7, r0
+    mov r8, r1
     pc_address r4, ui_allocation
     pc_address r6, ui_storage
     ldr r0, [r6]
@@ -127,11 +130,13 @@ initialize_canvas:
     str r0, [r1], #4
     subs r2, r2, #4
     bne initialize_canvas
+    str r7, [r5, #UI_API]
+    str r8, [r5, #UI_RECORD]
     dmb
     str r5, [r6]                    @ publish only completely initialized state
 initialize_ready:
     mov r0, #0
-    pop {r4, r5, r6, pc}
+    pop {r4, r5, r6, r7, r8, pc}
 initialize_bad_storage:
     mov r0, r4
     mov r1, #2
@@ -148,7 +153,7 @@ initialize_clear_descriptor:
     str r0, [r4, #8]
     str r0, [r4, #12]
     mov r0, r5
-    pop {r4, r5, r6, pc}
+    pop {r4, r5, r6, r7, r8, pc}
 initialize_bad_api:
     mov r0, #FP_EABI
     bx lr
@@ -260,15 +265,14 @@ fill_done:
     mov r0, #0
     pop {r4, r5, r6, r7, r8, pc}
 
-/* ui_install(), with UI_LOCK owned. This is an explicit PRESENT operation,
- * never init. Single-core firmware publication masks interrupts across the
- * two stock checks, checked bump reservation, veneer publication and patches.
- * Both 8-byte veneers use ldr pc,[pc,#-4], preserving every input register.
- * The checked cave range is within ARM B reach of both fingerprinted sites.
+/* ui_install(), with UI_LOCK owned. PRESENT lazily requests one atomic batch
+ * using the API and owner retained at initialization. The runtime owns every
+ * firmware/cave write and cache publication. Repeated PRESENT is read-only.
  */
 .global ui_install
 ui_install:
-    push {r4, r5, r6, r7, r8, r9, r10, r11, ip, lr}
+    push {r4, r5, r6, lr}
+    sub sp, sp, #(2 * HOOK_SIZE)
     load_state r4
     constant r5, UI_SUBMIT_SITE
     constant r6, UI_PRESS_SITE
@@ -283,19 +287,20 @@ ui_install:
     ldr r1, [r4, #UI_PRESS_BRANCH]
     cmp r0, r1
     bne install_conflict
-    ldr r7, [r4, #UI_VENEER]
-    ldr r0, [r7]
+    ldr r2, [r4, #UI_VENEER]
+    ldr r3, [r4, #UI_PRESS_VENEER]
+    ldr r0, [r2]
     constant r1, 0xE51FF004
     cmp r0, r1
     bne install_conflict
-    ldr r0, [r7, #8]
+    ldr r0, [r3]
     cmp r0, r1
     bne install_conflict
-    ldr r0, [r7, #4]
+    ldr r0, [r2, #4]
     pc_address r1, ui_submit
     cmp r0, r1
     bne install_conflict
-    ldr r0, [r7, #12]
+    ldr r0, [r3, #4]
     pc_address r1, ui_press
     cmp r0, r1
     bne install_conflict
@@ -305,78 +310,44 @@ install_conflict:
     mov r0, #FP_UI_ECONFLICT
     b install_return
 install_first:
-    mrs r8, cpsr
-    cpsid if
-    ldr r0, [r5]
-    constant r1, UI_SUBMIT_STOCK
-    cmp r0, r1
-    bne install_masked_conflict
-    ldr r0, [r6]
-    constant r1, UI_PRESS_STOCK
-    cmp r0, r1
-    bne install_masked_conflict
-
-    constant r0, FP_CAVE_BUMP
-    ldr r7, [r0]
-    constant r1, FP_CAVE_BEGIN
-    cmp r7, r1
-    blo install_no_space
-    tst r7, #3
-    bne install_no_space
-    adds r9, r7, #16
-    bcs install_no_space
-    constant r1, FP_CAVE_END
-    cmp r9, r1
-    bhi install_no_space
-    str r9, [r0]
-    constant r0, 0xE51FF004
-    str r0, [r7]
-    str r0, [r7, #8]
-    pc_address r0, ui_submit
-    str r0, [r7, #4]
-    pc_address r0, ui_press
-    str r0, [r7, #12]
-    str r7, [r4, #UI_VENEER]
-
-    sub r10, r7, r5
-    sub r10, r10, #8
-    mov r10, r10, asr #2
-    bic r10, r10, #0xFF000000
-    orr r10, r10, #0xEA000000
-    add r11, r7, #8
-    sub r11, r11, r6
-    sub r11, r11, #8
-    mov r11, r11, asr #2
-    bic r11, r11, #0xFF000000
-    orr r11, r11, #0xEA000000
-    str r10, [r4, #UI_SUBMIT_BRANCH]
-    str r11, [r4, #UI_PRESS_BRANCH]
-    dmb
-    call_fw UI_DCACHE                @ publish module code and both veneers
-    call_fw UI_ICACHE
-    dsb
-    isb
-    str r10, [r5]                    @ no hook can run between these stores
-    str r11, [r6]
-    dsb
-    call_fw UI_DCACHE
-    call_fw UI_ICACHE
-    dsb
-    isb
+    str r5, [sp, #HOOK_SITE]
+    constant r2, UI_SUBMIT_STOCK
+    str r2, [sp, #HOOK_ORIGINAL]
+    pc_address r2, ui_submit
+    str r2, [sp, #HOOK_TARGET]
+    str r6, [sp, #(HOOK_SIZE + HOOK_SITE)]
+    constant r2, UI_PRESS_STOCK
+    str r2, [sp, #(HOOK_SIZE + HOOK_ORIGINAL)]
+    pc_address r2, ui_press
+    str r2, [sp, #(HOOK_SIZE + HOOK_TARGET)]
+    ldr r0, [r4, #UI_API]
+    ldr r1, [r4, #UI_RECORD]
+    mov r2, sp
+    mov r3, #2
+    ldr ip, [r0, #API_INSTALL_HOOKS]
+    blx ip
+    cmp r0, #FP_ECONFLICT
+    beq install_conflict
+    cmp r0, #FP_ENOSPACE
+    moveq r0, #FP_UI_ENOSPACE
+    beq install_return
+    cmp r0, #FP_OK
+    bne install_return
+    ldr r1, [sp, #HOOK_VENEER]
+    str r1, [r4, #UI_VENEER]
+    ldr r1, [sp, #(HOOK_SIZE + HOOK_VENEER)]
+    str r1, [r4, #UI_PRESS_VENEER]
+    ldr r1, [r5]
+    str r1, [r4, #UI_SUBMIT_BRANCH]
+    ldr r1, [r6]
+    str r1, [r4, #UI_PRESS_BRANCH]
     mov r0, #1
     str r0, [r4, #UI_ARMED]
     dmb
     mov r0, #0
-    b install_restore_interrupts
-install_masked_conflict:
-    mov r0, #FP_UI_ECONFLICT
-    b install_restore_interrupts
-install_no_space:
-    mov r0, #FP_UI_ENOSPACE
-install_restore_interrupts:
-    msr cpsr_c, r8
 install_return:
-    pop {r4, r5, r6, r7, r8, r9, r10, r11, ip, pc}
+    add sp, sp, #(2 * HOOK_SIZE)
+    pop {r4, r5, r6, pc}
 
 /* Observer only. The tiny IRQ/FIQ-masked increment has no calls, canvas lock,
  * wait, or dropped press on render contention. All entry registers and flags

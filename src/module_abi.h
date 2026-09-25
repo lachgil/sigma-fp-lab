@@ -1,6 +1,6 @@
 /* Experimental fp 5.02 boot-resident ABI, little-endian ARM/AAPCS.
  * Serialized boot initialization and calls only. Trusted code, no sandbox,
- * concurrency, unload, hook registration, or native menu API.
+ * concurrency, unload, or native menu API. Hook ownership is runtime-managed.
  */
 #ifndef FP_MODULE_ABI_H
 #define FP_MODULE_ABI_H
@@ -36,7 +36,18 @@
 #define API_CALL 24
 #define API_REPORT 28
 #define API_TICKS 32
-#define API_SIZE 36
+#define API_INSTALL_HOOKS 36
+#define API_SIZE 40
+
+/* Atomic ARM function-entry B hooks. Input veneer is ignored; output is
+ * written only after the entire batch is installed and cache-published.
+ */
+#define FP_HOOK_CAPACITY 8
+#define HOOK_SITE 0
+#define HOOK_ORIGINAL 4
+#define HOOK_TARGET 8
+#define HOOK_VENEER 12
+#define HOOK_SIZE 16
 
 /* Registry records are runtime-owned; modules should use services, not edit
  * these fields. Allocation descriptor belongs to the runtime for failure free.
@@ -74,6 +85,9 @@
 #define FP_EINIT -5
 #define FP_ENOENT -6
 #define FP_ENOTREADY -7
+#define FP_ECONFLICT -8
+#define FP_ENOSPACE -9
+#define FP_EREGISTER -10
 
 #ifndef __ASSEMBLER__
 #include <stddef.h>
@@ -91,6 +105,13 @@ struct fp_record {
     uint32_t allocation[4];
 };
 
+struct fp_hook {
+    uint32_t site;
+    uint32_t original;
+    uint32_t target;
+    uint32_t veneer;
+};
+
 struct fp_api {
     uint32_t magic;
     uint32_t abi;
@@ -102,6 +123,8 @@ struct fp_api {
     uint64_t (*call)(const struct fp_api *, uint32_t id, uint32_t argument);
     int32_t (*report)(const struct fp_api *, uint32_t id, uint32_t value);
     uint32_t (*ticks)(const struct fp_api *);
+    int32_t (*install_hooks)(const struct fp_api *, const struct fp_record *,
+                             struct fp_hook *, uint32_t count);
 };
 
 static inline int32_t fp_call_status(uint64_t result) {
@@ -115,6 +138,8 @@ static inline uint32_t fp_call_value(uint64_t result) {
 _Static_assert(sizeof(void *) == 4, "fp module ABI requires a 32-bit target");
 _Static_assert(sizeof(struct fp_record) == REC_SIZE, "record ABI size");
 _Static_assert(sizeof(struct fp_api) == API_SIZE, "service ABI size");
+_Static_assert(sizeof(struct fp_hook) == HOOK_SIZE, "hook ABI size");
+_Static_assert(offsetof(struct fp_api, install_hooks) == API_INSTALL_HOOKS, "hook service ABI offset");
 _Static_assert(offsetof(struct fp_api, call) == API_CALL, "call ABI offset");
 _Static_assert(offsetof(struct fp_record, allocation) == REC_ALLOC, "allocation ABI offset");
 #endif

@@ -6,7 +6,7 @@
 
 /* fp 5.02 ABI1 module 0x102. The runtime copies this entire image, including
  * state and the native scale, into USER memory before calling initialize.
- * Only three checked eight-byte branch veneers occupy the boot cave arena.
+ * The runtime owns the three hooks, their veneers and shutdown restoration.
  * Boot installs the existing fcscale behavior, never a demo or a USB command.
  */
 .equ FC_MODULE_ID,       0x102
@@ -15,17 +15,9 @@
 .equ FC_SUBMIT_SITE,     0xC02E8A08
 .equ FC_BUTTON_STOCK,    0xE92D4010
 .equ FC_SUBMIT_STOCK,    0xE92D48F0
-.equ FC_DCACHE,          0xC000E91C
-.equ FC_ICACHE,          0xC000EABC
-.equ FC_ECONFLICT,       -8
-.equ FC_ENOSPACE,        -9
 .equ FC_ARMED,           0
 .equ FC_VENEER,          4
-.equ FC_PRESS_BRANCH,    8
-.equ FC_RELEASE_BRANCH,  12
-.equ FC_SUBMIT_BRANCH,   16
 .equ FC_STATE_BYTES,     0x90
-.equ FC_VENEER_BYTES,    24
 
 .macro constant reg, value
     movw \reg, #:lower16:\value
@@ -40,21 +32,6 @@
     add \reg, pc, \reg
 .endm
 
-.macro call_fw address
-    constant ip, \address
-    blx ip
-.endm
-
-/* Prologue replacement uses B, not BL: the veneer must retain the caller's
- * LR. Every address in the checked cave arena is in reach of all three sites.
- */
-.macro branch_word result, target, site
-    sub \result, \target, \site
-    sub \result, \result, #8
-    mov \result, \result, asr #2
-    bic \result, \result, #0xFF000000
-    orr \result, \result, #0xEA000000
-.endm
 
 .global module_start
 module_start:
@@ -65,10 +42,8 @@ module_start:
     .word initialize - module_start
     .word invoke - module_start
 
-/* initialize(api, record). All rejection paths precede any bump reservation
- * or hook change. Interrupts remain masked from fingerprints through cache
- * publication, as in module_ui's hook installation. Once a hook is armed we
- * must return success, otherwise the runtime would free its live target.
+/* initialize(api, record). The runtime installs the three hooks atomically.
+ * No operation after successful publication can fail or discard live targets.
  */
 .global initialize
 initialize:
@@ -87,99 +62,45 @@ initialize:
     cmp r2, #API_SIZE
     blo initialize_bad_api
 
-    push {r4, r5, r6, r7, r8, r9, r10, r11, ip, lr}
+    push {r4, lr}
+    sub sp, sp, #(3 * HOOK_SIZE)
     pc_address r4, fc_module_state
-    ldr r0, [r4, #FC_ARMED]
-    cmp r0, #0
+    ldr r2, [r4, #FC_ARMED]
+    cmp r2, #0
     movne r0, #0
     bne initialize_return           @ a second call cannot reserve or reset
-    constant r5, FC_PRESS_SITE
-    constant r6, FC_RELEASE_SITE
-    constant r7, FC_SUBMIT_SITE
-    mrs r8, cpsr
-    cpsid if
-
-    ldr r0, [r5]
-    constant r1, FC_BUTTON_STOCK
-    cmp r0, r1
-    bne initialize_conflict
-    ldr r0, [r6]
-    cmp r0, r1
-    bne initialize_conflict
-    ldr r0, [r7]
-    constant r1, FC_SUBMIT_STOCK
-    cmp r0, r1
-    bne initialize_conflict
-
-    constant r0, FP_CAVE_BUMP
-    ldr r9, [r0]
-    constant r1, FP_CAVE_BEGIN
-    cmp r9, r1
-    blo initialize_no_space
-    tst r9, #3
-    bne initialize_no_space
-    adds r10, r9, #FC_VENEER_BYTES
-    bcs initialize_no_space
-    constant r1, FP_CAVE_END
-    cmp r10, r1
-    bhi initialize_no_space
-    mov r1, r9
-initialize_check_cave:
-    ldr r2, [r1], #4
-    cmp r2, #0
-    bne initialize_conflict         @ a stale bump must not overwrite a user
-    cmp r1, r10
-    blo initialize_check_cave
-
-    str r10, [r0]                   @ no rejection is possible beyond here
-    constant r0, 0xE51FF004         @ ldr pc,[pc,#-4], preserving arguments/LR
-    str r0, [r9]
-    str r0, [r9, #8]
-    str r0, [r9, #16]
-    pc_address r0, fc_press
-    str r0, [r9, #4]
-    pc_address r0, fc_release
-    str r0, [r9, #12]
-    pc_address r0, fc_submit
-    str r0, [r9, #20]
-    str r9, [r4, #FC_VENEER]
-    branch_word r10, r9, r5
-    add r0, r9, #8
-    branch_word r11, r0, r6
-    add r0, r9, #16
-    branch_word r1, r0, r7
-    str r10, [r4, #FC_PRESS_BRANCH]
-    str r11, [r4, #FC_RELEASE_BRANCH]
-    str r1, [r4, #FC_SUBMIT_BRANCH]
-
+    constant r2, FC_PRESS_SITE
+    str r2, [sp, #HOOK_SITE]
+    constant r2, FC_BUTTON_STOCK
+    str r2, [sp, #HOOK_ORIGINAL]
+    pc_address r2, fc_press
+    str r2, [sp, #HOOK_TARGET]
+    constant r2, FC_RELEASE_SITE
+    str r2, [sp, #(HOOK_SIZE + HOOK_SITE)]
+    constant r2, FC_BUTTON_STOCK
+    str r2, [sp, #(HOOK_SIZE + HOOK_ORIGINAL)]
+    pc_address r2, fc_release
+    str r2, [sp, #(HOOK_SIZE + HOOK_TARGET)]
+    constant r2, FC_SUBMIT_SITE
+    str r2, [sp, #(2 * HOOK_SIZE + HOOK_SITE)]
+    constant r2, FC_SUBMIT_STOCK
+    str r2, [sp, #(2 * HOOK_SIZE + HOOK_ORIGINAL)]
+    pc_address r2, fc_submit
+    str r2, [sp, #(2 * HOOK_SIZE + HOOK_TARGET)]
+    mov r2, sp
+    mov r3, #3
+    ldr ip, [r0, #API_INSTALL_HOOKS]
+    blx ip
+    cmp r0, #FP_OK
+    bne initialize_return
+    ldr r1, [sp, #HOOK_VENEER]
+    str r1, [r4, #FC_VENEER]
+    mov r1, #1
+    str r1, [r4, #FC_ARMED]
     dmb
-    call_fw FC_DCACHE               @ publish resident code/state and veneers
-    call_fw FC_ICACHE
-    dsb
-    isb
-    ldr r0, [r4, #FC_SUBMIT_BRANCH]
-    str r10, [r5]
-    str r11, [r6]
-    str r0, [r7]
-    dsb
-    call_fw FC_DCACHE               @ publish all three patched prologues
-    call_fw FC_ICACHE
-    dsb
-    isb
-    mov r0, #1
-    str r0, [r4, #FC_ARMED]
-    dmb
-    mov r0, #0
-    b initialize_restore_interrupts
-initialize_conflict:
-    mov r0, #FC_ECONFLICT
-    b initialize_restore_interrupts
-initialize_no_space:
-    mov r0, #FC_ENOSPACE
-initialize_restore_interrupts:
-    msr cpsr_c, r8
 initialize_return:
-    pop {r4, r5, r6, r7, r8, r9, r10, r11, ip, pc}
+    add sp, sp, #(3 * HOOK_SIZE)
+    pop {r4, pc}
 initialize_bad_api:
     mov r0, #FP_EABI
     bx lr
@@ -251,6 +172,6 @@ fc_state:
     .space FC_STATE_BYTES, 0
 .global fc_module_state
 fc_module_state:
-    .space 20, 0
+    .space 8, 0
 .global module_end
 module_end:

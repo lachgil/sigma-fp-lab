@@ -19,8 +19,8 @@ from unicorn import arm_const as ar
 
 from build_module_fcscale import build, native
 from verify_fcscale import render
-from verify_modules import (ABI, CameraModel, DCACHE, FIRMWARE_SHA256, ICACHE,
-                            ROOT, SAVED, SP, STOP, digest, signed)
+from verify_modules import (ABI, CameraModel, FIRMWARE_SHA256, ROOT, SAVED, SP,
+                            STOP, digest, signed)
 
 MODULE_ID = 0x102
 PRESS, RELEASE, SUBMIT = native.PRESS_SITE, native.RELEASE_SITE, native.SUBMIT_SITE
@@ -85,9 +85,8 @@ class FalseColorModel(CameraModel):
         self.marks = marks
         self.before_init = before_init
         self.module_base = self.module_bytes = self.record = 0
-        self.init_return = self.memset_return = 0
-        self.init_finished = False
-        self.patch_writes, self.veneer_writes, self.pixel_writes = [], [], {}
+        self.memset_return = 0
+        self.patch_writes, self.pixel_writes = [], {}
         self.post_events, self.selectors, self.submitted = [], [], []
         self.expected_submit = None
         self.now = 1000
@@ -118,22 +117,12 @@ class FalseColorModel(CameraModel):
                 assert value == 0 or value >> 12 == 15, 'painted pixel lacks opaque alpha'
                 self.pixel_writes[address] = size
                 return
+        if address in STOCK:
+            self.patch_writes.append((address, value))
         pc = u.reg_read(ar.UC_ARM_REG_PC)
-        if not self.module_base <= pc < self.module_base + self.module_bytes:
-            return
-        if 0xC0000000 <= address < 0xC3000000:
-            if address in STOCK:
-                assert size == 4
-                assert self.veneer_writes, 'site armed before veneers were written'
-                last_cache = self.veneer_writes[-1][2]
-                assert self.cache_calls[last_cache:] == [DCACHE, ICACHE], 'veneer not published before arming'
-                self.patch_writes.append((address, value, len(self.cache_calls)))
-            elif ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'] <= address < ABI['FP_CAVE_END']:
-                assert size == 4 and address + size <= ABI['FP_CAVE_END']
-                self.veneer_writes.append((address, value, len(self.cache_calls)))
-            else:
-                assert address == ABI['FP_CAVE_BUMP'] and size == 4, (
-                    f'module overwrote loader, shell, scratch or unrelated firmware at {address:#x}')
+        if self.module_base <= pc < self.module_base + self.module_bytes:
+            assert not 0xC0000000 <= address < 0xC3000000, (
+                f'module wrote firmware/cave directly at {address:#x}')
 
     def native_return(self, value):
         for register in (ar.UC_ARM_REG_R1, ar.UC_ARM_REG_R2, ar.UC_ARM_REG_R3, ar.UC_ARM_REG_IP):
@@ -153,7 +142,6 @@ class FalseColorModel(CameraModel):
                     assert address == base + self.marks['initialize']
                     self.api = u.reg_read(ar.UC_ARM_REG_R0)
                     self.record = u.reg_read(ar.UC_ARM_REG_R1)
-                    self.init_return = u.reg_read(ar.UC_ARM_REG_LR)
                     if self.before_init:
                         self.before_init(self)
                     self.initial_bump = self.get(ABI['FP_CAVE_BUMP'])
@@ -161,9 +149,6 @@ class FalseColorModel(CameraModel):
                     self.initial_cave = bytes(u.mem_read(ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'],
                                                        ABI['FP_CAVE_END'] - ABI['FP_CAVE_BEGIN'] - ABI['DIR_SIZE']))
                     break
-        if address == self.init_return and not self.init_finished:
-            self.init_finished = True
-            self.init_result = signed(u.reg_read(ar.UC_ARM_REG_R0))
         if self.memset_return:
             if address == self.memset_return:
                 self.memset_return = 0
@@ -185,15 +170,6 @@ class FalseColorModel(CameraModel):
                 u.reg_write(getattr(ar, f'UC_ARM_REG_R{register}') if register < 13 else ar.UC_ARM_REG_LR, value)
             u.reg_write(ar.UC_ARM_REG_SP, sp + 24)
             self.native_return(1)
-            return
-        if ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'] <= address < ABI['FP_CAVE_END']:
-            assert self.init_finished and self.init_result == 0, 'veneer executed before successful init'
-            assert address in (self.initial_bump, self.initial_bump + 8, self.initial_bump + 16)
-            assert self.get(address) == 0xE51FF004, 'invalid cave veneer instruction'
-            target = self.get(address + 4)
-            assert self.module_base + ABI['MOD_HEADER_BYTES'] <= target < self.module_base + self.module_bytes
-            published = self.patch_writes[-1][2]
-            assert self.cache_calls[published:published + 2] == [DCACHE, ICACHE], 'armed hooks not published'
             return
         if address in (DRAW_MGR, POST, native.CLOCK, *STUBS):
             assert u.reg_read(ar.UC_ARM_REG_SP) % 8 == 0, 'unaligned native UI call'
@@ -321,18 +297,24 @@ def main():
         assert not owner['freed'] and owner['request'] != 1 and model.blocks[0]['freed']
         assert model.module_base != model.api, 'module state must not alias registry state'
         cave = model.query(10)
-        assert cave == ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE']
-        assert model.get(ABI['FP_CAVE_BUMP']) == cave + 24 <= ABI['FP_CAVE_END']
-        assert len(model.veneer_writes) == 6 and len(model.patch_writes) == 3
-        for index, (site, symbol) in enumerate(HOOKS.items()):
-            veneer = cave + index * 8
-            assert model.get(site) == native.branch(site, veneer), 'incorrect site branch instruction'
+        assert ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'] <= cave < ABI['FP_CAVE_END']
+        assert len(model.patch_writes) == 3
+        for site, symbol in HOOKS.items():
+            word = model.get(site)
+            assert word >> 24 == 0xEA, 'hook must preserve the native caller LR'
+            displacement = (word & 0xFFFFFF) << 2
+            if displacement & 0x2000000:
+                displacement -= 0x4000000
+            veneer = (site + 8 + displacement) & 0xFFFFFFFF
+            assert ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'] <= veneer <= ABI['FP_CAVE_END'] - 8
             assert model.get(veneer) == 0xE51FF004
             assert model.get(veneer + 4) == model.module_base + marks[symbol]
+            if site == PRESS:
+                assert cave == veneer, 'veneer diagnostic must describe the installed press hook'
         cases['automatic_boot_and_ownership'] = {
             'record_id': MODULE_ID, 'state': hex(model.query(8)), 'USER_module': hex(model.module_base),
             'staging_unmapped': True, 'competing_modules': [], 'shell_task_started': True,
-            'module_bytes': len(module), 'cave_bytes': 24, 'cave_end': hex(cave + 24)}
+            'module_bytes': len(module), 'press_veneer': hex(cave)}
 
         current_case = 'press_hold_release_and_native_drawing'
         model.release(30_000)
@@ -425,7 +407,7 @@ def main():
                               'releases': model.query(4), 'submits': len(model.submitted),
                               'clock_wrap_hold': True, 'repeat_init_preserves_state': True}
 
-        current_case = 'stock_and_cave_guards'
+        current_case = 'atomic_stock_conflicts'
         failures = {}
 
         def refusal(name, hook, result):
@@ -434,7 +416,7 @@ def main():
             assert signed(rejected.get(rejected_row + ABI['REC_INIT_RESULT'])) == result, name
             assert {site: rejected.get(site) for site in STOCK} == rejected.initial_sites, name
             assert rejected.get(ABI['FP_CAVE_BUMP']) == rejected.initial_bump, name
-            assert not rejected.patch_writes and not rejected.veneer_writes, name
+            assert not rejected.patch_writes, name
             assert bytes(rejected.u.mem_read(ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'], len(rejected.initial_cave))) == rejected.initial_cave, name
             assert rejected.get(rejected_row + ABI['REC_IMAGE']) == rejected.get(rejected_row + ABI['REC_INVOKE']) == 0
             assert next(block for block in rejected.blocks if block['address'] == rejected.module_base)['freed'], name
@@ -444,21 +426,13 @@ def main():
 
         for site in STOCK:
             refusal(f'stock_conflict_{site:08x}', lambda camera, site=site: camera.put(site, 0xE1A00000), -8)
-        for offset in range(0, 24, 4):
-            refusal(f'occupied_veneer_word_{offset}',
-                    lambda camera, offset=offset: camera.put(camera.get(ABI['FP_CAVE_BUMP']) + offset, 0xDEADBEEF), -8)
-        for name, bump in (('below_arena', ABI['FP_CAVE_BEGIN'] - 4),
-                           ('misaligned', ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'] + 1),
-                           ('one_word_short', ABI['FP_CAVE_END'] - 20),
-                           ('exhausted', ABI['FP_CAVE_END']), ('overflow', 0xFFFFFFFC)):
-            refusal(name, lambda camera, bump=bump: camera.put(ABI['FP_CAVE_BUMP'], bump), -9)
         cases[current_case] = failures
 
         current_case = 'allocation_refusal_and_relocation'
         refused, refused_row = boot(fail_request=owner['request'])
         assert signed(refused.get(refused_row + ABI['REC_STATUS'])) == ABI['FP_ENOMEM']
         assert {site: refused.get(site) for site in STOCK} == STOCK
-        assert not refused.patch_writes and not refused.veneer_writes
+        assert not refused.patch_writes
         assert refused.service('API_CALL', MODULE_ID, 1) == (ABI['FP_ENOTREADY'] & 0xFFFFFFFF, 0)
         relocated, relocated_row = boot(heap=0x49000000)
         assert signed(relocated.get(relocated_row + ABI['REC_STATUS'])) == 0
@@ -472,15 +446,18 @@ def main():
                               'relocated_scale_sha256': digest(relocated.frame()),
                               'shell_task_started_in_both': True}
 
-        current_case = 'exact_cave_capacity'
-        edge, edge_row = boot(hook=lambda camera: camera.put(ABI['FP_CAVE_BUMP'], ABI['FP_CAVE_END'] - 24))
-        assert signed(edge.get(edge_row + ABI['REC_STATUS'])) == 0
-        assert edge.get(ABI['FP_CAVE_BUMP']) == ABI['FP_CAVE_END']
-        edge.hold()
-        edge.submit()
-        assert edge.frame() == scale and edge.post_events == [0x21]
-        cases[current_case] = {'last_usable_24_bytes_accepted': True,
-                              'cave_end': hex(ABI['FP_CAVE_END']), 'shell_task_started': True}
+        current_case = 'shared_shutdown_lifetime'
+        shutdowns = []
+        for camera, forced_first in ((model, False), (relocated, True)):
+            allocations = [(b['address'], b['freed']) for b in camera.blocks]
+            for forced in (forced_first, not forced_first):
+                camera.shutdown(forced=forced)
+                assert {site: camera.get(site) for site in STOCK} == STOCK
+                assert camera.service('API_CALL', MODULE_ID, 1) == (ABI['FP_ENOTREADY'] & 0xFFFFFFFF, 0)
+                assert [(b['address'], b['freed']) for b in camera.blocks] == allocations
+            shutdowns.append({'forced_first': forced_first, 'all_hooks_restored': True,
+                              'live_images_not_freed': True})
+        cases[current_case] = shutdowns
         report['status'] = 'OFFLINE_ONLY_PASS'
     except (Exception, SystemExit) as error:
         report['status'] = 'FAIL'

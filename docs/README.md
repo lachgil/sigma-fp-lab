@@ -16,6 +16,11 @@ Two files sit at this level because they cut across everything:
 - [status.md](status.md) - the current state of play, and how sure each claim is
 - [test-runbook.md](test-runbook.md) - the live-camera procedure, in order
 
+Native control architecture: [firmware-decode.txt, section 9](research/firmware-decode.txt)
+maps the rec-manager request queue, dispatch table, ownership and completion
+semantics. Reproduce against the original firmware with
+`tools/research_dispatch.py`; modeled OS/policy boundaries are explicit.
+
 ## How claims are written here
 
 Every non-obvious statement says how it is known. **Measured** means it was

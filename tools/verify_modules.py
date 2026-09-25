@@ -37,8 +37,14 @@ F_MGR, F_VOL = 0xC0444658, 0xC0444698
 F_CTOR, F_OPEN, F_READ = 0xC0365E90, 0xC0365FB0, 0xC0366060
 F_CLOSE, F_DTOR, TICK = 0xC0366020, 0xC0365ED0, 0xC002B6E0
 TASK_CREATE, TASK_START = 0xC0016A58, 0xC0016BC0
+POWEROFF_MGR, POWEROFF_REGISTER = 0xC0023A98, 0xC0024118
+POWEROFF_MANAGER = 0xC30756C4
+POWEROFF_REGISTER_END = 0xC0024184
+STOCK_POWEROFF_OBJECT = STOP + 0x200
+STOCK_POWEROFF_CALLBACK = STOP + 0x240
 SERVICES = {H_GET, H_ADDR, H_FREE, DCACHE, ICACHE, F_MGR, F_VOL,
-            F_CTOR, F_OPEN, F_READ, F_CLOSE, F_DTOR, TICK, TASK_CREATE, TASK_START}
+            F_CTOR, F_OPEN, F_READ, F_CLOSE, F_DTOR, TICK, TASK_CREATE, TASK_START,
+            POWEROFF_MGR, STOCK_POWEROFF_CALLBACK}
 SAVED = [getattr(ar, f'UC_ARM_REG_R{i}') for i in range(4, 12)]
 
 
@@ -53,11 +59,22 @@ def signed(value: int) -> int:
 class CameraModel:
     """Strict service boundaries; this does not simulate scheduling or caches."""
 
-    def __init__(self, firmware: bytes, card: Path, heap: int, fail_request: int = 0):
+    def __init__(self, firmware: bytes, card: Path, heap: int, fail_request: int = 0,
+                 *, poweroff_counts: tuple[int, int] = (0, 0)):
         self.u = uc.Uc(uc.UC_ARCH_ARM, uc.UC_MODE_ARM)
         self.u.mem_map(0xC0000000, (len(firmware) + 4095) & ~4095)
         self.u.mem_write(0xC0000000, firmware)
         self.u.mem_map(STOP, 0x10000)
+        # Native getter's lazy singleton boundary is modeled; its actual
+        # registration instructions run against a fresh/reset BSS manager.
+        self.u.mem_map(POWEROFF_MANAGER & ~4095, 4096)
+        self.put(STOCK_POWEROFF_OBJECT, STOCK_POWEROFF_OBJECT + 4)
+        self.put(STOCK_POWEROFF_OBJECT + 16, STOCK_POWEROFF_CALLBACK)
+        for forced, count in enumerate(poweroff_counts):
+            assert 0 <= count <= 10
+            for slot in range(count):
+                self.put(POWEROFF_MANAGER + (0x34 if forced else 0x0C) + slot * 4,
+                         STOCK_POWEROFF_OBJECT)
         self.blob = (card / 'fpSup.BIN').read_bytes()
         self.heap = heap
         self.fail_request = fail_request
@@ -68,11 +85,13 @@ class CameraModel:
         self.opened = False
         self.cache_calls = []
         self.events = []
+        self.trace = []
         self.api = 0
         self.ticks = 0
         self.tasks = []
-        # A stale directory must not be accepted after a fresh boot/failure.
-        self.put(ABI['FP_CAVE_BEGIN'], ABI['FP_DIRECTORY_MAGIC'], 0xDEADBEEF, 1234, 0)
+        self.poweroff_registration = []
+        self.shutdown_dispatches = []
+        self.firmware_size = len(firmware)
         for address, value in re.findall(r'^mem set (0x[0-9A-Fa-f]+) (0x[0-9A-Fa-f]+)$',
                                          (card / 'AutoRun.txt').read_text(), re.M):
             address = int(address, 16)
@@ -88,12 +107,30 @@ class CameraModel:
         self.u.mem_write(address, struct.pack('<' + 'I' * len(values), *[v & 0xFFFFFFFF for v in values]))
 
     def check_write(self, u, access, address, size, value, _):
+        self.trace.append(('write', address, value))
         for block in self.blocks:
             if not block['freed'] and block['address'] <= address < block['address'] + block['span']:
                 assert address + size <= block['address'] + block['size'], 'write beyond allocation extent'
 
     def execute(self, u, address, size, _):
+        if address not in SERVICES and size == 4:
+            word = self.get(address)
+            if word in (0xF57FF04F, 0xF57FF06F):
+                self.trace.append(('barrier', word))
         if address not in SERVICES:
+            if POWEROFF_REGISTER <= address < POWEROFF_REGISTER_END:
+                if address == POWEROFF_REGISTER:
+                    assert u.reg_read(ar.UC_ARM_REG_SP) % 8 == 0
+                    manager = u.reg_read(ar.UC_ARM_REG_R0)
+                    obj = u.reg_read(ar.UC_ARM_REG_R1)
+                    forced = u.reg_read(ar.UC_ARM_REG_R2)
+                    assert manager == POWEROFF_MANAGER and forced in (0, 1)
+                    assert ABI['FP_CAVE_BEGIN'] <= obj < ABI['FP_CAVE_END']
+                    self.poweroff_registration.append((obj, forced))
+                    self.trace.append(('register', obj, forced))
+                return
+            if ABI['FP_CAVE_BEGIN'] <= address < ABI['FP_CAVE_END']:
+                return
             if LOADER <= address < LOADER + 0x200:
                 return
             for block in self.blocks:
@@ -129,14 +166,20 @@ class CameraModel:
         elif address == H_FREE:
             block = self.descriptors[r0]
             assert block and not block['freed'] and r1 == 2 and self.closed
+            self.trace.append(('free', block['address']))
             u.mem_write(block['address'], b'\xA5' * block['span'])
             u.mem_unmap(block['address'], block['span'])
             block['freed'] = True
             self.events.append({'freed_request': block['request']})
         elif address in (DCACHE, ICACHE):
             self.cache_calls.append(address)
+            self.trace.append(('cache', address))
         elif address == F_MGR:
             result = 0x20000000
+        elif address == POWEROFF_MGR:
+            result = POWEROFF_MANAGER
+        elif address == STOCK_POWEROFF_CALLBACK:
+            assert r0 == STOCK_POWEROFF_OBJECT
         elif address == F_VOL:
             result = 1
         elif address == F_OPEN:
@@ -188,6 +231,7 @@ class CameraModel:
         return self.u.reg_read(ar.UC_ARM_REG_R0), self.u.reg_read(ar.UC_ARM_REG_R1)
 
     def service(self, name, *arguments):
+        # Keep API pointer available to deliberately exercise closed services.
         return self.call(self.get(self.api + ABI[name]), self.api, *arguments)
 
     def boot(self, root_status=0):
@@ -207,6 +251,35 @@ class CameraModel:
         assert count <= ABI['FP_CAPACITY']
         records = self.get(self.api + ABI['API_RECORDS'])
         return [records + i * ABI['REC_SIZE'] for i in range(count)]
+
+    def shutdown(self, forced: bool = False):
+        """Native ten-slot, stop-at-zero dispatch boundary; callback ARM runs.
+
+        Scheduling and other native shutdown effects are not simulated. The
+        vtable slot and ordinary reason argument match c0023cb4..c0023cc4.
+        """
+        base = POWEROFF_MANAGER + (0x34 if forced else 0x0C)
+        objects = []
+        for slot in range(10):
+            obj = self.get(base + slot * 4)
+            if not obj:
+                break
+            callback = self.get(self.get(obj) + 12)
+            self.call(callback, obj, 1 if forced else 0)
+            objects.append(obj)
+        self.shutdown_dispatches.append({'forced': forced, 'objects': objects})
+        return objects
+
+    def unmap_user_heap(self):
+        """Reset USER lifetime without changing retained image/cave memory."""
+        for block in self.blocks:
+            if not block['freed']:
+                self.u.mem_unmap(block['address'], block['span'])
+                block['freed'] = True
+
+    def retained_image(self):
+        """Snapshot image/cave only; a new model resets native manager BSS."""
+        return bytes(self.u.mem_read(0xC0000000, self.firmware_size))
 
     def run(self, expected_rows, counters, failure_result=None):
         rows = self.boot()
@@ -373,8 +446,9 @@ def main():
     sources = ['build_autorun.py', 'armasm.py', 'templates/loader.S', 'templates/stage2.S', 'templates/entries.S']
     report = {'status': 'OFFLINE_ONLY_NOT_CAMERA_VALIDATED', 'firmware_sha256': FIRMWARE_SHA256,
               'discovery': 'public cave directory and versioned runtime service table',
-              'modeled_services': ['allocator', 'file I/O', 'D/I cache calls', 'clock', 'task creation/start'],
-              'not_exercised': ['AutoRun interpreter', 'USB shell', 'hardware caches', 'native menus', 'hooks', 'hot reload', 'concurrency'],
+              'modeled_services': ['allocator', 'file I/O', 'D/I cache calls', 'clock', 'task creation/start', 'poweroff singleton and dispatch boundaries'],
+              'native_execution': ['poweroff registration and ten-slot capacity'],
+              'not_exercised': ['AutoRun interpreter', 'USB shell', 'hardware caches', 'native menus', 'hot reload', 'concurrency'],
               'upstream_source_sha256': {p: digest((upstream / 'fp_usb_shell' / p).read_bytes()) for p in sources},
               'module_sha256': {p.name: digest(p.read_bytes()) for p in [a, b, replacement]},
               'cases': cases}

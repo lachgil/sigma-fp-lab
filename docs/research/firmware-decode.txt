@@ -106,7 +106,9 @@ claim the second float can safely be changed. See PLAYBACK-DARKNESS.md.
 
 4. PLAYBACK: RESEARCH, NO FIX
 
-Shell handlers C0405050/78/A0 post through C05BF2C0.
+Correction 2026-09-26: shell handlers C0405050/78/A0 call C05BF2C0, a
+CinemaDngMgrLog diagnostic printer, NOT a playback-event poster. It passes
+a printf callback and selector through C05BED90 (strings at C2DFD824/DC0C).
 Develop-sequence constructor C03C8230 installs vtable C0BA3CE0;
 step-table candidate C0BA3CE8. CinemaDngTagReader/DngBufferInfo strings are
 leads, not proof of the exact deployed geometry-selection logic.
@@ -159,7 +161,7 @@ useful address evidence and remaining prerequisites, not a delivered UI.
 
 7. LOADING, INTEGRATION AND FLASH
 
-AutoRun shell path: XC_ShellScriptAutoRun C0BABBCC, code C03DA3F8, reader C03DA758.
+AutoRun shell path: XC_ShellScriptAutoRun C0BABE0C, code C03DA3F8, reader C03DA758.
 fpSup gyro base loader uses cave C072DE64, USER allocation via bufmem,
 VSHL.BIN sections, stage2 cache operation C000E91C. See pinned upstream source.
 Do not combine loaders/caves by concatenating AutoRuns. Shell helper payloads
@@ -185,3 +187,71 @@ state distinct. A matching table value, an assembling draft or a metadata tag
 is not end-to-end proof. Record observations, their timing and capture provenance
 before turning them into patch assumptions. No shared root cause across green,
 darkness and playback has yet been demonstrated.
+
+9. NATIVE CONTROL ARCHITECTURE, 2026-09-26
+
+Goal: recover reusable native interfaces, not replicate a histogram/LUT feature.
+The first bounded map below covers framework/recMgr/CameraFunction.cpp, named by
+the original assertion string at C0B9DF18. It is not a global firmware event bus.
+
+Producer -> owned envelope -> queue -> consumer policy -> method -> completion:
+  C03A0798(manager, request)     native submission, not just a boolean event post
+  C0B9E034                      51 indexed entries, IDs 0..50, 16 bytes each
+  manager+128                   queue wrapper used for send/receive
+  manager+12C                   synchronous completion flag wrapper
+  C03A34A8                      consumer loop; receive, policy, dispatch, cleanup
+  C03A3398                      dispatch one request through the metadata table
+  C03A2438                      consumer-side camera-state policy
+
+Metadata entry {id, this_adjustment, dispatch_kind, target}:
+  kind == 0: disabled
+  signed kind < 0: direct function target
+  positive kind: virtual slot index; target becomes the vtable-pointer offset
+All 51 original entries have zero this-adjustment and kind 0 or FFFFFFFF.
+Virtual routing is instruction-derived, not exercised with a stock entry.
+IDs 0,16,37,40,44,47,48,49,50 are disabled. Numeric IDs are local to this manager.
+The table is indexed before bounds validation: it is NOT safe to fuzz IDs live.
+
+Submission owns a 0xC0-byte envelope and copies exactly 0xBC request bytes into
+envelope+4. It is a SHALLOW copy: pointer payloads do not gain lifetime ownership.
+request+0 is the event ID; request+4 is an asynchronous byte. Other fields are
+event-specific and are not all decoded. Producer policy C03A0988 runs before
+allocation; a separate consumer policy runs after dequeue, so queue submission
+and permission to execute are different facts.
+
+Asynchronous requests return the queue routine's result, including errors.
+Synchronous requests wait on manager+12C with mask1, mode21, timeout FFFFFFFF;
+their return is a wait-success boolean, NOT the target handler's result.
+The worker signals completion after dispatch even if consumer policy declined
+the request. Do not call this synchronously from the same consumer task.
+The sender nulls its holder before queue submission; send-failure ownership
+depends on C036D948, which has not been traced here. Do not assume rollback/free.
+Allocation failure and the tested invalid ID51 reach an assertion boundary.
+
+Original ARM experiment:
+  .venv/bin/python -B tools/research_dispatch.py
+  builds/dispatch-research/report.json
+  builds/dispatch-research/disassembly.txt
+Executes all 51 original dispatch rows with allowed/refused policy; disabled
+producer entries; full request copying; async error propagation; synchronous
+wait success/failure; allocation and invalid-ID assertion paths.
+OS queue/wait, allocation, logging, consumer policy and business handlers are
+explicit modeled boundaries. No scheduler, hardware or recording proof.
+
+Related property infrastructure: C00913F8 validates an index against a domain
+count, not a generic property-value clamp. count1 normalizes to index0; count>1
+accepts an in-range index or FFFF sentinel. Other tested inputs assert.
+C0064580 passes its r2 selector as that index, while preserving its r1 value
+separately for C00742F8. Do not infer arbitrary numeric property values are safe
+from the selector check. The experiment executes this validator too.
+
+Developer leverage: submission, execution and completion can now be distinguished.
+A future read-only event tracer can correlate native requests with the selected
+handler and state-policy rejection, rather than treating every successful post
+as a successful action. That would support discovery across native operations,
+not just a single feature. No tracer is installed or claimed complete.
+
+Next architecture boundary: map C036D948/C036D9C0 queue ownership and the worker's
+task identity, then decode producer and consumer policy inputs. Before any live
+tracer, establish bounded logging, no pointer retention, caller/task context and
+shutdown detachment. Do not issue unknown requests or bypass native policy.

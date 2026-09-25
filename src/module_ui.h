@@ -52,9 +52,9 @@
  * without changing the canvas or visibility. A busy frame hook skips a frame.
  *
  * PRESENT -> 0 after explicitly installing both hooks and enabling drawing.
- * It checks stock instructions before installation and never overwrites a
- * conflicting owner. Initialization does not arm hooks. Once armed, hooks
- * remain resident until reboot; HIDE does not unpatch them or stop counting.
+ * The shared runtime checks stock instructions before atomic installation and
+ * never overwrites a conflicting owner. Initialization does not arm hooks.
+ * Runtime shutdown disarms hooks; HIDE does not unpatch or stop counting.
  * PRESENT/HIDE do not force a display refresh. The next eligible firmware
  * submission paints/restores the tile. No cached framebuffer is ever written
  * by a command. HIDE -> 0 after disabling painting.
@@ -83,7 +83,7 @@
  * HIDE can leave a visible tile until that buffer is submitted again. This
  * bounded ownership policy deliberately avoids writing stale cached pointers.
  * No allocation, callbacks into consumers, or blocking locks occur on frames.
- * Initialization reserves one 43,136-byte USER block outside the compact
+ * Initialization reserves one 43,152-byte USER block outside the compact
  * module image. Allocation failure leaves no hooks; malformed owned storage
  * is freed before failure. Successful storage and code remain until reboot,
  * as the runtime has no unload contract. Service requests never allocate.

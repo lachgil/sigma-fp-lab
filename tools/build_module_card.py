@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+import os
 from pathlib import Path
 import re
 import struct
@@ -87,7 +88,8 @@ def build_card(upstream: Path, out: Path, modules: list[Path], *, debug: bool = 
         if not debug:
             command.append('--no-shell')
         log.flush()
-        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
+                                env={**os.environ, 'FPSUP_NO_BAR': '1'})
         if result.returncode:
             raise RuntimeError(
                 f'upstream card build failed ({result.returncode}); see {out / "build.log"}')

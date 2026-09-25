@@ -40,20 +40,17 @@ class DisplayModel(CameraModel):
         self.forwarded = []
         self.expected = None
 
+    def check_write(self, u, access, address, size, value, data):
+        super().check_write(u, access, address, size, value, data)
+        if 0xC0000000 <= address < 0xC3000000:
+            pc = u.reg_read(ar.UC_ARM_REG_PC)
+            for block in self.blocks:
+                base = block['address']
+                if (not block['freed'] and base <= pc < base + block['size']
+                        and self.get(base) == ABI['FP_MODULE_MAGIC']):
+                    raise AssertionError(f'module wrote firmware/cave directly at {address:#x}')
+
     def execute(self, u, address, size, data):
-        if (ABI['FP_CAVE_BEGIN'] + ABI['DIR_SIZE'] <= address
-                < self.get(ABI['FP_CAVE_BUMP'])):
-            assert self.get(address) == 0xE51FF004, 'invalid hook veneer'
-            target = self.get(address + 4)
-            records = self.get(self.api + ABI['API_RECORDS'])
-            count = self.get(self.api + ABI['API_COUNT'])
-            owners = [records + i * ABI['REC_SIZE'] for i in range(count)
-                      if self.get(records + i * ABI['REC_SIZE']) == PROVIDER]
-            assert len(owners) == 1
-            image = self.get(owners[0] + ABI['REC_IMAGE'])
-            length = self.get(owners[0] + ABI['REC_BYTES'])
-            assert image + ABI['MOD_HEADER_BYTES'] <= target < image + length
-            return
         if address in (PRESS, SUBMIT):
             return
         if address in (PRESS + 4, SUBMIT + 4):
@@ -125,12 +122,22 @@ def main():
     assert rows == [(PROVIDER, 0), (DEMO, 0)], rows
     assert model.get(PRESS) == 0xE92D4010 and model.get(SUBMIT) == 0xE92D48F0
     assert model.command(0) == 1
+    provider_row = model.service('API_LOOKUP', PROVIDER)[0]
+    allocations = model.requests
+    assert model.call(model.get(provider_row + ABI['REC_INIT']), model.api, provider_row)[0] == 0
+    assert model.requests == allocations
+    assert model.get(PRESS) == 0xE92D4010 and model.get(SUBMIT) == 0xE92D48F0
     cases['passive_boot'] = 'both ready; no hooks armed at initialization'
 
     before = [bytes(model.u.mem_read(b, WIDTH * HEIGHT * 2)) for b in model.buffers]
     assert model.command(1, 0, 0, W, H, 0xFFFF) == 0
     assert model.command(2) == 0
     assert model.get(PRESS) != 0xE92D4010 and model.get(SUBMIT) != 0xE92D48F0
+    installed = (model.get(PRESS), model.get(SUBMIT))
+    bump = model.get(ABI['FP_CAVE_BUMP'])
+    assert model.command(2) == 0
+    assert (model.get(PRESS), model.get(SUBMIT)) == installed
+    assert model.get(ABI['FP_CAVE_BUMP']) == bump and model.requests == allocations
     for index in range(3):
         model.submit(index)
         expected = bytearray(before[index])
@@ -223,16 +230,55 @@ def main():
         conflict.put(site, 0xE1A00000)
         stock_words = (conflict.get(PRESS), conflict.get(SUBMIT))
         bump = conflict.get(ABI['FP_CAVE_BUMP'])
-        assert conflict.command(2) < 0
+        assert conflict.command(2) == -18
+        assert conflict.command(5) == -18
         assert (conflict.get(PRESS), conflict.get(SUBMIT)) == stock_words
         assert conflict.get(ABI['FP_CAVE_BUMP']) == bump
-    cases['hook_conflicts'] = 'refused without patching either site or consuming cave space'
+        conflict.put(site, 0xE92D4010 if site == PRESS else 0xE92D48F0)
+        assert conflict.command(2) == 0 and conflict.command(5) == 0
+        conflict.press()
+        assert conflict.command(4) == 1
+    cases['hook_conflicts'] = 'atomic refusal preserves ownership; retry arms both hooks and observes native press'
 
     exhausted, _ = fresh('exhausted')
-    exhausted.put(ABI['FP_CAVE_BUMP'], ABI['FP_CAVE_END'])
-    assert exhausted.command(2) < 0
+    row = exhausted.service('API_LOOKUP', PROVIDER)[0]
+    target = exhausted.get(row + ABI['REC_INIT'])
+    spare_sites = {0xC0372400 + 4 * i: exhausted.get(0xC0372400 + 4 * i)
+                   for i in range(ABI['FP_HOOK_CAPACITY'] - 1)}
+    for index, (site, original) in enumerate(spare_sites.items()):
+        exhausted.put(REQUEST + index * ABI['HOOK_SIZE'], site, original, target, 0)
+    assert exhausted.service('API_INSTALL_HOOKS', row, REQUEST, len(spare_sites))[0] == 0
+    reserved = {site: exhausted.get(site) for site in spare_sites}
+    bump = exhausted.get(ABI['FP_CAVE_BUMP'])
+    assert exhausted.command(2) == -19 and exhausted.command(5) == -19
     assert exhausted.get(PRESS) == 0xE92D4010 and exhausted.get(SUBMIT) == 0xE92D48F0
-    cases['cave_exhaustion'] = 'no partial hook installation'
+    assert {site: exhausted.get(site) for site in spare_sites} == reserved
+    assert exhausted.get(ABI['FP_CAVE_BUMP']) == bump
+    exhausted.shutdown()
+    assert {site: exhausted.get(site) for site in spare_sites} == spare_sites
+    cases['shared_capacity'] = 'one slot remaining refuses the complete two-hook batch without affecting prior owners'
+
+    for forced_first in (False, True):
+        closing, _ = fresh('shutdown')
+        assert closing.command(1, 0, 0, W, H, 0xFFFF) == 0
+        assert closing.command(2) == 0
+        closing.submit()
+        canvas = closing.tile()
+        allocations = [(b['address'], b['freed']) for b in closing.blocks]
+        for forced in (forced_first, not forced_first):
+            closing.shutdown(forced=forced)
+            assert closing.get(PRESS) == 0xE92D4010 and closing.get(SUBMIT) == 0xE92D48F0
+            assert closing.service('API_CALL', PROVIDER, REQUEST) == (ABI['FP_ENOTREADY'] & 0xFFFFFFFF, 0)
+            assert [(b['address'], b['freed']) for b in closing.blocks] == allocations
+            closing.press()
+            closing.submit()
+            assert closing.tile() == canvas
+    dormant, _ = fresh('shutdown_before_present')
+    dormant.shutdown()
+    dormant.put(REQUEST, 2, 0, 0, 0, 0, 0)
+    assert dormant.service('API_CALL', PROVIDER, REQUEST) == (ABI['FP_ENOTREADY'] & 0xFFFFFFFF, 0)
+    assert dormant.get(PRESS) == 0xE92D4010 and dormant.get(SUBMIT) == 0xE92D48F0
+    cases['shutdown_lifetime'] = 'both callback orders restore native calls without freeing USER state; lazy activation is revoked'
 
     reversed_card = build_card(upstream, out / 'reversed', modules[::-1])
     reversed_model, reversed_rows = fresh('dependency_order', reversed_card)

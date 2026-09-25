@@ -7,7 +7,6 @@
 #define PRESS_SITE 0xC03722E8u
 #define RELEASE_SITE 0xC0372330u
 #define STOCK 0xE92D4010u
-#define WORD(address) (*(volatile uint32_t *)(uintptr_t)(address))
 
 static volatile uint32_t armed, enabled, presses, releases;
 
@@ -31,56 +30,21 @@ static uint32_t release(uint32_t *camera)
     return 1;
 }
 
-static void publish(void)
-{
-    __asm__ volatile("dmb" ::: "memory");
-    ((void (*)(void))0xC000E91Cu)();
-    ((void (*)(void))0xC000EABCu)();
-    __asm__ volatile("dsb\n\tisb" ::: "memory");
-}
-
-static uint32_t branch(uint32_t site, uint32_t target)
-{
-    /* Replace a function prologue with B, preserving its caller's LR. */
-    return 0xEA000000u | (((target - site - 8) >> 2) & 0xFFFFFFu);
-}
-
 int32_t fp_module_init(const struct fp_api *api, const struct fp_record *record)
 {
-    (void)record;
     if (!api || ((uintptr_t)api & 3) || api->magic != FP_RUNTIME_MAGIC ||
         api->abi != FP_ABI || api->bytes < API_SIZE)
         return FP_EABI;
     if (armed)
         return FP_OK;
 
-    uint32_t flags;
-    __asm__ volatile("mrs %0, cpsr\n\tcpsid if" : "=r"(flags) :: "memory");
-    int32_t result = -8; /* Conflicting hook or occupied cave. */
-    if (WORD(PRESS_SITE) != STOCK || WORD(RELEASE_SITE) != STOCK)
-        goto done;
-    uint32_t cave = WORD(FP_CAVE_BUMP);
-    result = -9; /* No safe veneer space. */
-    if ((cave & 3) || cave < FP_CAVE_BEGIN || cave > FP_CAVE_END - 16)
-        goto done;
-    result = -8;
-    for (uint32_t offset = 0; offset < 16; offset += 4)
-        if (WORD(cave + offset))
-            goto done;
-
-    /* Nothing may fail after publication: runtime must retain live hooks. */
-    WORD(FP_CAVE_BUMP) = cave + 16;
-    WORD(cave) = WORD(cave + 8) = 0xE51FF004u;
-    WORD(cave + 4) = (uintptr_t)press;
-    WORD(cave + 12) = (uintptr_t)release;
-    publish();
-    WORD(PRESS_SITE) = branch(PRESS_SITE, cave);
-    WORD(RELEASE_SITE) = branch(RELEASE_SITE, cave + 8);
-    publish();
-    armed = 1;
-    result = FP_OK;
-done:
-    __asm__ volatile("msr cpsr_c, %0" :: "r"(flags) : "memory");
+    struct fp_hook hooks[2] = {
+        { PRESS_SITE, STOCK, (uintptr_t)press, 0 },
+        { RELEASE_SITE, STOCK, (uintptr_t)release, 0 },
+    };
+    int32_t result = api->install_hooks(api, record, hooks, 2);
+    if (result == FP_OK)
+        armed = 1;
     return result;
 }
 

@@ -30,10 +30,10 @@ on/off behavior as the older assembly latch, for **SIGMA fp firmware 5.02**:
 - No scale, custom renderer, extra menu, background task, or USB call to activate.
 - Boot installs two hooks but does not turn False Color on.
 
-The toggle and native event construction are C. Small inline ARM instructions
-mask/restore interrupts and publish instruction changes safely. The builder's
-shared assembly bootstrap handles module relocation, not the tool's behavior.
-Only 16 bytes of branch veneers occupy the cave; code/state live in USER memory.
+The toggle and native event construction are C. The shared runtime installs its
+two owned hooks, publishes caches and restores the original entry words during
+shutdown. The tool no longer implements its own patch transaction. Its code and
+state live in USER memory; cleanup and eight shared hook slots live in the cave.
 
 Build and verify from the repository root:
 
@@ -45,21 +45,30 @@ Build and verify from the repository root:
 .venv/bin/python -B tools/verify_module_fclatch.py
 ```
 
-The compiled module is 980 bytes. Eight offline ARM scenarios pass, including
-native on/off events at two heap bases, ignored/unmatched releases, repeated
-initialization, native return propagation, and rejection of owned hooks or
-unsafe cave space without leaving live hooks into freed memory.
+The current compiled module is 844 bytes. Four offline ARM scenario groups
+cover native events at two heap bases, release behavior, native return
+propagation, hook conflicts, both shutdown callback orders and a fresh-heap warm
+reload with retained firmware image.
 
-**Camera-validated 2026-09-25:** booted from the card on firmware 5.02, the
-assigned button toggled native False Color on and off, staying on after release.
+**Camera-validated 2026-09-25:** the earlier 980-byte revision toggled native
+False Color on and off, staying on after release. The new shared lifecycle has
+not yet been tested on the camera.
 Do not package it with the assembly False Color module `0x102`, or activate the
 UI provider's competing button hook.
 The generated card contains only `0x103` plus the debug shell.
 
+**Lifecycle revision:** the earlier toggle's dangling warm-restart hooks were
+reproduced offline. Current hooks are detached at shutdown and the published
+heap root is revoked. Images that exposed hooks remain allocated until reset,
+including failed initializers, so already-entered callbacks are not freed.
+Sixteen shared lifecycle regression scenarios pass. Hardware warm-boot safety
+remains unverified. See [the lifecycle investigation](sideload.md#warm-start-investigation-2026-09-25).
+
 Installation uses `AutoRun.txt` and `fpSup.BIN` from that card directory.
 Back up existing boot files, preserve media, and safely eject the card.
-With the camera off, remove the battery before booting the replacement card
-to clear stale RAM hooks. No flash or persistent-setting patch is involved.
+With the camera off, disconnect USB as well as removing the battery before
+booting a replacement card. USB can keep the camera powered without a battery;
+switching off alone is not a clean reset. No settings-persistence patch is used.
 
 The latch tracks what it requested, not a native state getter. Menu/mode changes
 can reset the camera display independently; this retains the old latch behavior.
@@ -111,7 +120,7 @@ A larger C example, not this minimal source, ran on the physical camera on
 
 ## Talking to the camera: the service table
 
-The `api` argument is how your C reaches the camera. Four services exist today:
+The `api` argument is how your C reaches the camera. Five services exist today:
 
 | Call | What it does |
 | --- | --- |
@@ -119,6 +128,14 @@ The `api` argument is how your C reaches the camera. Four services exist today:
 | `api->report(api, id, value)` | Publish a diagnostic value others can read back |
 | `api->lookup(api, id)` | Find another loaded module by ID |
 | `api->call(api, id, arg)` | Call another loaded module and get its result |
+| `api->install_hooks(api, record, hooks, count)` | Atomically install owned ARM entry hooks, restored at shutdown |
+
+`struct fp_hook` contains `site`, `original`, `target`, and output `veneer`.
+Check `api->bytes >= sizeof(*api)` before using the appended hook service.
+The runtime has eight slots total per boot, including retired slots. A failed
+batch leaves all sites and output values untouched. Targets must lie inside the
+owning module image. This is firmware-specific patch support, not a generic
+button API. See the [ownership contract](module-platform.md#shared-hook-and-shutdown-contract).
 
 A module that counts how many times it was called and publishes the count:
 
